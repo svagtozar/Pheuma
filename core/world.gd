@@ -575,6 +575,7 @@ func _erase(m: Machine) -> void:
 		if c is Cannon and c.config.has("routes"):
 			c.config.routes = c.config.routes.filter(func(r): return int(r[1]) != m.id)
 	drones = drones.filter(func(d): return d.src != m.id and d.dst != m.id)
+	Machine.drop_shot_links(machines, m.id)
 
 func rotate_at(c: Vector2i) -> void:
 	var m = machine_at(c)
@@ -618,6 +619,31 @@ func link_cannon(cannon_cell: Vector2i, target_cell: Vector2i, tag: String = "")
 		c.add_route(tag, t.id)
 	else:
 		c.config.target = t.id
+	return ""
+
+## Выстрел выхода машины в цель (idx — номер выхода). Повторная связь с той же
+## целью снимает её. Для пушки — обычное наведение.
+func link_output(src_cell: Vector2i, dst_cell: Vector2i, idx: int = 0) -> String:
+	var c = machine_at(src_cell)
+	var t = machine_at(dst_cell)
+	if c != null and c.master_id >= 0 and c.master != null and c.master.get_ref() != null:
+		c = c.master.get_ref()
+	if t != null and t.master_id >= 0 and t.master != null and t.master.get_ref() != null:
+		t = t.master.get_ref()
+	if c == null:
+		return "здесь нет машины"
+	if c is Cannon and not c.is_silo():
+		return link_cannon(src_cell, dst_cell)
+	if c.outputs() <= idx:
+		return "у «%s» нет %s" % [c.display_name(), "второго выхода" if idx > 0 else "выхода"]
+	if t == null or t.capacity() <= 0.0 or t == c:
+		return "цель должна принимать груз (контейнер, машина обработки…)"
+	var s: Dictionary = c.config.get("shot", {}).duplicate()
+	if int(s.get(str(idx), -1)) == t.id:
+		s.erase(str(idx))
+	else:
+		s[str(idx)] = t.id
+	c.config.shot = s
 	return ""
 
 ## Провод от выхода одной машины ко входу другой.

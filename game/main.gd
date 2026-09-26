@@ -34,6 +34,7 @@ var macro_rot := 0
 var macro_collapsed := false
 var pending_macro := {}        # выделенная рамкой схема, ждёт выбора действия
 var route_tag := ""
+var _link_idx := 0             # какой выход машины наводится в режиме L (Shift — второй)
 var route_tag_pick := ""
 var tutorial: Tutorial = null
 var _uitest := false
@@ -616,10 +617,16 @@ func _click(shift: bool) -> void:
 		"link":
 			if pending_cell == null:
 				var m = world.machine_at(c)
-				if m != null and m is Cannon and not m.is_silo():
+				if m != null and ((m is Cannon and not m.is_silo()) or m.outputs() > 0):
 					pending_cell = c
+					_link_idx = 1 if shift else 0
 				else:
-					say("выберите пневмопушку")
+					say("выберите пневмопушку или машину с выходом")
+			elif not world.machine_at(pending_cell) is Cannon:
+				var err := world.link_output(pending_cell, c, _link_idx)
+				var src = world.machine_at(pending_cell)
+				say(err if err != "" else ("выход наведён — груз полетит выстрелом" if src.shot_target(_link_idx) >= 0 else "выстрел снят — выход снова отдаёт соседу"))
+				set_mode("none")
 			else:
 				var err := world.link_cannon(pending_cell, c, route_tag)
 				say(err if err != "" else ("маршрут «%s» задан" % MaterialTags.display(route_tag) if route_tag != "" else "пушка наведена"))
@@ -1006,7 +1013,54 @@ func _uitest_macro(w: World) -> bool:
 	var back = world.machine_at(base + Vector2i(1, 0))
 	var unfolded: bool = back != null and back.kind == "filter" and back.config.tag == tag1
 	print("[uitest] развёрнуто: ", unfolded, " сообщение: ", message)
-	return tag1 != tag0 and unfolded
+	var shot_ok := await _uitest_shot(base)
+	return tag1 != tag0 and unfolded and shot_ok
+
+## Выстрел выхода: дробилка с насосом, в инспекторе «выстрелом в цель (L)», клик по
+## контейнеру в четырёх клетках — груз долетает.
+func _uitest_shot(base: Vector2i) -> bool:
+	var w := world
+	var row := Vector2i(-1, -1)
+	for dy in range(2, 12):
+		for dx in range(-6, 7):
+			var c := base + Vector2i(dx, dy)
+			var ok := true
+			for i in 5:
+				for j in 2:
+					var q := c + Vector2i(i, j)
+					if not w.planet.buildable(q) or w.grid.has(q) or w.tile_overrides.has(q):
+						ok = false
+			if ok and row == Vector2i(-1, -1):
+				row = c
+	if row == Vector2i(-1, -1):
+		print("[uitest] выстрел: нет места")
+		return false
+	var ore := w.db.add(Substance.new("uit_ore", "Руда пробы", ["brittle", "crystalline"]))
+	var cr := w.place("crusher", row, 0, w.starter, true)
+	w.place("pump", row + Vector2i(0, 1), 0, w.starter, true)
+	var box := w.place("container", row + Vector2i(4, 0), 0, w.starter, true)
+	cr.store(Portion.new(ore, 2.0))
+	selected_cell = cr.cell
+	hud.insp_inner = -1
+	hud._refresh_inspector()
+	await get_tree().process_frame
+	var b := _find_button(hud.inspector_buttons, "выстрелом в цель")
+	var found := b != null
+	if b: b.pressed.emit()
+	await get_tree().process_frame
+	cam.position = (Vector2(row) + Vector2(2.5, 0.5)) * T
+	cam.reset_smoothing()
+	await get_tree().process_frame
+	get_viewport().warp_mouse(get_viewport().get_canvas_transform() * ((Vector2(box.cell) + Vector2(0.5, 0.5)) * T))
+	await get_tree().process_frame
+	_click(false)
+	var linked := cr.shot_target(0) == box.id
+	var t0 := w.time
+	while w.time - t0 < 20.0 and box.items.is_empty():
+		await get_tree().process_frame
+		sim.advance(0.5)
+	print("[uitest] выстрел выхода: кнопка=", found, " наведён=", linked, " груз в контейнере=", not box.items.is_empty(), " сообщение: ", message)
+	return found and linked and not box.items.is_empty()
 
 ## Свёрнутый блок в (base) сворачивается вместе с соседом во внешний блок; в инспекторе
 ## заходим во вложенный, видим его фильтр, выходим наверх и разворачиваем внешний.

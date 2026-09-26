@@ -180,6 +180,7 @@ const STAGE_KINDS := {
 	"vent_gas": ["decompressor", "pump"], "launch_variety": ["launch_silo"],
 }
 const BASE_KINDS := ["drill", "container", "tank", "pump", "pipe"]
+const STRONG_PUMP_P := 6.5   # насосы под компрессор (правила от 6 атм)
 const MAX_BUILDERS := 3
 
 ## Теги этапов «запасти» (все варианты развилок).
@@ -235,6 +236,8 @@ static func _buildable_from(p: Planet, kind: String, min_hard: float = 0.0, need
 			continue
 		if need == "corrosion" and not Handling.CORROSION_PROOF.any(func(t): return s.has(t)):
 			continue
+		if need == "strong" and ComponentStats.compute(kind, s).max_p * 0.95 < STRONG_PUMP_P:
+			continue
 		if Buildings.check_material(kind, s, p.ambient_temp) != "":
 			continue
 		if Handling.safe_to_carry(s, p):
@@ -259,6 +262,9 @@ static func _ensure_buildable(p: Planet, rng: Rng, exotic_mult: float) -> void:
 	for ore in ores:
 		if ore.hardness - 0.5 > Buildings.KINDS.drill.hard and ore.hardness - 0.5 <= drill_max:
 			needs.append(["drill", ore.hardness - 0.5])
+	# Компрессору нужны насосы, которые держат давление его правил.
+	if "compressor" in kinds:
+		needs.append(["pump", 0.0, "strong"])
 	# Запасы цели: фазирующее уходит сквозь обычные стенки, кислотное их разъедает.
 	for t in _stockpile_tags(p.goal):
 		var pl := Planner.probe_plan(pr, t, p.materials)
@@ -286,6 +292,8 @@ static func _ensure_buildable(p: Planet, rng: Rng, exotic_mult: float) -> void:
 			forced = ["anchoring"]
 		elif wall == "corrosion":
 			forced = ["insulating"]
+		elif wall == "strong":
+			forced = ["dense"]
 		var ok := false
 		for _i in 8:
 			var s := MaterialGen.generate_one(rng, weights, used, forced)

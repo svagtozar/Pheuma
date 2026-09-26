@@ -6,6 +6,12 @@ extends RefCounted
 const DIRS := [Vector2i(1, 0), Vector2i(0, 1), Vector2i(-1, 0), Vector2i(0, -1)]
 const SIDE_NAMES := {"front": "спереди", "back": "сзади", "left": "слева", "right": "справа"}
 const STORAGE := ["container", "tank", "receiver", "dome", "warehouse_section"]
+## Выстрел выхода: вместо соседа по стрелке порция летит в цель (config.shot = {"0": id}).
+## Давление — из своего газового узла или соседнего (труба, насос, бак).
+const SHOT_P := 2.0
+const SHOT_GAS_PER_KG := 0.6
+const SHOT_MULT := 0.6        # короткий ствол: доля дальности пушки
+const SHOT_CD := 0.8
 
 var id := 0
 var kind := ""
@@ -25,6 +31,7 @@ var signal_out := false
 var status := ""
 var hot := false
 var _out_timer := 0.0
+var _shot_at := {}              # выход → время последнего выстрела
 # Сборные сооружения 2×2: id главной секции, её участники и слабая ссылка на неё.
 var master_id := -1
 var group: Array = []
@@ -139,18 +146,78 @@ func tick(w, dt: float) -> void:
 	var chunk := p.split(min(2.0, p.mass))
 	if p.mass <= 0.001:
 		items.remove_at(0)
-	if not w.push(self, chunk, out_cell(0)):
+	if not emit(w, chunk, 0):
 		store(chunk)
-		status = "выдача: спереди никто не принимает"
+		if status == "":
+			status = "выдача: спереди никто не принимает"
 
 func flush_outputs(w) -> void:
 	var left: Array = []
 	for e in out_queue:
-		if not w.push(self, e[0], out_cell(e[1])):
+		if not emit(w, e[0], int(e[1])):
 			left.append(e)
 	out_queue = left
 	if not left.is_empty() and status == "":
 		status = "выход занят"
+
+## Сколько выходов у машины (0 — груз не отдаёт).
+func outputs() -> int:
+	if info.has("process"):
+		return Processes.PROCESSES[info.process].outs
+	if kind in ["drill", "lab"] or is_storage():
+		return 1
+	return 0
+
+## Цель выстрела выхода (-1 — отдавать соседу по стрелке).
+func shot_target(idx: int) -> int:
+	return int(config.get("shot", {}).get(str(idx), -1))
+
+## Отдать порцию с выхода: выстрелом в цель или соседу по стрелке.
+func emit(w, p: Portion, idx: int) -> bool:
+	var tid := shot_target(idx)
+	if tid >= 0 and w.machines.has(tid):
+		return _shoot(w, p, idx, w.machines[tid])
+	return w.push(self, p, out_cell(idx))
+
+## Газовый узел, от которого стреляет выход: свой или самый напорный соседний.
+func shot_node(w) -> int:
+	if has_gas() and w.gas.has_node(id):
+		return id
+	var best := -1
+	for d in DIRS:
+		var n = w.machine_at(cell + d)
+		if n != null and n.has_gas() and w.gas.has_node(n.id):
+			if best < 0 or w.gas.pressure(n.id) > w.gas.pressure(best):
+				best = n.id
+	return best
+
+func _shoot(w, p: Portion, idx: int, target: Machine) -> bool:
+	var now: float = w.time if w is World else w.world.time
+	if now - _shot_at.get(idx, -INF) < SHOT_CD:
+		return false
+	var node := shot_node(w)
+	var pr: float = w.gas.pressure(node) if node >= 0 else 0.0
+	if pr < SHOT_P:
+		status = "выстрел: мало давления (нужно %.1f атм)%s" % [SHOT_P, "" if node >= 0 else " — насос или труба рядом"]
+		return false
+	_shot_at[idx] = now
+	w.gas.take_gas(node, SHOT_GAS_PER_KG * p.mass)
+	var payload: Array = [p]
+	var r: Dictionary = Handling.event(p, "launch", w.handling_env(self, "launch"))
+	w.observe(r, p.substance)
+	payload.append_array(r.spawn)
+	w.sound("thump", cell)
+	w.stats.shots += 1
+	Cannon.shoot(w, cell, target.cell, payload, pr, SHOT_MULT)
+	return true
+
+## Снять выстрелы выходов, нацеленные на машину id (её снесли).
+static func drop_shot_links(machines: Dictionary, target_id: int) -> void:
+	for m in machines.values():
+		var s: Dictionary = m.config.get("shot", {})
+		for k in s.keys():
+			if int(s[k]) == target_id:
+				s.erase(k)
 
 func handling_ctx() -> String:
 	return "sealed" if sealed() else "open"
@@ -167,6 +234,13 @@ func describe(w) -> Array:
 		lines.append("Груз: %.1f / %.0f кг" % [total_mass(), capacity()])
 		for p in items:
 			lines.append("  %s — %.1f кг, %.0f °C, %s" % [w.sub_label(p.substance), p.mass, p.temp, Substance.PHASE_NAMES[p.phase()]])
+	var sh: Dictionary = config.get("shot", {})
+	for k in sh:
+		var t = w.machines.get(int(sh[k]))
+		if t != null:
+			var node := shot_node(w)
+			lines.append("%s: выстрел → %s %d,%d (давление %.1f / %.1f атм)" % ["Выход" if k == "0" else "Выход вправо", t.display_name(), t.cell.x, t.cell.y,
+				w.gas.pressure(node) if node >= 0 else 0.0, SHOT_P])
 	if not enabled:
 		lines.append("Выключено")
 	if status != "":

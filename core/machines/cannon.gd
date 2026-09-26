@@ -118,9 +118,13 @@ func fire(w, p: float) -> void:
 	if is_silo():
 		w.launch_orbit(payload, cell)
 		return
-	var target = w.machines[tid]
-	var from := Vector2(cell) + Vector2(0.5, 0.5)
-	var to := Vector2(target.cell) + Vector2(0.5, 0.5)
+	shoot(w, cell, w.machines[tid].cell, payload, p, range_mult())
+
+## Полёт капсулы к цели (общий для пушек и выстрелов выхода машин): дальность от
+## давления, гравитации и груза, разброс от груза и бурь; не долетела — падает.
+static func shoot(w, from_cell: Vector2i, to_cell: Vector2i, payload: Array, p: float, mult: float) -> void:
+	var from := Vector2(from_cell) + Vector2(0.5, 0.5)
+	var to := Vector2(to_cell) + Vector2(0.5, 0.5)
 	var factor := 0.0
 	var total := 0.0
 	var scatter := 0.0
@@ -131,7 +135,7 @@ func fire(w, p: float) -> void:
 	factor = factor / total if total > 0.0 else 1.0
 	var storm: float = w.event_mods.scatter
 	scatter = (scatter * storm + (2.0 if storm > 1.0 else 0.0)) * (1.0 - w.robot.passive("aim"))
-	var rng_tiles := range_for(p, w.planet) * factor * range_mult()
+	var rng_tiles := range_for(p, w.planet) * factor * mult
 	var dist := from.distance_to(to)
 	var dest := to
 	if dist > rng_tiles:

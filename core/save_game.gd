@@ -62,6 +62,11 @@ static func machine_restore(w: World, m: Machine, md: Dictionary, gas: GasNet, g
 			v = int(v)
 		elif k == "routes":
 			v = v.map(func(r): return [r[0], int(r[1])])
+		elif k == "shot":
+			var sh := {}
+			for key in v:
+				sh[str(key)] = int(v[key])
+			v = sh
 		m.config[k] = v
 	m.items = md.items.map(func(a): return p_from(w, a)).filter(func(p): return p != null)
 	m.out_queue = md.out.map(func(e): return [p_from(w, e[0]), int(e[1])]).filter(func(e): return e[0] != null)

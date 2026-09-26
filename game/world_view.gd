@@ -432,10 +432,12 @@ func _draw_structures() -> void:
 func _draw_links(vr: Rect2i) -> void:
 	var vr_links := vr.grow(1)
 	for m in world.machines.values():
-		if not m is Cannon:
-			continue
 		var links: Array = []
-		if world.machines.has(m.config.target):
+		var sh: Dictionary = m.config.get("shot", {})
+		for k in sh:
+			if world.machines.has(int(sh[k])):
+				links.append([int(sh[k]), Color(0.4, 1.0, 0.5, 0.45) if k == "0" else Color(0.6, 0.85, 1.0, 0.45)])
+		if m is Cannon and world.machines.has(m.config.target):
 			links.append([m.config.target, Color(1, 1, 1, 0.25)])
 		for r in m.config.get("routes", []):
 			if world.machines.has(int(r[1])):

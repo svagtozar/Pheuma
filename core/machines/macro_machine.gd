@@ -140,6 +140,8 @@ func setup(w, p_mb: Dictionary, p_rot: int, subs: Array) -> void:
 					var t = by_off.get(Vector2i(int(r[1][0]), int(r[1][1])))
 					if t != null:
 						m.config.routes.append([r[0], t.id])
+			elif key == "shot":
+				m.config.shot = Macroblocks.shot_from_offsets(v, by_off)
 			else:
 				m.config[key] = v
 	for wr in mb.wires:

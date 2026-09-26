@@ -304,7 +304,9 @@ B — постройки. ЛКМ — поставить, R — повернут�
 X — снос (возврат половины материала). ЛКМ по машине — инспектор и настройки.
 Q — положить 1 кг выбранного в машину под курсором (Ctrl — 5 кг, Shift — в боковой вход: реагент/источник).
 T — забрать груз из машины под курсором.
-L — навести пневмопушку: клик по пушке, затем по приёмнику.
+L — навести пневмопушку: клик по пушке, затем по приёмнику. Любая машина с выходом тоже стреляет
+   грузом: L → клик по машине → по цели (Shift — второй выход). Нужно 2 атм в ней или в трубе рядом.
+   Так звенья цепочки можно разнести — у каждого своя газовая сеть и своё давление.
 V — провод: клик по источнику сигнала, затем по приёмнику (Shift — во второй вход гейта).
    Провод делается из выбранного материала; проводящий дотягивается дальше.
    ЛКМ по проводу — добавить путевую точку, тянуть — двигать, ПКМ по точке — удалить.
@@ -1123,6 +1125,31 @@ func _config_buttons(m: Machine, grid) -> void:
 		_btn("Выдача: %s" % ("да" if m.config.pass_through else "нет"), func(): m.config.pass_through = not m.config.pass_through)
 	if m.config.has("tag"):
 		_btn("Тег: %s ▶" % MaterialTags.display(m.config.tag), func(): m.config.tag = _next_tag(m.config.tag))
+	if not m is Cannon and not m is MacroMachine:
+		for idx in m.outputs():
+			var i: int = idx
+			var nm := "Выход" if m.outputs() == 1 else ("Выход прямо" if i == 0 else "Выход вправо")
+			var cur := m.shot_target(i)
+			var tgt = grid.machines.get(cur)
+			if inside:
+				_btn("%s: %s ▶" % [nm, ("выстрел → " + tgt.display_name()) if tgt != null else "соседу"], func():
+					var sh: Dictionary = m.config.get("shot", {}).duplicate()
+					var nxt := _next_receiver(m, grid, cur)
+					if nxt >= 0:
+						sh[str(i)] = nxt
+					else:
+						sh.erase(str(i))
+					m.config.shot = sh)
+			elif tgt != null:
+				_btn("%s: выстрел → %s %d,%d ✕" % [nm, tgt.display_name(), tgt.cell.x, tgt.cell.y], func():
+					var sh: Dictionary = m.config.get("shot", {}).duplicate()
+					sh.erase(str(i))
+					m.config.shot = sh)
+			else:
+				_btn("%s: выстрелом в цель (L)" % nm, func():
+					main.set_mode("link")
+					main.pending_cell = m.cell
+					main._link_idx = i)
 	if m.config.has("target_t"):
 		_btn("T −100", func(): m.config.target_t = max(100.0, m.config.target_t - 100.0))
 		_btn("T +100", func(): m.config.target_t += 100.0)

@@ -137,6 +137,7 @@ func destroy(m: Machine, reason: String) -> void:
 	grid.erase(m.cell)
 	gas.remove_node(m.id)
 	logic.remove_machine(m.id)
+	Machine.drop_shot_links(machines, m.id)
 
 func launch_orbit(payload: Array, _c: Vector2i) -> void:
 	parent.launch_orbit(payload, host.cell)

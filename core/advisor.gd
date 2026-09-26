@@ -32,7 +32,9 @@ static func diagnose(w: World) -> Dictionary:
 	for id in ids:
 		var m: Machine = w.machines[id]
 		var name := "«%s» %d,%d" % [m.display_name(), m.cell.x, m.cell.y]
-		if not m.out_queue.is_empty():
+		if not m.out_queue.is_empty() and m.status.begins_with("выстрел: мало давления"):
+			return _r("%s стреляет выходом, но нет давления — поставьте насос или трубу от насоса вплотную (%.0f атм)." % [name, Machine.SHOT_P], m.cell)
+		if not m.out_queue.is_empty() and m.shot_target(int(m.out_queue[0][1])) < 0:
 			var oc: Vector2i = m.out_cell(int(m.out_queue[0][1]))
 			var t = w.machine_at(oc)
 			if t == null:
@@ -41,6 +43,16 @@ static func diagnose(w: World) -> Dictionary:
 				return _r("«%s» %d,%d полон — поставьте за ним ещё один или заберите груз (T у хранилища)." % [t.display_name(), oc.x, oc.y], oc)
 		if m is Processor and m.status.begins_with("мало давления") and not _has_pump(w, m):
 			return _r("%s: %s — поставьте насос вплотную или протяните трубу от насоса." % [name, m.status], m.cell)
+		if m is Processor and m.status.begins_with("мало давления"):
+			var need: float = m.need_p if m.need_p > 0.0 else m.proc.get("gas_min", 0.0)
+			var weak = _weak_link(w, m, need)
+			if weak != null:
+				return _r("«%s» нужно %.1f атм, а «%s» %d,%d в той же газовой сети держит %.1f. Разнесите: пусть машина перед ней стреляет грузом через пустую клетку (L), а у «%s» будут свои насосы." % [
+					m.display_name(), need, weak.display_name(), weak.cell.x, weak.cell.y, weak.stats.get("max_p", 0.0) * 0.95, m.display_name()], weak.cell)
+			var pmp = _weak_pump(w, m, need)
+			if pmp != null:
+				return _r("Насос %d,%d из %s держит только %.1f атм, а «%s» нужно %.1f — поставьте насос из прочного материала (твёрдый, плотный, упругий)." % [
+					pmp.cell.x, pmp.cell.y, pmp.built_from.name, pmp.stats.max_p * 0.95, m.display_name(), need], pmp.cell)
 		if m is Cannon and not m.is_silo() and m.status.begins_with("нет цели"):
 			return _r("Пушке %d,%d некуда стрелять — L: клик по пушке, затем по приёмнику." % [m.cell.x, m.cell.y], m.cell)
 		if m is Cannon and not m.items.is_empty() and not _has_pump(w, m):
@@ -49,22 +61,46 @@ static func diagnose(w: World) -> Dictionary:
 			return _r("Залежь под буром %d,%d кончилась — снесите бур и поставьте на другую." % [m.cell.x, m.cell.y], m.cell)
 	return {}
 
-## Есть ли насос в той же газовой сети.
-static func _has_pump(w: World, m: Machine) -> bool:
+## Машины той же газовой сети.
+static func _net(w: World, m: Machine) -> Array:
+	var out: Array = []
 	if not w.gas.has_node(m.id):
-		return false
+		return out
 	var seen := {m.id: true}
 	var queue: Array = [m.id]
 	while not queue.is_empty():
 		var id: int = queue.pop_back()
 		var x = w.machines.get(id)
-		if x != null and x.kind == "pump":
-			return true
+		if x != null:
+			out.append(x)
 		for n in w.gas.neighbors(id):
 			if not seen.has(n):
 				seen[n] = true
 				queue.append(n)
-	return false
+	return out
+
+## Есть ли насос в той же газовой сети.
+static func _has_pump(w: World, m: Machine) -> bool:
+	return _net(w, m).any(func(x): return x.kind == "pump")
+
+## Машина сети (не насос), чей материал не держит нужное давление.
+static func _weak_link(w: World, m: Machine, need: float):
+	for x in _net(w, m):
+		if x != m and x.kind != "pump" and x.stats.get("max_p", INF) * 0.95 < need:
+			return x
+	return null
+
+## Насос сети, упёршийся в предел своего материала ниже нужного.
+static func _weak_pump(w: World, m: Machine, need: float):
+	var strong := false
+	var weak = null
+	for x in _net(w, m):
+		if x.kind == "pump":
+			if x.stats.max_p * 0.95 >= need:
+				strong = true
+			elif weak == null:
+				weak = x
+	return null if strong else weak
 
 # ---------------------------------------------------------------- шаг к этапу
 
