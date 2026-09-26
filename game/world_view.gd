@@ -87,7 +87,23 @@ func _draw() -> void:
 	_draw_projectiles()
 	_draw_tool_preview()
 	_draw_hover()
+	_draw_advice(vr)
 	prof_draw_us += Time.get_ticks_usec() - t0
+
+## Куда показывает совет: кольцо на клетке, а если она за краем экрана — стрелка у робота.
+func _draw_advice(vr: Rect2i) -> void:
+	if main == null or main.hud == null or main.hud.advice.is_empty() or main.hud.advice.cell == null:
+		return
+	var c: Vector2i = main.hud.advice.cell
+	var col := Color(0.6, 0.95, 0.75, 0.55 + 0.35 * sin(_t * 4.0))
+	if vr.has_point(c):
+		draw_arc(cell_center(c), T * (0.62 + 0.06 * sin(_t * 4.0)), 0.0, TAU, 24, col, 2.5)
+		return
+	var from := world.robot.pos * T
+	var dir := (cell_center(c) - from).normalized()
+	var tip := from + dir * T * 1.6
+	var side := Vector2(-dir.y, dir.x) * 7.0
+	draw_colored_polygon(PackedVector2Array([tip, tip - dir * 12.0 + side, tip - dir * 12.0 - side]), col)
 
 ## Чанки карты: создаются под мир, перезапекаются раз в 0,25 с, если изменились
 ## (видимые — сразу, остальные — по одному за проверку).

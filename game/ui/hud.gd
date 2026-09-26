@@ -7,6 +7,10 @@ var world: World
 
 var info_label: Label
 var goal_label: Label
+var advice_label: Label
+var advice_on := true
+var advice := {}          # последний совет: {text, cell}
+var _adv_t := 0.0
 var log_label: Label
 var status_label: Label
 var msg_label: Label
@@ -135,7 +139,14 @@ func _build() -> void:
 	var tl := _panel(Vector2(8, 8), Vector2(330, 0))
 	info_label = _label(tl, 12)
 	var tr := _panel(Vector2(-488, 8), Vector2(480, 0), Control.PRESET_TOP_RIGHT)
-	goal_label = _label(tr, 13)
+	var trv := VBoxContainer.new()
+	tr.add_child(trv)
+	goal_label = _label(trv, 13)
+	goal_label.custom_minimum_size = Vector2(464, 0)
+	advice_label = _label(trv, 12)
+	advice_label.add_theme_color_override("font_color", Color(0.6, 0.95, 0.75))
+	advice_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	advice_label.custom_minimum_size = Vector2(464, 0)
 
 	var invp := _panel(Vector2(8, 190), Vector2(330, 0))
 	var iv := VBoxContainer.new()
@@ -688,6 +699,12 @@ func refresh() -> void:
 		p.name, p.seed_value, ", ".join(p.tags.map(func(t): return PlanetTags.display(t))),
 		p.ambient_temp, p.atm_pressure, p.gravity, r.knowledge, r.known_tags.size(), world.machines.size(), world.machine_limit()]
 	goal_label.text = world.goals.text()
+	_adv_t -= 0.1
+	if _adv_t <= 0.0:
+		_adv_t = 0.5
+		advice = Advisor.advise(world) if advice_on and main.tutorial == null else {}
+		advice_label.text = ("Совет: " + advice.text) if not advice.is_empty() else ""
+		advice_label.visible = not advice.is_empty()
 	var ev: Array = world.events.slice(max(0, world.events.size() - 9))
 	log_label.text = "\n".join(ev.map(func(e): return e.text))
 	var abil: Array = []

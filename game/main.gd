@@ -209,6 +209,8 @@ func apply_settings() -> void:
 	ui_scale = float(st.get("ui_scale", 1.0))
 	ui_layer.scale = Vector2(ui_scale, ui_scale)
 	autosave_every = float(st.get("autosave", 120.0))
+	if hud != null:
+		hud.advice_on = st.get("advice", true)
 	if DisplayServer.get_name() != "headless":
 		var full: bool = st.get("fullscreen", false)
 		var cur := DisplayServer.window_get_mode()

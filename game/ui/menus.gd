@@ -220,6 +220,7 @@ var vol_slider: HSlider
 var scale_slider: HSlider
 var scale_label: Label
 var full_check: CheckBox
+var advice_check: CheckBox
 var autosave_opt: OptionButton
 const AUTOSAVE := [0.0, 60.0, 120.0, 300.0]
 const AUTOSAVE_NAMES := ["выключено", "каждую минуту", "каждые 2 минуты", "каждые 5 минут"]
@@ -260,6 +261,11 @@ func _build_settings() -> void:
 	full_check.text = "включить"
 	full_check.toggled.connect(func(on): main.set_setting("fullscreen", on); main.apply_settings())
 	g.add_child(full_check)
+	add_label.call("Советы «что дальше»")
+	advice_check = CheckBox.new()
+	advice_check.text = "показывать"
+	advice_check.toggled.connect(func(on): main.set_setting("advice", on); main.apply_settings())
+	g.add_child(advice_check)
 	add_label.call("Автосохранение")
 	autosave_opt = OptionButton.new()
 	for i in AUTOSAVE_NAMES.size():
@@ -274,6 +280,7 @@ func open_settings(back: String) -> void:
 	vol_slider.set_value_no_signal(float(st.get("volume", 0.8)))
 	scale_slider.value = float(st.get("ui_scale", 1.0))
 	full_check.set_pressed_no_signal(st.get("fullscreen", false))
+	advice_check.set_pressed_no_signal(st.get("advice", true))
 	autosave_opt.select(max(0, AUTOSAVE.find(float(st.get("autosave", 120.0)))))
 	show_panel("settings")
 
