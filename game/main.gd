@@ -746,6 +746,7 @@ func run_uitest() -> void:
 	menus.open_slots("save", "pause")
 	await get_tree().process_frame
 	var save_btn := _find_button(menus.slots_box, "Сохранить")
+	var saved := save_btn != null
 	if save_btn: save_btn.pressed.emit()
 	await get_tree().process_frame
 	var n_before := w.machines.size()
@@ -755,10 +756,10 @@ func run_uitest() -> void:
 	if load_btn: load_btn.pressed.emit()
 	await get_tree().process_frame
 	var loaded_ok: bool = world != w and world.machines.size() == n_before and not menus.any_open()
-	print("[uitest] слот: сохранён=", save_btn != null, " загружен=", loaded_ok, " машин ", world.machines.size(), "/", n_before)
+	print("[uitest] слот: сохранён=", saved, " загружен=", loaded_ok, " машин ", world.machines.size(), "/", n_before)
 	SaveGame.delete_slot("slot1")
 	SaveGame.DIR = old_dir
-	_finish_autotest(w.robot.has_module("hook") and placed != null and loaded_ok)
+	_finish_autotest(w.robot.has_module("hook") and placed != null and saved and loaded_ok)
 
 func _find_button(root: Node, text_part: String) -> Button:
 	for c in root.find_children("*", "Button", true, false):
