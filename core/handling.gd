@@ -23,7 +23,24 @@ static func safe_to_carry(s: Substance, planet: Planet, safe_fire: bool = false)
 
 static func new_result() -> Dictionary:
 	return {"lost": 0.0, "spawn": [], "jammed": null, "robot_damage": 0.0, "container_damage": 0.0,
-		"fire": false, "signal": false, "absorb_gas": 0.0, "crawl": false, "events": [], "discovered": []}
+		"fire": false, "signal": false, "absorb_gas": 0.0, "crawl": false, "events": [], "discovered": [],
+		"revealed": []}
+
+## Наблюдение: если эффект правила что-то заметно сделал, его тег выдаёт себя.
+static func _snap(res: Dictionary, p: Portion) -> Array:
+	return [res.lost, res.container_damage, res.spawn.size(), res.fire, res.signal, res.robot_damage,
+		res.absorb_gas, res.crawl, res.jammed != null, p.mass, p.temp, p.substance]
+
+static func _observe(r: Dictionary, before: Array, res: Dictionary, p: Portion) -> void:
+	var after := _snap(res, p)
+	for i in before.size():
+		var a = before[i]
+		var b = after[i]
+		var changed: bool = (abs(float(a) - float(b)) > 0.0005) if typeof(a) == TYPE_FLOAT else a != b
+		if changed:
+			if not r.tag in res.revealed:
+				res.revealed.append(r.tag)
+			return
 
 ## Непрерывные эффекты за dt секунд.
 static func tick(p: Portion, ctx: String, env: Dictionary, dt: float) -> Dictionary:
@@ -61,7 +78,9 @@ static func tick(p: Portion, ctx: String, env: Dictionary, dt: float) -> Diction
 						ok = true
 				if not ok:
 					continue
+			var before := _snap(res, p)
 			_apply(r, p, mass0, phase, ctx, env, dt, res)
+			_observe(r, before, res, p)
 
 	# Среда планеты действует на открыто лежащие порции через таблицу взаимодействий.
 	if (ctx == "open" or ctx == "ground") and rng.chance(0.03 * dt):
@@ -84,7 +103,9 @@ static func event(p: Portion, ctx: String, env: Dictionary) -> Dictionary:
 	for tag in p.substance.tags:
 		for r in HandlingRules.rules_for(tag):
 			if ctx in r.ctx:
+				var before := _snap(res, p)
 				_apply(r, p, mass0, p.phase(), ctx, env, 1.0, res)
+				_observe(r, before, res, p)
 	return res
 
 static func _relax_temperature(p: Portion, ctx: String, env: Dictionary, dt: float) -> void:

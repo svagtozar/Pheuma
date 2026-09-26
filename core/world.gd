@@ -65,8 +65,10 @@ func _init(p: Planet) -> void:
 	robot.last_safe = p.spawn
 	robot.add_item(Portion.new(starter, 60.0, p.ambient_temp))
 	robot.analyzed[starter.id] = true
+	robot.sub_known[starter.id] = {"_done": true}
 	for t in starter.tags:
 		robot.known_tags[t] = true
+		robot.sub_known[starter.id][t] = true
 	robot.hull = robot.new_module("hull", starter, 0.0)
 	robot.drill = robot.new_module("hand_drill", starter, 0.0)
 	robot.hp = robot.max_hp()
@@ -114,13 +116,17 @@ func machine_at(c: Vector2i):
 func machines_of(kind: String) -> Array:
 	return machines.values().filter(func(m): return m.kind == kind)
 
+## Имя вещества с тем, что о нём известно: известные теги и «+N ?».
 func sub_label(s: Substance) -> String:
 	if s == null:
 		return "—"
-	if robot.analyzed.has(s.id):
-		return "%s [%s]" % [s.name, s.tag_names()]
-	return "%s [?]" % s.name
+	var known: Array = known_tags_of(s).map(func(t): return MaterialTags.display(t))
+	var n := unknown_count(s)
+	if n > 0:
+		known.append("+%d ?" % n)
+	return "%s [%s]" % [s.name, ", ".join(known) if not known.is_empty() else "?"]
 
+## Касались ли вещества (физика известна).
 func is_analyzed(s: Substance) -> bool:
 	return robot.analyzed.has(s.id)
 
@@ -177,26 +183,185 @@ func discover_interaction(key: String) -> void:
 	var a := PlanetTags.display(parts[0]) if PlanetTags.TAGS.has(parts[0]) else MaterialTags.display(parts[0])
 	log_event(robot_cell(), "Открыто взаимодействие: «%s» → «%s»" % [a, MaterialTags.display(parts[1])])
 
+# ---- знание о веществах: теги открываются по одному (касание, пробы, наблюдение)
+
+func _known(s: Substance) -> Dictionary:
+	if not robot.sub_known.has(s.id):
+		robot.sub_known[s.id] = {}
+	return robot.sub_known[s.id]
+
+func known_tags_of(s: Substance) -> Array:
+	var k: Dictionary = robot.sub_known.get(s.id, {})
+	return s.tags.filter(func(t): return k.get(t, false) == true)
+
+func excluded_of(s: Substance) -> Array:
+	var k: Dictionary = robot.sub_known.get(s.id, {})
+	var out: Array = k.keys().filter(func(t): return k[t] == false)
+	out.sort()
+	return out
+
+func unknown_count(s: Substance) -> int:
+	return s.tags.size() - known_tags_of(s).size()
+
+func is_identified(s: Substance) -> bool:
+	return s != null and unknown_count(s) == 0
+
+## Какие теги ещё возможны: не исключены, не известны и совместимы с известными.
+func possible_of(s: Substance) -> Array:
+	var k: Dictionary = robot.sub_known.get(s.id, {})
+	var known := known_tags_of(s)
+	var out: Array = []
+	for t in MaterialTags.all():
+		if k.has(t):
+			continue
+		if MaterialTags.is_exotic(t) and not robot.known_tags.has(t):
+			continue   # о невозможном, которого ещё не встречали, и не догадаться
+		var ok := true
+		for kt in known:
+			if not MaterialTags.compatible(kt, t):
+				ok = false
+		if ok:
+			out.append(t)
+	out.sort()
+	return out
+
+## Тег вещества стал известен (why — как это выяснилось).
+func reveal(s: Substance, tag: String, why: String = "") -> void:
+	if s == null or not tag in s.tags:
+		return
+	var k := _known(s)
+	if k.get(tag, false) == true:
+		return
+	k[tag] = true
+	discover_tag(tag)
+	if why != "":
+		log_event(robot_cell(), "%s: %s → «%s»" % [s.name, why, MaterialTags.display(tag)])
+	_check_identified(s)
+
+func exclude(s: Substance, tag: String) -> void:
+	if s == null or tag in s.tags:
+		return
+	var k := _known(s)
+	if not k.has(tag):
+		k[tag] = false
+
+func _check_identified(s: Substance) -> void:
+	var k := _known(s)
+	if unknown_count(s) == 0 and not k.get("_done", false):
+		k["_done"] = true
+		robot.knowledge += 1
+		robot.xp.shaman += 3
+		log_event(robot_cell(), "Материал опознан: %s — %s (+1 знание)" % [s.name, s.tag_names()])
+
+## Касание: физика и то, что видно глазом.
+func touch(s: Substance) -> void:
+	if s == null:
+		return
+	var first := not robot.analyzed.has(s.id)
+	robot.analyzed[s.id] = true
+	if first:
+		robot.xp.shaman += 1
+		log_event(robot_cell(), "Касание: %s — твёрдость %.1f, плотность %.1f, плавится %.0f °C, кипит %.0f °C (%s)" % [
+			s.name, s.hardness, s.density, s.melt, s.boil, Substance.PHASE_NAMES[s.phase_at(planet.ambient_temp)]])
+	for t in Probes.VISIBLE:
+		if t in s.tags:
+			reveal(s, t, Probes.SIGNS[t][0])
+		else:
+			exclude(s, t)
+	_check_identified(s)
+
+## Залежь этого вещества рядом с роботом, из которой можно взять образец (или null).
+func probe_deposit(sub_id: String):
+	for c in planet.deposits:
+		var dep: Dictionary = planet.deposits[c]
+		if dep.sub == sub_id and dep.amount >= probe_cost() and near_robot(c, 2.2):
+			return c
+	return null
+
+## Почему пробу нельзя провести ("" — можно). Образец — из инвентаря или из залежи рядом.
+func probe_error(sub_id: String, probe_id: String) -> String:
+	var d: Dictionary = Probes.PROBES[probe_id]
+	if robot.mass_of(sub_id) + 0.001 < probe_cost() and probe_deposit(sub_id) == null:
+		return "нужно %.1f кг образца (в инвентаре или в залежи рядом)" % probe_cost()
+	if robot.tank + 0.001 < d.gas:
+		return "мало газа в баллоне (G — подкачать)"
+	return ""
+
+func probe_cost() -> float:
+	return Probes.SAMPLE_KG * (0.5 if robot.passive("auto_analyze") > 0 else 1.0)
+
+## Проба образца из инвентаря. Возвращает текст результата (или причину отказа).
+func probe(sub_id: String, probe_id: String, free: bool = false) -> String:
+	var s: Substance = db.get_sub(sub_id)
+	if s == null:
+		return "нет такого вещества"
+	if not free:
+		var err := probe_error(sub_id, probe_id)
+		if err != "":
+			return err
+		if robot.mass_of(sub_id) + 0.001 >= probe_cost():
+			robot.take_item(sub_id, probe_cost())
+		else:
+			planet.deposits[probe_deposit(sub_id)].amount -= probe_cost()
+		robot.tank -= Probes.PROBES[probe_id].gas
+	touch(s)   # образец в руках — видимое заметно само
+	var yes: Array = []
+	var no: Array = []
+	for t in Probes.PROBES[probe_id].tags:
+		if t in s.tags:
+			yes.append(Probes.SIGNS[t][0])
+			reveal(s, t)
+		else:
+			if MaterialTags.is_exotic(t) and not robot.known_tags.has(t):
+				continue   # незнакомое невозможное проба не называет
+			no.append(Probes.SIGNS[t][1])
+			exclude(s, t)
+	robot.xp.shaman += 1.0
+	var text := "%s, %s: %s" % [Probes.PROBES[probe_id].n, s.name, "; ".join(yes) if not yes.is_empty() else "ничего особенного"]
+	if not no.is_empty():
+		text += " (%s)" % ", ".join(no)
+	log_event(robot_cell(), text)
+	robot.last_probe = "%s, %s: %s%s" % [Probes.PROBES[probe_id].n, s.name, "; ".join(yes) if not yes.is_empty() else "ничего особенного",
+		(" (исключено: %d)" % no.size()) if not no.is_empty() else ""]
+	_check_identified(s)
+	return ""
+
+## Полное раскрытие (награды, особые случаи): все теги известны.
 func analyze(s: Substance) -> void:
 	if s == null:
 		return
-	if not robot.analyzed.has(s.id):
-		robot.analyzed[s.id] = true
-		robot.knowledge += 1
-		robot.xp.shaman += 2
-		log_event(robot_cell(), "Анализ: %s — %s" % [s.name, s.tag_names()])
+	robot.analyzed[s.id] = true
 	for t in s.tags:
-		discover_tag(t)
+		reveal(s, t)
+	_check_identified(s)
+
+## Знание переходит на производное вещество: известное у входа и оставшееся,
+## добавленное машиной, исключённое (если машина его не добавила).
+func inherit_knowledge(src: Substance, dst: Substance, added: Array = []) -> void:
+	if src == null or dst == null or src == dst:
+		return
+	var ks: Dictionary = robot.sub_known.get(src.id, {})
+	if robot.analyzed.has(src.id):
+		robot.analyzed[dst.id] = true
+	for t in ks:
+		if t == "_done":
+			continue
+		if ks[t] == true and t in dst.tags:
+			reveal(dst, t)
+		elif ks[t] == false and not t in dst.tags:
+			exclude(dst, t)
+	for t in added:
+		reveal(dst, t)
 
 ## Вызывается процессором после цикла: теги, добавленные машиной, становятся известны.
 func on_processed(m: Machine, input: Portion, res: Dictionary) -> void:
 	for k in res.keys:
 		discover_interaction(k)
+	# Наблюдение: сработавшее правило выдаёт теги входа («печь: сгорело → горючий»).
+	for t in res.get("matched", []):
+		reveal(input.substance, t, "%s: сработало" % m.display_name())
 	for o in res.outs:
-		var s: Substance = o[0].substance
-		if is_analyzed(input.substance) or s != input.substance:
-			if is_analyzed(input.substance):
-				robot.analyzed[s.id] = true
+		inherit_knowledge(input.substance, o[0].substance, res.added)
 	for t in res.added:
 		discover_tag(t)
 	stats.processed += 1
@@ -443,7 +608,7 @@ func mine(c: Vector2i, dt: float) -> String:
 		robot.xp.gatherer += 1.0
 		sound("tick", c)
 		if robot.passive("auto_analyze") > 0:
-			analyze(sub)
+			touch(sub)
 		if not robot.can_carry(p):
 			drop_portions(c, [p])
 			return "это %s — без газозаборника не унести, ставьте бур и бак" % Substance.PHASE_NAMES[p.phase()]
@@ -472,7 +637,7 @@ func _excavate(c: Vector2i, dt: float) -> String:
 	else:
 		drop_portions(c, [p])
 	if not is_analyzed(sub) and robot.passive("auto_analyze") > 0:
-		analyze(sub)
+		touch(sub)
 	if ruin_dug[c] >= RUIN_KG:
 		planet.set_tile(c, Planet.Tile.GROUND)
 		ruin_dug.erase(c)
@@ -646,7 +811,9 @@ func _land(pr: Dictionary) -> void:
 				fires[c] = 6.0
 	var extra: Array = []
 	for p in payload:
+		var s0: Substance = p.substance
 		var r := Handling.event(p, "impact", handling_env(null, "impact"))
+		observe(r, s0)
 		extra.append_array(r.spawn)
 	payload.append_array(extra)
 	var m = machine_at(c)
@@ -829,15 +996,24 @@ func handling_env(m, ctx: String) -> Dictionary:
 		"neighbors": m.items if m != null else [], "hot_nearby": hot,
 		"shield": robot.shield(), "safe_fire": robot.passive("safe_fire") > 0, "corrosion": event_mods.corrosion}
 
-func _apply_handling_result(res: Dictionary, c: Vector2i) -> void:
+func _apply_handling_result(res: Dictionary, c: Vector2i, sub: Substance = null) -> void:
 	for k in res.discovered:
 		discover_interaction(k)
+	observe(res, sub)
 	if res.fire:
 		fires[c] = max(fires.get(c, 0.0), 1.5)
 	for e in res.events:
 		log_event(c, e)
 
 ## Правила обращения для груза машин сетки (мира или свёрнутого макроблока).
+## Наблюдение: эффекты обращения, которые заметно сработали, выдают теги вещества.
+func observe(res: Dictionary, sub: Substance) -> void:
+	if sub == null:
+		return
+	for t in res.get("revealed", []):
+		var r: Array = HandlingRules.rules_for(t)
+		reveal(sub, t, "замечено — " + (r[0].desc.to_lower().trim_suffix(".") if not r.is_empty() else "ведёт себя странно"))
+
 func handle_machines(grid, dt: float, event_cell = null) -> void:
 	for m in grid.machines.values().duplicate():
 		if not grid.machines.has(m.id):
@@ -855,6 +1031,7 @@ func handle_machines(grid, dt: float, event_cell = null) -> void:
 		var spawn: Array = []
 		var ec: Vector2i = event_cell if event_cell != null else m.cell
 		for p in m.items:
+			var s0: Substance = p.substance
 			var res := Handling.tick(p, m.handling_ctx(), env, dt)
 			m.hp = min(m.max_hp(), m.hp - res.container_damage * m.stats.wear)
 			spawn.append_array(res.spawn)
@@ -864,7 +1041,7 @@ func handle_machines(grid, dt: float, event_cell = null) -> void:
 				grid.gas.take_gas(m.id, res.absorb_gas)
 			if m.stats.leaky:
 				p.mass *= 1.0 - min(1.0, 0.05 * dt)
-			_apply_handling_result(res, ec)
+			_apply_handling_result(res, ec, s0)
 		m.items = m.items.filter(func(p): return p.mass > 0.01)
 		for p in spawn:
 			if not m.accept(p, m.cell):
@@ -881,8 +1058,9 @@ func _tick_handling(dt: float) -> void:
 			"hot_nearby": fires.has(c) or _hot_near(c), "shield": {}}
 		var crawl := false
 		for p in arr:
+			var s0: Substance = p.substance
 			var res := Handling.tick(p, "ground", env, dt)
-			_apply_handling_result(res, c)
+			_apply_handling_result(res, c, s0)
 			if res.crawl:
 				crawl = true
 			if fires.has(c) and (p.has("flammable") or p.has("pyrophoric")):
@@ -901,10 +1079,11 @@ func _tick_handling(dt: float) -> void:
 		"cold_pack": robot.has_module("cold_pack")}
 	for id in robot.inventory.keys():
 		var p: Portion = robot.inventory[id]
+		var s0: Substance = p.substance
 		var res := Handling.tick(p, "carried", renv, dt)
 		robot.damage(res.robot_damage)
 		robot.xp.hunter += res.robot_damage * 0.2
-		_apply_handling_result(res, robot_cell())
+		_apply_handling_result(res, robot_cell(), s0)
 		if p.substance.id != id:
 			robot.inventory.erase(id)
 			robot.add_item(p)
@@ -979,7 +1158,7 @@ func _tick_robot(dt: float) -> void:
 			if robot.can_carry(p):
 				robot.add_item(p)
 				if robot.passive("auto_analyze") > 0:
-					analyze(p.substance)
+					touch(p.substance)
 			else:
 				keep.append(p)
 		if keep.is_empty():

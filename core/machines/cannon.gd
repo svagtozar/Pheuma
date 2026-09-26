@@ -92,7 +92,9 @@ func fire(w, p: float) -> void:
 	items = keep
 	var extra: Array = []
 	for q in payload:
+		var s0: Substance = q.substance
 		var r: Dictionary = Handling.event(q, "launch", w.handling_env(self, "launch"))
+		w.observe(r, s0)
 		extra.append_array(r.spawn)
 		if r.jammed != null:
 			store(r.jammed)

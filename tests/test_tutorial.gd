@@ -51,8 +51,11 @@ func test_tutorial_can_be_completed():
 	for i in 5:
 		w.mine(dep, 1.0)
 	tick.call(1)
-	# 3. Анализ
-	w.analyze(w.db.get_sub(w.planet.deposits[dep].sub))
+	# 3. Касание и проба
+	var ore_id: String = w.planet.deposits[dep].sub
+	w.touch(w.db.get_sub(ore_id))
+	r.tank = r.tank_cap()
+	assert_eq(w.probe(ore_id, "magnet"), "", "проба проходит")
 	tick.call(1)
 	# 4. Фабрикатор
 	var taken := {}

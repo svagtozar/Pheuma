@@ -32,8 +32,8 @@ const MODULES := {
 		"desc": "Притягивает порции с земли и ловит промахнувшиеся капсулы. Магнитный материал — сильнее."},
 	"sampler":    {"n": "Газозаборник", "cls": "gatherer", "slot": "ability", "active": true, "gas": 0.0, "cd": 5.0, "target": "self", "cost": 5.0, "hard": 3.0,
 		"desc": "Позволяет носить жидкости и газы. Применение — взять пробу атмосферы и узнать её теги."},
-	"analyzer":   {"n": "Анализатор", "cls": "shaman", "slot": "ability", "active": true, "gas": 0.2, "cd": 0.5, "target": "point", "cost": 4.0, "hard": 1.5,
-		"desc": "Мгновенно раскрывает теги материала под курсором (залежь, земля, машина)."},
+	"analyzer":   {"n": "Анализатор", "cls": "shaman", "slot": "ability", "active": true, "gas": 0.2, "cd": 8.0, "target": "point", "cost": 4.0, "hard": 1.5,
+		"desc": "Раскрывает один неизвестный тег у каждого вещества под курсором (залежь, земля, машина)."},
 	"predictor":  {"n": "Предсказатель реакций", "cls": "shaman", "slot": "ability", "cost": 4.0, "hard": 1.5,
 		"desc": "Инспектор показывает, что выйдет из машины, и рецепты тегов."},
 	"drone":      {"n": "Дрон-носильщик", "cls": "chief", "slot": "ability", "active": true, "gas": 0.5, "cd": 0.3, "target": "point", "cost": 8.0, "hard": 3.0,
@@ -49,7 +49,7 @@ const MODULES := {
 	"cold_pack":  {"n": "Холодильный ранец", "cls": "firekeeper", "slot": "ability", "cost": 5.0, "hard": 2.0,
 		"desc": "Груз в руках не греется и не вспыхивает: можно носить пирофорное и горячее."},
 	"tuning_fork": {"n": "Камертон", "cls": "shaman", "slot": "ability", "active": true, "gas": 0.5, "cd": 20.0, "target": "point", "cost": 4.0, "hard": 2.0,
-		"desc": "Звенит у курсора и раскрывает все вещества в радиусе 4: залежи, грунт, грузы и стенки машин. Кристаллический — радиус 6."},
+		"desc": "Звенит у курсора: касание всех веществ в радиусе 4 и бесплатная проба «Ток». Кристаллический — радиус 6."},
 }
 
 static func check_material(id: String, sub: Substance, ambient: float) -> String:

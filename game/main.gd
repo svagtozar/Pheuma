@@ -436,7 +436,7 @@ func _on_key(e: InputEventKey) -> void:
 func _touch_analyze() -> void:
 	var r := world.robot
 	if r.cooldowns.has("touch"):
-		say("анализ касанием перезаряжается")
+		say("касание перезаряжается")
 		return
 	var c := mouse_cell()
 	var subs: Array = []
@@ -445,10 +445,17 @@ func _touch_analyze() -> void:
 	if subs.is_empty() and r.selected != "":
 		subs = [world.db.get_sub(r.selected)]
 	if subs.is_empty():
-		say("нечего анализировать: подойдите вплотную или выберите материал в инвентаре")
+		say("нечего ощупать: подойдите вплотную к залежи или выберите материал в инвентаре")
 		return
 	for s in subs:
-		world.analyze(s)
+		world.touch(s)
+	# Залежь под курсором — её карточка с пробами появится в инвентаре.
+	var dep = world.planet.deposits.get(c)
+	if dep != null and world.near_robot(c, 1.8):
+		r.focus_sub = dep.sub
+		hud._inv_sig = ""
+		if hud.inv_collapsed:
+			hud.toggle_inventory()
 	r.cooldowns["touch"] = 3.0
 
 func use_slot(i: int) -> void:
@@ -807,6 +814,7 @@ func run_uitest() -> void:
 	var choice_ok: bool = w.goals.choices.has("1") and not w.goals.choice_pending()
 	print("[uitest] награда выбрана: ", reward_ok, ", путь выбран: ", choice_ok)
 	var macro_ok := await _uitest_macro(w)
+	var probe_ok := await _uitest_probe(w)
 	# Сохранение в слот через меню паузы и загрузка обратно.
 	var old_dir := SaveGame.DIR
 	SaveGame.DIR = "user://uitest_saves"
@@ -828,7 +836,39 @@ func run_uitest() -> void:
 	print("[uitest] слот: сохранён=", saved, " загружен=", loaded_ok, " машин ", world.machines.size(), "/", n_before)
 	SaveGame.delete_slot("slot1")
 	SaveGame.DIR = old_dir
-	_finish_autotest(w.robot.has_module("hook") and placed != null and saved and loaded_ok and reward_ok and choice_ok and macro_ok)
+	_finish_autotest(w.robot.has_module("hook") and placed != null and saved and loaded_ok and reward_ok and choice_ok and macro_ok and probe_ok)
+
+## Проба из карточки материала в инвентаре: кнопка «Нагрев» меняет известное или исключённое.
+func _uitest_probe(w: World) -> bool:
+	var s: Substance = null
+	for m in w.planet.materials:
+		if s == null and not w.is_identified(m) and m.phase_at(w.planet.ambient_temp) == Substance.Phase.SOLID:
+			s = m
+	if s == null:
+		print("[uitest] проба: нет неопознанного материала")
+		return true
+	w.robot.add_item(Portion.new(s, 3.0, w.planet.ambient_temp))
+	w.robot.selected = s.id
+	w.robot.tank = w.robot.tank_cap()
+	hud.inv_collapsed = false
+	hud._inv_sig = ""
+	await get_tree().process_frame
+	await get_tree().process_frame
+	hud._inv_sig = ""
+	hud._refresh_inventory()
+	var k0: int = w.known_tags_of(s).size() + w.excluded_of(s).size()
+	var btn := _find_button(hud.inv_box, "Нагрев")
+	var found := btn != null
+	if btn: btn.pressed.emit()
+	await get_tree().process_frame
+	var k1: int = w.known_tags_of(s).size() + w.excluded_of(s).size()
+	if screenshot_path != "":
+		hud._inv_sig = ""
+		await get_tree().process_frame
+		await get_tree().process_frame
+		_save_screenshot()
+	print("[uitest] проба «Нагрев»: кнопка ", found, ", известно+исключено ", k0, " → ", k1, " (", w.sub_label(s), ")")
+	return found and k1 > k0
 
 ## Схема «контейнер → фильтр → контейнер»: выделить рамкой, «Свернуть на месте»,
 ## в инспекторе блока сменить тег внутреннего фильтра, «Развернуть».
@@ -889,9 +929,6 @@ func _uitest_macro(w: World) -> bool:
 	var tag1: String = ifl.config.tag
 	print("[uitest] тег внутреннего фильтра: ", tag0, " → ", tag1)
 	await get_tree().process_frame
-	if screenshot_path != "":
-		await get_tree().process_frame
-		_save_screenshot()
 	var unf := _find_button(hud.inspector_buttons, "Развернуть")
 	if unf: unf.pressed.emit()
 	await get_tree().process_frame

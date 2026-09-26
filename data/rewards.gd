@@ -62,6 +62,6 @@ static func apply(w: World, id: String) -> String:
 			for c in w.planet.deposits:
 				if w.near_robot(c, 25.0):
 					w.revealed[c] = true
-					w.analyze(w.db.get_sub(w.planet.deposits[c].sub))
+					w.touch(w.db.get_sub(w.planet.deposits[c].sub))
 			return "Залежи вокруг раскрыты"
 	return ""

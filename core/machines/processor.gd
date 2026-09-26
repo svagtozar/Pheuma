@@ -113,7 +113,7 @@ func context(w) -> Dictionary:
 static func run(p_pid: String, p: Portion, ctx: Dictionary) -> Dictionary:
 	var pr: Dictionary = Processes.PROCESSES[p_pid]
 	var db: SubstanceDB = ctx.db
-	var res := {"outs": [], "gas": 0.0, "keys": [], "reagent_used": 0.0, "added": [], "note": ""}
+	var res := {"outs": [], "gas": 0.0, "keys": [], "reagent_used": 0.0, "added": [], "note": "", "matched": []}
 	var sub := p.substance
 	var phase_in := p.phase()
 	var temp := p.temp
@@ -169,6 +169,10 @@ static func run(p_pid: String, p: Portion, ctx: Dictionary) -> Dictionary:
 			res.note = "мало реагента (нужно %.1f кг)" % need
 			return res
 		res.reagent_used = need
+		for k in ir.keys:
+			var b: String = k.split(">")[1]
+			if b in sub.tags and not b in res.matched:
+				res.matched.append(b)
 		var gas_m: float = p.mass * ir.gas
 		res.gas = gas_m
 		res.keys = ir.keys
@@ -195,6 +199,10 @@ static func run(p_pid: String, p: Portion, ctx: Dictionary) -> Dictionary:
 				continue
 			if not Processes.rule_matches(rule, sub.tags, phase_out, pressure, temp, was_hot):
 				continue
+			# Наблюдение: теги из условия сработавшего правила выдают себя.
+			for t in rule.get("all", []) + rule.get("any", []):
+				if t in sub.tags and not t in res.matched:
+					res.matched.append(t)
 			for t in rule.get("remove", []):
 				tags.erase(t)
 			for t in rule.get("add", []):

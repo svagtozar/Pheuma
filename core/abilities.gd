@@ -107,8 +107,10 @@ static func tuning_fork(w: World, m: Dictionary, target: Vector2) -> String:
 				seen[s.id] = s
 	if seen.is_empty():
 		return "вокруг нечего слушать"
+	# Касание всего вокруг и бесплатная проба «Ток» — камертон звенит в ответ.
 	for s in seen.values():
-		w.analyze(s)
+		w.touch(s)
+		w.probe(s.id, "spark", true)
 	w.robot.xp.shaman += 1.0
 	w.log_event(c, "Камертон: веществ услышано — %d" % seen.size())
 	return ""
@@ -269,8 +271,16 @@ static func analyzer(w: World, _m: Dictionary, target: Vector2) -> String:
 	var subs := substances_at(w, c)
 	if subs.is_empty():
 		return "здесь нечего анализировать"
+	# Анализатор раскрывает по одному неизвестному тегу у каждого вещества в клетке.
+	var n := 0
 	for s in subs:
-		w.analyze(s)
+		w.touch(s)
+		var hidden: Array = s.tags.filter(func(t): return not t in w.known_tags_of(s))
+		if not hidden.is_empty():
+			w.reveal(s, w.rng.pick(hidden), "анализатор")
+			n += 1
+	if n == 0:
+		return "здесь всё уже известно"
 	return ""
 
 static func drone(w: World, m: Dictionary, target: Vector2) -> String:

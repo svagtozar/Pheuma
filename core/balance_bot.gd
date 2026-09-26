@@ -500,9 +500,8 @@ func farm_xp(cls: String) -> bool:
 func farm_knowledge() -> bool:
 	var k0 := w.robot.knowledge
 	for s in w.planet.materials:
-		if not w.is_analyzed(s) and not deposits_of(s).is_empty():
-			travel(deposits_of(s)[0])
-			w.analyze(s)
+		if not w.is_identified(s) and not deposits_of(s).is_empty():
+			_study(s)
 			if w.robot.knowledge > k0 + 1:
 				return true
 	for k in Buildings.KINDS:
@@ -589,6 +588,7 @@ func _experiment(max_tries: int = 8) -> bool:
 			travel(out.cell)
 			w.take_from(out.cell)
 			tries += 1
+	_probe_inventory()
 	return tries > 0
 
 func wait_until(cond: Callable, limit: float) -> bool:
@@ -821,6 +821,7 @@ func _excavate(mass: float) -> String:
 			if err != "":
 				note("раскопки: " + err)
 				return err
+		_probe_inventory()
 		# Артефакты не таскаем бесконечно — лишнее оставляем на месте.
 		for a in w.artifacts:
 			if w.robot.mass_of(a.id) > 6.0:
@@ -872,14 +873,53 @@ func _free_near(c: Vector2i) -> Vector2i:
 	return c
 
 func _lab() -> void:
-	# Образцы всех добываемых материалов и анализ.
+	# Образцы всех добываемых материалов: касание и пробы.
 	for s in w.planet.materials:
 		if not deposits_of(s).is_empty():
-			travel(deposits_of(s)[0])
-			w.analyze(s)
+			_study(s)
 			if minable(s):
-				mine_mass(s, 3.0)
+				mine_mass(s, w.robot.mass_of(s.id) + 3.0)
 	learn_what_we_can()
+
+## Пробы всего неопознанного в инвентаре (продукты лаборатории, артефакты).
+func _probe_inventory() -> void:
+	for id in w.robot.inventory.keys():
+		var s: Substance = w.db.get_sub(id)
+		if s == null or w.is_identified(s):
+			continue
+		for pid in Probes.ORDER:
+			if w.is_identified(s) or not w.robot.inventory.has(id):
+				break
+			var guard := 0
+			while w.robot.tank < Probes.PROBES[pid].gas + 0.05 and guard < 30:
+				guard += 1
+				w.refill_robot(1.0)
+				run(1.0)
+			if w.probe_error(id, pid) == "":
+				w.probe(id, pid)
+
+## Изучить материал как игрок: касание у залежи, накопать образец и провести все пробы.
+func _study(s: Substance) -> void:
+	var deps := deposits_of(s)
+	if deps.is_empty():
+		return
+	travel(deps[0])
+	w.touch(s)
+	if w.is_identified(s):
+		return
+	# Твёрдое — накопать образец в руки; жидкость и газ пробуются прямо на залежи.
+	if minable(s) and s.phase_at(w.planet.ambient_temp) == Substance.Phase.SOLID:
+		mine_mass(s, w.robot.mass_of(s.id) + 3.0)
+	travel(deps[0])
+	for id in Probes.ORDER:
+		if w.is_identified(s):
+			break
+		var guard := 0
+		while w.robot.tank < Probes.PROBES[id].gas + 0.05 and guard < 30:
+			guard += 1
+			w.refill_robot(1.0)
+			run(1.0)
+		w.probe(s.id, id)
 
 func _discover(st: Dictionary) -> String:
 	var idx: int = w.planet.goal.stages.find(st)

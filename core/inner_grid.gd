@@ -89,6 +89,9 @@ func sound(name: String, _c: Vector2i) -> void:
 func on_processed(m: Machine, input: Portion, res: Dictionary) -> void:
 	world.on_processed(m, input, res)
 
+func observe(res: Dictionary, sub: Substance) -> void:
+	world.observe(res, sub)
+
 func net_receiver(_c: Vector2i):
 	return null
 

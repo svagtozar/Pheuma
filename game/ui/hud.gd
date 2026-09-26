@@ -275,9 +275,12 @@ func _build() -> void:
 
 const HELP := """Движение — WASD / стрелки. Колесо мыши — масштаб.
 E (удерживать) — копать залежь под курсором или рядом.
-Z — анализ касанием: материал в соседней клетке или выбранный в инвентаре.
+Z — касание: физика материала рядом и видимые теги (блеск, грани, волокна…). Остальные теги скрыты:
+   в карточке выбранного материала (инвентарь) — пробы Нагрев, Капля, Магнит, Ток, Счётчик. Проба тратит
+   0.5 кг образца и говорит «есть/нет» про свой набор тегов. Что-то выдаёт только поведение: утечка из бака,
+   пламя в печи, рост в контейнере — следите за журналом. Карточка: Известно / Исключено / Возможно.
 Tab / [ ] — выбрать материал в инвентаре (или клик по строке). I — свернуть инвентарь.
-   У выбранного материала: «Анализ», «Выбросить». Наведите курсор на машину — полное имя и состояние.
+   У выбранного материала: пробы, «Выбросить». Наведите курсор на машину — полное имя и состояние.
 G (удерживать) — подкачать бортовой баллон (от бака/трубы рядом или вручную из атмосферы).
 
 B — постройки. ЛКМ — поставить, R — повернуть, ПКМ/Esc — отмена. Трубы можно тянуть.
@@ -645,6 +648,7 @@ func _rebuild_codex() -> void:
 			continue
 		var col := "#e0a8ff" if MaterialTags.is_exotic(t) else "#a8d8ff"
 		s += "[b][color=%s]%s[/color][/b]\n" % [col, MaterialTags.display(t)]
+		s += "  [color=#9fd8a0]распознать:[/color] %s\n" % Probes.how(t)
 		for rule in HandlingRules.rules_for(t):
 			s += "  · %s\n" % rule.desc
 		if recipes_ok:
@@ -787,8 +791,13 @@ func _refresh_inventory() -> void:
 	keys.sort_custom(func(a, b): return r.inventory[a].mass > r.inventory[b].mass)
 	var sig := "%s|" % inv_collapsed
 	for k in keys:
-		sig += "%s:%.1f:%s:%d;" % [k, r.inventory[k].mass, world.is_analyzed(world.db.get_sub(k)), r.inventory[k].phase()]
-	sig += r.selected
+		var ks: Substance = world.db.get_sub(k)
+		sig += "%s:%.1f:%s:%d:%d:%d;" % [k, r.inventory[k].mass, world.is_analyzed(ks), r.inventory[k].phase(),
+			world.known_tags_of(ks).size(), world.excluded_of(ks).size()]
+	sig += r.selected + ":%d:%s:%s" % [int(r.tank * 10.0), r.last_probe.length(), r.focus_sub]
+	var fs: Substance = world.db.get_sub(r.focus_sub) if r.focus_sub != "" else null
+	if fs != null:
+		sig += ":%d:%d:%s" % [world.known_tags_of(fs).size(), world.excluded_of(fs).size(), world.probe_deposit(fs.id) != null]
 	if sig == _inv_sig:
 		return
 	_inv_sig = sig
@@ -803,7 +812,8 @@ func _refresh_inventory() -> void:
 		e.text = "Пусто. Подойдите к залежи и держите E."
 	for k in keys:
 		inv_box.add_child(_inv_row(k, k == r.selected))
-	inv_scroll.custom_minimum_size.y = min(380.0, keys.size() * 46.0 + (40.0 if r.selected != "" else 0.0))
+	_deposit_card()
+	inv_scroll.custom_minimum_size.y = min(460.0, keys.size() * 46.0 + (190.0 if r.selected != "" else 0.0))
 
 func _inv_row(id: String, selected: bool) -> Control:
 	var r := world.robot
@@ -852,28 +862,19 @@ func _inv_row(id: String, selected: bool) -> Control:
 	tags.add_theme_font_size_override("font_size", 11)
 	tags.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	tags.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	if world.is_analyzed(s):
-		tags.text = s.tag_names() + "  · тв. %.1f" % s.hardness
-		tags.add_theme_color_override("font_color", Color(0.7, 0.78, 0.85))
-	else:
-		tags.text = "теги неизвестны — Z или кнопка «Анализ»"
+	var known: Array = world.known_tags_of(s).map(func(t): return MaterialTags.display(t))
+	var unknown := world.unknown_count(s)
+	if not world.is_analyzed(s) and known.is_empty():
+		tags.text = "не ощупан — Z рядом с залежью или выберите и сделайте пробу"
 		tags.add_theme_color_override("font_color", Color(1.0, 0.8, 0.4))
+	else:
+		tags.text = ", ".join(known) + (("  +%d ?" % unknown) if unknown > 0 else "  · опознан")
+		tags.add_theme_color_override("font_color", Color(0.7, 0.78, 0.85) if unknown == 0 else Color(0.95, 0.85, 0.6))
 	v.add_child(tags)
 	if selected:
+		_material_card(v, s)
 		var btns := HBoxContainer.new()
 		v.add_child(btns)
-		if not world.is_analyzed(s):
-			var an := Button.new()
-			an.text = "Анализ"
-			an.add_theme_font_size_override("font_size", 11)
-			an.pressed.connect(func():
-				if r.cooldowns.has("touch"):
-					main.say("анализ касанием перезаряжается")
-				else:
-					world.analyze(s)
-					r.cooldowns["touch"] = 3.0
-				_inv_sig = "")
-			btns.add_child(an)
 		for amt in [1.0, 5.0]:
 			var d := Button.new()
 			d.text = "Выбросить %.0f кг" % amt
@@ -891,6 +892,72 @@ func _inv_row(id: String, selected: bool) -> Control:
 			_inv_sig = "")
 		btns.add_child(all)
 	return card
+
+## Карточка расследования выбранного материала: физика, известное, исключённое,
+## возможное и пробы (каждая тратит образец).
+## Карточка залежи, которой коснулись (Z): пробы берут образец прямо из неё —
+## так можно изучить и жидкость или газ, которые не унести в руках.
+func _deposit_card() -> void:
+	var r := world.robot
+	if r.focus_sub == "" or r.inventory.has(r.focus_sub):
+		return
+	var s: Substance = world.db.get_sub(r.focus_sub)
+	if s == null or world.probe_deposit(s.id) == null:
+		return
+	var card := PanelContainer.new()
+	var sb := StyleBoxFlat.new()
+	sb.bg_color = Color(0.22, 0.3, 0.2, 0.9)
+	sb.set_corner_radius_all(3)
+	sb.set_content_margin_all(4)
+	card.add_theme_stylebox_override("panel", sb)
+	var v := VBoxContainer.new()
+	card.add_child(v)
+	var t := _label(v, 12)
+	t.text = "Залежь рядом: " + world.sub_label(s)
+	t.custom_minimum_size = Vector2(300, 0)
+	_material_card(v, s)
+	inv_box.add_child(card)
+
+func _material_card(v: VBoxContainer, s: Substance) -> void:
+	var r := world.robot
+	var info := _label(v, 11)
+	info.custom_minimum_size = Vector2(300, 0)
+	var lines: Array = []
+	if world.is_analyzed(s):
+		lines.append("тв. %.1f · плотн. %.1f · плавится %.0f °C · кипит %.0f °C" % [s.hardness, s.density, s.melt, s.boil])
+	var ex: Array = world.excluded_of(s).map(func(t): return MaterialTags.display(t))
+	if not ex.is_empty():
+		lines.append("Исключено: " + ", ".join(ex))
+	if world.unknown_count(s) > 0:
+		var pos: Array = world.possible_of(s).map(func(t): return MaterialTags.display(t))
+		lines.append("Возможно: " + (", ".join(pos) if pos.size() <= 12 else ", ".join(pos.slice(0, 12)) + " …"))
+	info.text = "\n".join(lines)
+	info.add_theme_color_override("font_color", Color(0.75, 0.8, 0.88))
+	if world.unknown_count(s) > 0:
+		var pb := HFlowContainer.new()
+		v.add_child(pb)
+		for id in Probes.ORDER:
+			var d: Dictionary = Probes.PROBES[id]
+			var b := Button.new()
+			b.text = d.n
+			b.add_theme_font_size_override("font_size", 11)
+			var err: String = world.probe_error(s.id, id)
+			b.disabled = err != ""
+			var names: Array = d.tags.filter(func(t): return not MaterialTags.is_exotic(t) or r.known_tags.has(t)).map(func(t): return MaterialTags.display(t))
+			b.tooltip_text = "%s\nРазличает: %s\nОбразец %.1f кг%s%s" % [d.desc, ", ".join(names), world.probe_cost(),
+				(", газ %.1f" % d.gas) if d.gas > 0.0 else "", ("\nНельзя: " + err) if err != "" else ""]
+			var pid: String = id
+			b.pressed.connect(func():
+				var e2: String = world.probe(s.id, pid)
+				if e2 != "":
+					main.say(e2)
+				_inv_sig = "")
+			pb.add_child(b)
+	if r.last_probe != "" and r.last_probe.contains(s.name):
+		var lp := _label(v, 11)
+		lp.custom_minimum_size = Vector2(300, 0)
+		lp.text = "▸ " + r.last_probe
+		lp.add_theme_color_override("font_color", Color(0.6, 0.95, 0.7))
 
 func _refresh_inspector() -> void:
 	var c = main.selected_cell

@@ -84,7 +84,8 @@ static func _choose_goal(p: Planet, rng: Rng) -> Dictionary:
 	for raw in goal.stages:
 		flat.append_array(Goals.options(raw))
 	# «Узнать N тегов» — не больше, чем тегов в местном сырье: на бедной планете планка ниже.
-	var present_n: int = p.material_tags_present().size()
+	# Считаются только теги, которые можно распознать касанием или пробой (не только наблюдением).
+	var present_n: int = p.material_tags_present().filter(func(t): return t in Probes.VISIBLE or Probes.probe_of(t) != "").size()
 	for st in flat:
 		if st.type == "discover_tags" and st.n > present_n:
 			st.n = max(12, present_n)

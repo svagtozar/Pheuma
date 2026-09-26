@@ -55,7 +55,7 @@ const NODES := [
 	{"id": "s1", "cls": "shaman", "n": "Анализатор", "cost": 1, "xp": 0, "blueprint": "analyzer", "unlock": ["distiller"],
 		"desc": "Чертёж: анализатор. Постройка: дистиллятор."},
 	{"id": "s2", "cls": "shaman", "n": "Чутьё веществ", "cost": 2, "xp": 15, "unlock": ["electrolyzer"], "passive": {"auto_analyze": 1},
-		"desc": "Подобранные материалы раскрываются сами. Постройка: электролизёр."},
+		"desc": "Добытое само ощупывается, пробам хватает вдвое меньшего образца. Постройка: электролизёр."},
 	{"id": "s3", "cls": "shaman", "n": "Предвидение", "cost": 3, "xp": 40, "blueprint": "predictor", "unlock": ["irradiator"],
 		"desc": "Чертёж: предсказатель реакций. Постройка: облучатель."},
 	{"id": "s4", "cls": "shaman", "n": "Знание невозможного", "cost": 3, "xp": 80, "passive": {"exotic_insight": 1},
