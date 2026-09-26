@@ -2,12 +2,16 @@ class_name Cannon
 extends Machine
 ## Пневмопушка и пусковая шахта. Копят давление в камере и стреляют капсулой.
 ## Дальность зависит от давления, гравитации и свойств груза.
+## Маршруты: груз с тегом летит в свою цель (config.routes = [[тег, id цели], …]),
+## остальное — в цель по умолчанию. Так пушки сортируют и развозят грузы.
 
 var _cd := 0.0
 
 func init_config() -> void:
 	config.fire_p = 8.0 if kind == "launch_silo" else 3.0
 	config.target = -1
+	if kind != "launch_silo":
+		config.routes = []
 
 func is_silo() -> bool:
 	return kind == "launch_silo"
@@ -25,6 +29,28 @@ func fire_pressure(w) -> float:
 		return max(3.0, config.fire_p - w.robot.passive("silo_bonus"))
 	return config.fire_p
 
+func payload_limit() -> float:
+	return 20.0 if is_silo() else 5.0
+
+func range_mult() -> float:
+	return 1.0
+
+func consume_gas(w) -> void:
+	w.gas.take_gas(id, w.gas.amount(id) * 0.7)
+
+## Куда летит порция: первый подходящий маршрут, иначе цель по умолчанию.
+func target_for(w, p: Portion) -> int:
+	for r in config.get("routes", []):
+		if p.has(r[0]) and w.machines.has(int(r[1])):
+			return int(r[1])
+	return int(config.target)
+
+func add_route(tag: String, target_id: int) -> void:
+	var routes: Array = config.get("routes", [])
+	routes = routes.filter(func(r): return r[0] != tag)
+	routes.append([tag, target_id])
+	config.routes = routes
+
 func tick(w, dt: float) -> void:
 	status = ""
 	_cd -= dt
@@ -33,8 +59,8 @@ func tick(w, dt: float) -> void:
 	if items.is_empty():
 		status = "нет груза"
 		return
-	if not is_silo() and not w.machines.has(config.target):
-		status = "нет цели — свяжите с приёмником (L)"
+	if not is_silo() and not w.machines.has(target_for(w, items[0])):
+		status = "нет цели для «%s» — L или маршрут" % w.sub_label(items[0].substance)
 		return
 	var p: float = w.gas.pressure(id)
 	if p < fire_pressure(w):
@@ -45,16 +71,21 @@ func tick(w, dt: float) -> void:
 	fire(w, p)
 
 func fire(w, p: float) -> void:
-	var limit := 20.0 if is_silo() else 5.0
+	var limit := payload_limit()
+	var tid := -1 if is_silo() else target_for(w, items[0])
 	var payload: Array = []
 	var taken := 0.0
-	while not items.is_empty() and taken < limit:
-		var q: Portion = items[0]
-		var part := q.split(min(q.mass, limit - taken))
-		if q.mass <= 0.001:
-			items.remove_at(0)
+	var keep: Array = []
+	for q in items:
+		if taken >= limit or (not is_silo() and target_for(w, q) != tid):
+			keep.append(q)
+			continue
+		var part: Portion = q.split(min(q.mass, limit - taken))
 		taken += part.mass
 		payload.append(part)
+		if q.mass > 0.001:
+			keep.append(q)
+	items = keep
 	var extra: Array = []
 	for q in payload:
 		var r: Dictionary = Handling.event(q, "launch", w.handling_env(self, "launch"))
@@ -65,8 +96,9 @@ func fire(w, p: float) -> void:
 		for e in r.events:
 			w.log_event(cell, e)
 	payload.append_array(extra)
-	w.gas.take_gas(id, w.gas.amount(id) * 0.7)
+	consume_gas(w)
 	w.sound("thump", cell)
+	w.stats.shots += 1
 	_cd = 1.0
 	w.robot.xp.firekeeper += 0.5
 	if w.rng.chance(stats.burst_risk * p / stats.max_p):
@@ -76,7 +108,7 @@ func fire(w, p: float) -> void:
 	if is_silo():
 		w.launch_orbit(payload, cell)
 		return
-	var target = w.machines[config.target]
+	var target = w.machines[tid]
 	var from := Vector2(cell) + Vector2(0.5, 0.5)
 	var to := Vector2(target.cell) + Vector2(0.5, 0.5)
 	var factor := 0.0
@@ -88,7 +120,7 @@ func fire(w, p: float) -> void:
 		scatter = max(scatter, Handling.cannon_scatter(q, w.planet))
 	factor = factor / total if total > 0.0 else 1.0
 	scatter *= (1.0 - w.robot.passive("aim"))
-	var rng_tiles := range_for(p, w.planet) * factor
+	var rng_tiles := range_for(p, w.planet) * factor * range_mult()
 	var dist := from.distance_to(to)
 	var dest := to
 	if dist > rng_tiles:
@@ -104,8 +136,11 @@ static func range_for(p: float, planet: Planet) -> float:
 
 func describe(w) -> Array:
 	var l := super.describe(w)
-	l.append("Выстрел при %.1f атм" % fire_pressure(w))
+	l.append("Выстрел при %.1f атм, до %.0f кг" % [fire_pressure(w), payload_limit()])
 	if not is_silo():
-		l.append("Дальность при этом давлении: %.1f кл." % range_for(fire_pressure(w), w.planet))
-		l.append("Цель: %s" % ("есть" if w.machines.has(config.target) else "нет"))
+		l.append("Дальность при этом давлении: %.1f кл." % (range_for(fire_pressure(w), w.planet) * range_mult()))
+		l.append("Цель по умолчанию: %s" % (w.machines[config.target].display_name() if w.machines.has(config.target) else "нет"))
+		for r in config.get("routes", []):
+			var t = w.machines.get(int(r[1]))
+			l.append("  «%s» → %s" % [MaterialTags.display(r[0]), t.display_name() + " %d,%d" % [t.cell.x, t.cell.y] if t != null else "нет цели"])
 	return l

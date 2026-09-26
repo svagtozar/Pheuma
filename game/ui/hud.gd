@@ -217,9 +217,11 @@ V — провод: клик по источнику сигнала, затем 
 
 M — макроблок: выделите прямоугольник с машинами (зажать ЛКМ и протянуть). Сохраняются
    машины, настройки, провода и входы/выходы; библиотека общая для всех планет.
-   Поставить — в палитре (B), раздел «Макроблоки»; R — повернуть.
-Сборные сооружения (раздел «Логистика»): пневмопровод работает, когда вход соединён
-   сегментами с выходом и есть давление; четыре секции склада квадратом — склад на 320 кг.
+   Поставить — в палитре (B), раздел «Макроблоки»; R — повернуть, C — свернуть в одну клетку.
+   Свёрнутый блок работает как одна машина: входы/выходы схемы выведены на его стороны.
+Логистика — на пушках: у пушки можно задать маршруты «груз с тегом → своя цель» (инспектор).
+   Сборные сооружения: 4 секции пневмобатареи квадратом — тяжёлая пушка (20 кг, ×2.2 дальность);
+   ловчие сети у приёмника ловят промахи; 4 секции склада квадратом — склад на 320 кг.
 F5 — сохранить, F9 — загрузить (автосохранение каждые 2 минуты).
 
 1–6 — абилки установленных модулей (цель — курсор).
@@ -363,12 +365,22 @@ func _rebuild_palette() -> void:
 		palette_box.add_child(row)
 		var b := Button.new()
 		b.text = "%s — %d×%d, машин %d, %s, ~%.0f кг" % [mb.name, int(mb.size[0]), int(mb.size[1]), mb.parts.size(), Macroblocks.describe_ports(mb), Macroblocks.cost(world, mb)]
+		b.tooltip_text = "Поставить развёрнутым"
 		b.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		var idx: int = i
 		b.pressed.connect(func():
 			main.start_macro(idx)
 			windows.palette.visible = false)
 		row.add_child(b)
+		var cb := Button.new()
+		cb.text = "Свёрнутым"
+		var cerr := MacroMachine.collapse_error(mb)
+		cb.disabled = cerr != ""
+		cb.tooltip_text = cerr if cerr != "" else "Вся схема в одной клетке"
+		cb.pressed.connect(func():
+			main.start_macro(idx, true)
+			windows.palette.visible = false)
+		row.add_child(cb)
 		var del := Button.new()
 		del.text = "Удалить"
 		del.pressed.connect(func():
@@ -544,7 +556,7 @@ func refresh() -> void:
 		else:
 			abil.append("(%s)" % d.n)
 	var mode_text := {"none": "", "build": "Строительство: %s — ЛКМ поставить, R повернуть, ПКМ отмена" % (Buildings.name_of(main.build_kind) if main.build_kind != "" else ""),
-		"macro_select": "Макроблок: протяните ЛКМ по машинам", "macro_place": "Макроблок: ЛКМ поставить, R повернуть, ПКМ отмена",
+		"macro_select": "Макроблок: протяните ЛКМ по машинам", "macro_place": "Макроблок%s: ЛКМ поставить, R повернуть, C свернуть/развернуть, ПКМ отмена" % (" (свёрнутый)" if main.macro_collapsed else ""),
 		"remove": "Снос — ЛКМ по машине", "wire": "Провод — источник, затем приёмник (Shift — вход 2)", "link": "Наведение пушки — пушка, затем приёмник"}
 	var sel := world.db.get_sub(r.selected) if r.selected != "" else null
 	status_label.text = "Корпус %.0f/%.0f   Баллон %.1f/%.1f   Масса %.0f   Бур тв. %.1f   Выбрано: %s\n%s\n%s" % [
@@ -602,7 +614,7 @@ func _refresh_inspector() -> void:
 		if res.note != "":
 			lines.append("  " + res.note)
 	inspector_label.text = "\n".join(lines)
-	var sig := "%d:%s:%s" % [m.id, str(m.config), m.manual_off]
+	var sig := "%d:%s:%s:%s" % [m.id, str(m.config), m.manual_off, main.route_tag_pick]
 	if sig == _insp_sig:
 		return
 	_insp_sig = sig
@@ -628,8 +640,19 @@ func _refresh_inspector() -> void:
 		_btn("Выстрел +0.5", func(): m.config.fire_p += 0.5)
 		if not m.is_silo():
 			_btn("Навести (L)", func():
+				main.route_tag = ""
 				main.set_mode("link")
 				main.pending_cell = m.cell)
+			if main.route_tag_pick == "":
+				main.route_tag_pick = _next_tag("")
+			_btn("Тег маршрута: %s ▶" % MaterialTags.display(main.route_tag_pick), func(): main.route_tag_pick = _next_tag(main.route_tag_pick))
+			_btn("Маршрут → выбрать цель", func():
+				main.set_mode("link")
+				main.pending_cell = m.cell
+				main.route_tag = main.route_tag_pick)
+			for r in m.config.get("routes", []):
+				var tag: String = r[0]
+				_btn("✕ %s" % MaterialTags.display(tag), func(): m.config.routes = m.config.routes.filter(func(x): return x[0] != tag))
 	if m.config.has("mode"):
 		_btn("Режим ▶", func():
 			var i := LogicGate.MODES.find(m.config.mode)

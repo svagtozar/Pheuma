@@ -23,6 +23,9 @@ var seed_value := 0
 var macro_lib: Array = []
 var macro_idx := -1
 var macro_rot := 0
+var macro_collapsed := false
+var route_tag := ""
+var route_tag_pick := ""
 var sel_start = null
 var _autosave_t := 0.0
 
@@ -226,6 +229,10 @@ func _on_key(e: InputEventKey) -> void:
 			else:
 				new_world(0, lw)
 				say("Загружено сохранение «%s»" % slot)
+		KEY_C:
+			if mode == "macro_place":
+				macro_collapsed = not macro_collapsed
+				say("макроблок: " + ("свёрнутый в одну клетку" if macro_collapsed else "развёрнутый"))
 		KEY_R:
 			if mode == "macro_place":
 				macro_rot = (macro_rot + 1) % 4
@@ -320,10 +327,11 @@ func _finish_macro_select() -> void:
 	say("Сохранён «%s»: %d машин, %s. B — поставить" % [mb.name, mb.parts.size(), Macroblocks.describe_ports(mb)])
 	set_mode("none")
 
-func start_macro(idx: int) -> void:
+func start_macro(idx: int, collapsed: bool = false) -> void:
 	set_mode("macro_place")
 	macro_idx = idx
 	macro_rot = 0
+	macro_collapsed = collapsed
 
 func delete_macro(idx: int) -> void:
 	macro_lib.remove_at(idx)
@@ -344,7 +352,7 @@ func _click(shift: bool) -> void:
 		"macro_place":
 			if macro_idx >= 0 and macro_idx < macro_lib.size():
 				var sub: Substance = world.db.get_sub(world.robot.selected) if world.robot.selected != "" else null
-				var err := Macroblocks.place(world, macro_lib[macro_idx], c, macro_rot, sub)
+				var err := Macroblocks.place_collapsed(world, macro_lib[macro_idx], c, macro_rot, sub) if macro_collapsed else Macroblocks.place(world, macro_lib[macro_idx], c, macro_rot, sub)
 				say(err if err != "" else "Макроблок «%s» построен" % macro_lib[macro_idx].name)
 		"build":
 			var sub := build_material()
@@ -373,8 +381,9 @@ func _click(shift: bool) -> void:
 				else:
 					say("выберите пневмопушку")
 			else:
-				var err := world.link_cannon(pending_cell, c)
-				say(err if err != "" else "пушка наведена")
+				var err := world.link_cannon(pending_cell, c, route_tag)
+				say(err if err != "" else ("маршрут «%s» задан" % MaterialTags.display(route_tag) if route_tag != "" else "пушка наведена"))
+				route_tag = ""
 				set_mode("none")
 		_:
 			var pos := get_global_mouse_position()
@@ -447,9 +456,9 @@ func run_autotest() -> void:
 	if not logi.is_empty():
 		var wh = logi.warehouse
 		logi_ok = wh.master_id == wh.id and wh.total_mass() > 1.0
-		out.call("пневмопровод и склад: собран=%s, на складе %.1f кг" % [wh.master_id == wh.id, wh.total_mass()])
+		out.call("батарея → сети → склад: батарея собрана=%s, склад собран=%s, на складе %.1f кг" % [logi.battery.master_id == logi.battery.id, wh.master_id == wh.id, wh.total_mass()])
 	else:
-		out.call("нет места под пневмопровод — пропуск")
+		out.call("нет места под батарею — пропуск")
 	var w2 := SaveGame.from_dict(JSON.parse_string(JSON.stringify(SaveGame.to_dict(w))))
 	var save_ok := w2.machines.size() == w.machines.size() and absf(w2.robot.carried_mass() - w.robot.carried_mass()) < 0.01
 	out.call("сохранение/загрузка: %s" % ("ок" if save_ok else "РАСХОЖДЕНИЕ"))
@@ -460,38 +469,46 @@ func run_autotest() -> void:
 		selected_cell = cannon.cell
 		w.robot.pos = Vector2(cannon.cell) + Vector2(0.5, 1.5)
 		if not logi.is_empty():
-			logi.inlet.store(Portion.new(w.starter, 10.0))
-			selected_cell = logi.inlet.cell
-			w.robot.pos = Vector2(logi.inlet.cell) + Vector2(5.5, 2.5)
+			logi.battery.accept(Portion.new(w.starter, 20.0), logi.battery.cell + Vector2i(-1, 0))
+			selected_cell = logi.battery.cell
+			w.robot.pos = Vector2(logi.battery.cell) + Vector2(7.5, 3.5)
 		cam.position = w.robot.pos * T
 		return
 	_finish_autotest(ok)
 
-## Пневмопровод «вход → 8 сегментов → выход» в склад 2×2 на свободном месте.
+## Пневмобатарея 2×2 с насосами → приёмник с ловчими сетями → склад 2×2.
 func _build_logistics(w: World) -> Dictionary:
 	var sub := w.starter
 	for r in range(3, 25):
 		for oy in range(-r, r + 1):
 			var o: Vector2i = w.planet.spawn + Vector2i(-r, oy)
 			var free := true
-			for dy in range(0, 3):
-				for dx in range(0, 13):
+			for dy in range(-1, 3):
+				for dx in range(0, 17):
 					var c := o + Vector2i(dx, dy)
 					if not w.planet.buildable(c) or w.grid.has(c) or w.planet.deposits.has(c):
 						free = false
 			if not free:
 				continue
-			var inlet := w.place("tube_inlet", o, 0, sub, true)
-			for x in range(1, 9):
-				w.place("tube", o + Vector2i(x, 0), 0, sub, true)
-			w.place("tube_outlet", o + Vector2i(9, 0), 0, sub, true)
-			var wh := w.place("warehouse_section", o + Vector2i(10, 0), 0, sub, true)
-			w.place("warehouse_section", o + Vector2i(11, 0), 0, sub, true)
-			w.place("warehouse_section", o + Vector2i(10, 1), 0, sub, true)
-			w.place("warehouse_section", o + Vector2i(11, 1), 0, sub, true)
-			w.place("pump", o + Vector2i(0, 1), 0, sub, true)
-			inlet.store(Portion.new(sub, 8.0))
-			return {"inlet": inlet, "warehouse": wh}
+			var bat := w.place("battery_section", o, 0, sub, true)
+			w.place("battery_section", o + Vector2i(1, 0), 0, sub, true)
+			w.place("battery_section", o + Vector2i(0, 1), 0, sub, true)
+			w.place("battery_section", o + Vector2i(1, 1), 0, sub, true)
+			w.place("pump", o + Vector2i(0, 2), 0, sub, true)
+			w.place("pump", o + Vector2i(1, 2), 0, sub, true)
+			w.place("pump", o + Vector2i(2, 1), 0, sub, true)
+			var recv := w.place("receiver", o + Vector2i(13, 0), 0, sub, true)
+			w.place("catch_net", o + Vector2i(12, 0), 0, sub, true)
+			w.place("catch_net", o + Vector2i(13, 1), 0, sub, true)
+			w.place("catch_net", o + Vector2i(13, -1), 0, sub, true)
+			var wh := w.place("warehouse_section", o + Vector2i(14, 0), 0, sub, true)
+			w.place("warehouse_section", o + Vector2i(15, 0), 0, sub, true)
+			w.place("warehouse_section", o + Vector2i(14, 1), 0, sub, true)
+			w.place("warehouse_section", o + Vector2i(15, 1), 0, sub, true)
+			w.check_groups()
+			w.link_cannon(bat.cell, recv.cell)
+			bat.accept(Portion.new(sub, 20.0), o + Vector2i(-1, 0))
+			return {"battery": bat, "warehouse": wh}
 	return {}
 
 func _finish_autotest(ok: bool) -> void:

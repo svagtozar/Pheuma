@@ -51,6 +51,7 @@ func set_world(w: World) -> void:
 		ambient.play()
 
 func stop_all() -> void:
+	world = null
 	for p in players:
 		p.stop()
 		p.stream = null
@@ -62,7 +63,7 @@ func _exit_tree() -> void:
 	stop_all()
 
 func play(name: String, dist: float = 0.0) -> void:
-	if not streams.has(name) or dist > MAX_DIST:
+	if world == null or not streams.has(name) or dist > MAX_DIST:
 		return
 	var now := Time.get_ticks_msec()
 	if now - _last.get(name, 0) < 50:

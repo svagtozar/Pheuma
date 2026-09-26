@@ -5,7 +5,7 @@ extends RefCounted
 
 const DIRS := [Vector2i(1, 0), Vector2i(0, 1), Vector2i(-1, 0), Vector2i(0, -1)]
 const SIDE_NAMES := {"front": "спереди", "back": "сзади", "left": "слева", "right": "справа"}
-const STORAGE := ["container", "tank", "receiver", "dome", "tube_outlet", "warehouse_section"]
+const STORAGE := ["container", "tank", "receiver", "dome", "warehouse_section"]
 
 var id := 0
 var kind := ""
@@ -25,6 +25,10 @@ var signal_out := false
 var status := ""
 var hot := false
 var _out_timer := 0.0
+# Сборные сооружения 2×2: id главной секции, её участники и слабая ссылка на неё.
+var master_id := -1
+var group: Array = []
+var master: WeakRef
 
 static func create(p_kind: String) -> Machine:
 	var m: Machine
@@ -39,7 +43,9 @@ static func create(p_kind: String) -> Machine:
 			"cannon", "launch_silo": m = Cannon.new()
 			"sensor", "gate_and", "gate_or", "gate_not": m = LogicGate.new()
 			"dome": m = Dome.new()
-			"tube", "tube_inlet", "tube_outlet", "warehouse_section": m = Structure.new()
+			"warehouse_section", "catch_net": m = Structure.new()
+			"battery_section": m = Battery.new()
+			"macro": m = MacroMachine.new()
 			_: m = Machine.new()
 	m.kind = p_kind
 	m.info = d
@@ -106,6 +112,13 @@ func store(p: Portion) -> void:
 			return
 	items.append(p)
 
+func save_extra() -> Dictionary:
+	return {"master": master_id, "group": group}
+
+func load_extra(_w, d: Dictionary) -> void:
+	master_id = int(d.get("master", -1))
+	group = d.get("group", []).map(func(x): return int(x))
+
 func take_all() -> Array:
 	var out := items
 	items = []
@@ -125,7 +138,9 @@ func tick(w, dt: float) -> void:
 	var chunk := p.split(min(2.0, p.mass))
 	if p.mass <= 0.001:
 		items.remove_at(0)
-	out_queue.append([chunk, 0])
+	if not w.push(self, chunk, out_cell(0)):
+		store(chunk)
+		status = "выдача: спереди никто не принимает"
 
 func flush_outputs(w) -> void:
 	var left: Array = []
