@@ -500,6 +500,7 @@ func run_autotest() -> void:
 	for i in 1200:
 		w.tick(0.1)
 	var delivered := tank.total_mass() + recv.total_mass()
+	out.call("бур: %s | пушка: %s (%.1f атм) | приёмник: %s" % [drill.status, cannon.status, w.gas.pressure(cannon.id), recv.status])
 	var logi_ok := true
 	if not logi.is_empty():
 		var wh = logi.warehouse
@@ -542,9 +543,9 @@ func _build_logistics(w: World) -> Dictionary:
 			w.place("battery_section", o + Vector2i(1, 0), 0, sub, true)
 			w.place("battery_section", o + Vector2i(0, 1), 0, sub, true)
 			w.place("battery_section", o + Vector2i(1, 1), 0, sub, true)
-			w.place("pump", o + Vector2i(0, 2), 0, sub, true)
-			w.place("pump", o + Vector2i(1, 2), 0, sub, true)
-			w.place("pump", o + Vector2i(2, 1), 0, sub, true)
+			var pumps: Array = [w.place("pump", o + Vector2i(0, 2), 0, sub, true),
+				w.place("pump", o + Vector2i(1, 2), 0, sub, true),
+				w.place("pump", o + Vector2i(2, 1), 0, sub, true)]
 			var recv := w.place("receiver", o + Vector2i(13, 0), 0, sub, true)
 			w.place("catch_net", o + Vector2i(12, 0), 0, sub, true)
 			w.place("catch_net", o + Vector2i(13, 1), 0, sub, true)
@@ -555,6 +556,11 @@ func _build_logistics(w: World) -> Dictionary:
 			w.place("warehouse_section", o + Vector2i(15, 1), 0, sub, true)
 			w.check_groups()
 			w.link_cannon(bat.cell, recv.cell)
+			# Давление под гравитацию планеты: плотный сплав летит на 35% короче.
+			var need: float = 13.0 / (Cannon.range_for(1.0, w.planet) * 0.65 * bat.range_mult()) * 1.15
+			bat.config.fire_p = clampf(need, 2.0, 10.0)
+			for m in pumps:
+				m.config.target_p = max(5.0, bat.config.fire_p + 0.5)
 			bat.accept(Portion.new(sub, 20.0), o + Vector2i(-1, 0))
 			return {"battery": bat, "warehouse": wh}
 	return {}
