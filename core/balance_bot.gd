@@ -90,7 +90,12 @@ func material_for(kind: String, check: Callable = Callable()) -> Substance:
 		if ok.call(s) and spare >= cost:
 			return s
 	var cands: Array = w.planet.materials.filter(func(s): return ok.call(s) and minable(s) and not deposits_of(s).is_empty())
-	cands.sort_custom(func(a, b): return center(deposits_of(a)[0]).distance_to(w.robot.pos) < center(deposits_of(b)[0]).distance_to(w.robot.pos))
+	# Безопасные для рук — первыми, среди равных — ближайшие.
+	cands.sort_custom(func(a, b):
+		var sa := safe_to_handle(a)
+		if sa != safe_to_handle(b):
+			return sa
+		return center(deposits_of(a)[0]).distance_to(w.robot.pos) < center(deposits_of(b)[0]).distance_to(w.robot.pos))
 	for s in cands:
 		if mine_mass(s, cost + w.robot.mass_of(s.id)):
 			return s
@@ -233,19 +238,60 @@ func build_chain(pl: Dictionary, sink) -> Machine:
 			sink = "tank"
 	var sk: String = sink if sink is String else sink[0]
 	var chk2: Callable = Callable() if sink is String else sink[1]
+	var cargo: Substance = pl.final.substance if pl.has("final") else pl.mat
+	if chk2.is_null() and sk != "launch_silo":
+		chk2 = sink_check(cargo)
 	var snk := build(sk, se[0], se[1], chk2)
+	if snk == null and not chk2.is_null() and sink is String:
+		snk = build(sk, se[0], se[1])
 	if snk == null:
 		return null
 	if sk == "launch_silo":
 		pump_for(snk, 9.5, 3, 6.5)
 	note("установка: %s → %s" % [Planner.describe(pl), snk.display_name()])
+	_chains.append({"pl": pl, "sink": sink, "drill": drill, "gen": _chain_gen, "done": false})
 	return snk
+
+## Установки: план, конечная постройка, бур. Когда залежь бура кончилась —
+## цепочка переносится на другую залежь того же материала (не больше двух переносов).
+var _chains: Array = []
+var _chain_gen := 0
+
+func _relocate_exhausted() -> void:
+	for ch in _chains.duplicate():
+		var d: Machine = ch.drill
+		if ch.done or ch.gen >= 2 or not w.machines.has(d.id) or d.status != "залежь пуста":
+			continue
+		if deposits_of(ch.pl.mat, true).is_empty():
+			continue
+		ch.done = true
+		note("залежь кончилась у %d,%d — переношу установку" % [d.cell.x, d.cell.y])
+		_chain_gen = ch.gen + 1
+		build_chain(ch.pl, ch.sink)
+		_chain_gen = 0
+
+## Материал не портит хранилища и не горит в руках робота.
+func safe_to_handle(s: Substance) -> bool:
+	if s.has("acidic"):
+		return false
+	var burns: bool = (s.has("pyrophoric") or s.has("flammable")) and w.planet.oxidizing()
+	return not burns or w.robot.passive("safe_fire") > 0.0
+
+## Кислотный груз разъедает хранилище — нужен стойкий материал стенок.
+func sink_check(cargo: Substance) -> Callable:
+	if cargo == null or not cargo.has("acidic"):
+		return Callable()
+	return func(s): return Handling.CORROSION_PROOF.any(func(t): return s.has(t))
 
 ## Установка, которая производит материал с тегом в конечную постройку.
 func produce(tag: String, sink = "container") -> Machine:
 	var mats: Array = w.planet.materials.filter(func(s): return not deposits_of(s).is_empty())
 	learn_what_we_can()
-	var pl := Planner.plan(w, tag, mats)
+	# Сначала — из безопасного сырья: кислота разъедает хранилища, а самовозгорающееся
+	# горит в руках. Если так не выходит — из любого.
+	var pl := Planner.plan(w, tag, mats.filter(func(s): return safe_to_handle(s)))
+	if pl.is_empty():
+		pl = Planner.plan(w, tag, mats)
 	if pl.is_empty():
 		note("планировщик: «%s» не получить из материалов планеты" % MaterialTags.display(tag))
 		return null
@@ -288,9 +334,16 @@ func maintain() -> void:
 		if w.machine_at(oc) != null or not w.planet.buildable(oc) or _rebuilt.get(oc, 0) >= 2:
 			continue
 		_rebuilt[oc] = _rebuilt.get(oc, 0) + 1
-		var sealed_needed: bool = m.out_queue[0][0].has("volatile") or m.out_queue[0][0].phase() != Substance.Phase.SOLID
-		if build("tank" if sealed_needed else "container", oc, m.facing) != null:
+		var cargo: Portion = m.out_queue[0][0]
+		var sealed_needed: bool = cargo.has("volatile") or cargo.phase() != Substance.Phase.SOLID
+		var kind := "tank" if sealed_needed else "container"
+		var chk := sink_check(cargo.substance)
+		var rebuilt := build(kind, oc, m.facing, chk)
+		if rebuilt == null and not chk.is_null():
+			rebuilt = build(kind, oc, m.facing)
+		if rebuilt != null:
 			note("восстановлен приёмник у «%s»" % m.display_name())
+	_relocate_exhausted()
 	_maintain_feed()
 
 var _rebuilt := {}

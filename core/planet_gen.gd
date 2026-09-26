@@ -80,6 +80,12 @@ static func _choose_goal(p: Planet, rng: Rng) -> Dictionary:
 	var flat: Array = []
 	for raw in goal.stages:
 		flat.append_array(Goals.options(raw))
+	# «Узнать N тегов» — не больше, чем тегов в местном сырье: на бедной планете планка ниже.
+	var present_n: int = p.material_tags_present().size()
+	for st in flat:
+		if st.type == "discover_tags" and st.n > present_n:
+			st.n = max(12, present_n)
+			st.desc = "Узнать %d тегов" % st.n
 	var uses_rare := false
 	for st in flat:
 		if st.get("tag", "") == "{rare}" or st.get("tags", {}).has("{rare}"):

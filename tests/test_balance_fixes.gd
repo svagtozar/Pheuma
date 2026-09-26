@@ -11,6 +11,16 @@ func test_goal_tags_obtainable_by_real_processing():
 			assert_true(PlanetGen._obtainable(pr, t, p.materials),
 				"seed %d, цель %s: тег «%s» получается настоящей обработкой" % [s, p.goal.id, t])
 
+func test_discover_goal_not_above_planet_tags():
+	for s in range(1, 41):
+		var p := PlanetGen.generate(s)
+		var present: int = p.material_tags_present().size()
+		for raw in p.goal.stages:
+			for st in Goals.options(raw):
+				if st.type == "discover_tags":
+					assert_lte(st.n, max(14, present), "seed %d: «%s» при %d тегах в сырье" % [s, st.desc, present])
+					assert_true(st.desc.contains(str(st.n)), "описание совпадает с числом")
+
 func test_generation_stays_deterministic():
 	var a := PlanetGen.generate(12)
 	var b := PlanetGen.generate(12)
