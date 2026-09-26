@@ -215,6 +215,13 @@ V — провод: клик по источнику сигнала, затем 
    Провод делается из выбранного материала; проводящий дотягивается дальше.
    ЛКМ по проводу — добавить путевую точку, тянуть — двигать, ПКМ по точке — удалить.
 
+M — макроблок: выделите прямоугольник с машинами (зажать ЛКМ и протянуть). Сохраняются
+   машины, настройки, провода и входы/выходы; библиотека общая для всех планет.
+   Поставить — в палитре (B), раздел «Макроблоки»; R — повернуть.
+Сборные сооружения (раздел «Логистика»): пневмопровод работает, когда вход соединён
+   сегментами с выходом и есть давление; четыре секции склада квадратом — склад на 320 кг.
+F5 — сохранить, F9 — загрузить (автосохранение каждые 2 минуты).
+
 1–6 — абилки установленных модулей (цель — курсор).
 F — фабрикатор (рядом с ним): модули и детали робота из любого подходящего материала.
 K — прокачка: шесть классов. Знания дают открытия, опыт — действия класса.
@@ -279,6 +286,8 @@ func show_briefing() -> void:
 	if p.goal.has("rare") and p.goal.id == "mining":
 		s += "  Редкий тег: [color=#ffd479]%s[/color]\n" % MaterialTags.display(p.goal.rare)
 	s += "\nУ вас 60 кг сплава посадочной капсулы. Для начала: фабрикатор (B), бур на залежь, контейнер.\nH — управление."
+	if SaveGame.exists("quick") or SaveGame.exists("auto"):
+		s += "\n[color=#ffd479]Есть сохранённая игра — F9, чтобы продолжить.[/color]"
 	briefing_label.text = s
 	windows.briefing.visible = true
 	_layout()
@@ -343,6 +352,29 @@ func _rebuild_palette() -> void:
 				main.start_build(k, sub_id)
 				windows.palette.visible = false)
 			flow.add_child(b)
+	var ml := _label(palette_box, 14)
+	ml.text = "Макроблоки (M — создать из выделения; общие для всех планет)"
+	if main.macro_lib.is_empty():
+		var e := _label(palette_box, 12)
+		e.text = "Пока нет. Постройте цепочку, нажмите M и протяните рамку по машинам."
+	for i in main.macro_lib.size():
+		var mb: Dictionary = main.macro_lib[i]
+		var row := HBoxContainer.new()
+		palette_box.add_child(row)
+		var b := Button.new()
+		b.text = "%s — %d×%d, машин %d, %s, ~%.0f кг" % [mb.name, int(mb.size[0]), int(mb.size[1]), mb.parts.size(), Macroblocks.describe_ports(mb), Macroblocks.cost(world, mb)]
+		b.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		var idx: int = i
+		b.pressed.connect(func():
+			main.start_macro(idx)
+			windows.palette.visible = false)
+		row.add_child(b)
+		var del := Button.new()
+		del.text = "Удалить"
+		del.pressed.connect(func():
+			main.delete_macro(idx)
+			_rebuild_palette())
+		row.add_child(del)
 
 func _rebuild_skills() -> void:
 	for c in skills_box.get_children():
@@ -512,6 +544,7 @@ func refresh() -> void:
 		else:
 			abil.append("(%s)" % d.n)
 	var mode_text := {"none": "", "build": "Строительство: %s — ЛКМ поставить, R повернуть, ПКМ отмена" % (Buildings.name_of(main.build_kind) if main.build_kind != "" else ""),
+		"macro_select": "Макроблок: протяните ЛКМ по машинам", "macro_place": "Макроблок: ЛКМ поставить, R повернуть, ПКМ отмена",
 		"remove": "Снос — ЛКМ по машине", "wire": "Провод — источник, затем приёмник (Shift — вход 2)", "link": "Наведение пушки — пушка, затем приёмник"}
 	var sel := world.db.get_sub(r.selected) if r.selected != "" else null
 	status_label.text = "Корпус %.0f/%.0f   Баллон %.1f/%.1f   Масса %.0f   Бур тв. %.1f   Выбрано: %s\n%s\n%s" % [

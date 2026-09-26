@@ -89,6 +89,7 @@ func _tick_inlet(w, dt: float) -> void:
 	if q.mass <= 0.001:
 		items.remove_at(0)
 	w.gas.take_gas(id, 0.25)
+	w.sound("hiss", cell)
 	var speed: float = clamp(2.0 + 2.5 * (p - 1.0), 2.0, 14.0) * stats.speed
 	w.tube_capsules.append({"path": path.duplicate(), "pos": 0.0, "speed": speed, "payload": [part], "t": 0.0})
 	_cd = 0.5

@@ -27,6 +27,7 @@ var fires := {}                 # Vector2i → оставшееся время
 var launched := {"mass": 0.0, "tags": {}, "exotic": 0.0}
 var built_kinds := {}
 var events: Array = []          # {"cell", "text", "t"} для интерфейса
+var sfx: Array = []             # {"name", "cell"} — звуки для game/audio.gd
 var time := 0.0
 var starter: Substance
 var _next_id := 1
@@ -64,6 +65,11 @@ func log_event(cell: Vector2i, text: String) -> void:
 	events.append({"cell": cell, "text": text, "t": time})
 	if events.size() > 200:
 		events.remove_at(0)
+
+func sound(name: String, cell: Vector2i) -> void:
+	sfx.append({"name": name, "cell": cell})
+	if sfx.size() > 32:
+		sfx.remove_at(0)
 
 func time_factor() -> float:
 	if planet.has_tag("temporal_drift"):
@@ -125,6 +131,7 @@ func discover_tag(t: String) -> void:
 		k = 3 * (2 if robot.passive("exotic_insight") > 0 else 1)
 	robot.knowledge += k
 	robot.xp.shaman += 5
+	sound("chime", robot_cell())
 	log_event(robot_cell(), "Новый тег: «%s» (+%d знаний)" % [MaterialTags.display(t), k])
 
 func discover_interaction(key: String) -> void:
@@ -133,6 +140,7 @@ func discover_interaction(key: String) -> void:
 	robot.known_interactions[key] = true
 	robot.knowledge += 1
 	robot.xp.shaman += 4
+	sound("chime", robot_cell())
 	var parts := key.split(">")
 	var a := PlanetTags.display(parts[0]) if PlanetTags.TAGS.has(parts[0]) else MaterialTags.display(parts[0])
 	log_event(robot_cell(), "Открыто взаимодействие: «%s» → «%s»" % [a, MaterialTags.display(parts[1])])
@@ -222,6 +230,7 @@ func place(kind: String, c: Vector2i, facing: int, sub: Substance, free: bool = 
 			gas.set_vent(m.id, true)
 	if m is Dome:
 		m.temp = planet.ambient_temp
+	sound("click", c)
 	robot.xp.crafter += 1.0
 	if kind in ["sensor", "gate_and", "gate_or", "gate_not"]:
 		robot.xp.chief += 2.0
@@ -234,6 +243,7 @@ func remove_at(c: Vector2i, refund: bool = true) -> void:
 	var m = machine_at(c)
 	if m == null:
 		return
+	sound("clunk", c)
 	if refund:
 		robot.add_item(Portion.new(m.built_from, build_cost(m.kind) * 0.5, planet.ambient_temp))
 	_drop_contents(m)
@@ -243,6 +253,7 @@ func destroy(m: Machine, reason: String) -> void:
 	if not machines.has(m.id):
 		return
 	log_event(m.cell, "%s разрушен: %s" % [m.display_name(), reason])
+	sound("boom", m.cell)
 	_drop_contents(m)
 	_erase(m)
 
@@ -355,6 +366,7 @@ func mine(c: Vector2i, dt: float) -> String:
 		dep.amount -= m
 		var p := Portion.new(sub, m, planet.ambient_temp)
 		robot.xp.gatherer += 1.0
+		sound("tick", c)
 		if robot.passive("auto_analyze") > 0:
 			analyze(sub)
 		if not robot.can_carry(p):
@@ -458,12 +470,14 @@ func launch_orbit(payload: Array, c: Vector2i) -> void:
 	var from := Vector2(c) + Vector2(0.5, 0.5)
 	projectiles.append({"from": from, "to": from + Vector2(0, -30), "t": 0.0, "dur": 2.0, "payload": [], "orbit": true, "kind": "rocket"})
 	robot.xp.chief += 2.0
+	sound("rocket", c)
 	log_event(c, "На орбиту отправлено %.1f кг" % total)
 
 func _land(pr: Dictionary) -> void:
 	if pr.orbit:
 		return
 	var c := Vector2i(floori(pr.to.x), floori(pr.to.y))
+	sound("land", c)
 	var payload: Array = pr.payload
 	if robot.has_module("magnet") and robot.pos.distance_to(pr.to) < 3.0:
 		for p in payload:

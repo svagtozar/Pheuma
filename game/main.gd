@@ -10,15 +10,23 @@ extends Node2D
 const T := 32.0
 const WorldView := preload("res://game/world_view.gd")
 const Hud := preload("res://game/ui/hud.gd")
+const Audio := preload("res://game/audio.gd")
+const AUTOSAVE_EVERY := 120.0
 
 var world: World
 var sim: Sim
 var view: Node2D
 var cam: Camera2D
 var hud: Control
+var audio: Node
 var seed_value := 0
+var macro_lib: Array = []
+var macro_idx := -1
+var macro_rot := 0
+var sel_start = null
+var _autosave_t := 0.0
 
-var mode := "none"            # none | build | remove | wire | link
+var mode := "none"            # none | build | remove | wire | link | macro_select | macro_place
 var build_kind := ""
 var build_facing := 0
 var build_sub_id := ""
@@ -62,6 +70,9 @@ func _ready() -> void:
 	hud = Hud.new()
 	hud.main = self
 	layer.add_child(hud)
+	audio = Audio.new()
+	add_child(audio)
+	macro_lib = Macroblocks.load_library()
 	new_world(s)
 	if autotest:
 		call_deferred("run_autotest")
@@ -70,10 +81,12 @@ func _ready() -> void:
 	elif open_window != "":
 		hud.toggle(open_window)
 
-func new_world(s: int) -> void:
-	seed_value = s
-	world = World.create(s)
+func new_world(s: int, loaded: World = null) -> void:
+	world = loaded if loaded != null else World.create(s)
+	seed_value = world.planet.seed_value
 	sim = Sim.new(world)
+	audio.set_world(world)
+	_autosave_t = 0.0
 	view.world = world
 	cam.position = world.robot.pos * T
 	cam.reset_smoothing()
@@ -81,7 +94,7 @@ func new_world(s: int) -> void:
 	pending_cell = null
 	selected_cell = null
 	hud.set_world(world)
-	if not autotest and screenshot_path == "":
+	if not autotest and screenshot_path == "" and loaded == null:
 		hud.show_briefing()
 
 func say(text: String) -> void:
@@ -108,6 +121,7 @@ func build_material() -> Substance:
 func set_mode(m: String) -> void:
 	mode = m
 	pending_cell = null
+	sel_start = null
 	if m != "build":
 		build_kind = ""
 
@@ -150,6 +164,10 @@ func _process(dt: float) -> void:
 			if world.machine_at(c) == null and world.can_place("pipe", c, build_material()) == "":
 				world.place("pipe", c, 0, build_material())
 		sim.advance(dt)
+		_autosave_t += dt
+		if _autosave_t >= AUTOSAVE_EVERY and not autotest:
+			_autosave_t = 0.0
+			SaveGame.save_file(world, "auto")
 	cam.position = cam.position.lerp(world.robot.pos * T, min(1.0, dt * 8.0))
 	hud.refresh()
 	if screenshot_path != "":
@@ -195,8 +213,23 @@ func _on_key(e: InputEventKey) -> void:
 		KEY_X: set_mode("remove" if mode != "remove" else "none")
 		KEY_V: set_mode("wire" if mode != "wire" else "none")
 		KEY_L: set_mode("link" if mode != "link" else "none")
+		KEY_M:
+			set_mode("macro_select" if mode != "macro_select" else "none")
+		KEY_F5:
+			var err := SaveGame.save_file(world, "quick")
+			say(err if err != "" else "Игра сохранена (F9 — загрузить)")
+		KEY_F9:
+			var slot := "quick" if SaveGame.exists("quick") else "auto"
+			var lw := SaveGame.load_file(slot)
+			if lw == null:
+				say("сохранения нет")
+			else:
+				new_world(0, lw)
+				say("Загружено сохранение «%s»" % slot)
 		KEY_R:
-			if mode == "build":
+			if mode == "macro_place":
+				macro_rot = (macro_rot + 1) % 4
+			elif mode == "build":
 				build_facing = (build_facing + 1) % 4
 			else:
 				world.rotate_at(mouse_cell())
@@ -257,6 +290,8 @@ func _on_mouse_button(e: InputEventMouseButton) -> void:
 			_click(e.shift_pressed)
 		else:
 			_drag = {}
+			if mode == "macro_select" and sel_start != null:
+				_finish_macro_select()
 	elif e.button_index == MOUSE_BUTTON_RIGHT and e.pressed:
 		if mode != "none":
 			set_mode("none")
@@ -264,6 +299,35 @@ func _on_mouse_button(e: InputEventMouseButton) -> void:
 			var hit := _waypoint_at(get_global_mouse_position())
 			if not hit.is_empty():
 				world.logic.remove_waypoint(hit.wire, hit.idx)
+
+func selection_rect() -> Rect2i:
+	if sel_start == null:
+		return Rect2i(mouse_cell(), Vector2i.ONE)
+	var a: Vector2i = sel_start
+	var b := mouse_cell()
+	var p := Vector2i(min(a.x, b.x), min(a.y, b.y))
+	return Rect2i(p, (Vector2i(max(a.x, b.x), max(a.y, b.y)) - p) + Vector2i.ONE)
+
+func _finish_macro_select() -> void:
+	var r := selection_rect()
+	sel_start = null
+	var mb := Macroblocks.capture(world, r, "Макроблок %d" % (macro_lib.size() + 1))
+	if mb.is_empty():
+		say("в выделении нет машин")
+		return
+	macro_lib.append(JSON.parse_string(JSON.stringify(mb)))
+	Macroblocks.save_library(macro_lib)
+	say("Сохранён «%s»: %d машин, %s. B — поставить" % [mb.name, mb.parts.size(), Macroblocks.describe_ports(mb)])
+	set_mode("none")
+
+func start_macro(idx: int) -> void:
+	set_mode("macro_place")
+	macro_idx = idx
+	macro_rot = 0
+
+func delete_macro(idx: int) -> void:
+	macro_lib.remove_at(idx)
+	Macroblocks.save_library(macro_lib)
 
 func _waypoint_at(pos: Vector2) -> Dictionary:
 	for w in world.logic.wires.values():
@@ -275,6 +339,13 @@ func _waypoint_at(pos: Vector2) -> Dictionary:
 func _click(shift: bool) -> void:
 	var c := mouse_cell()
 	match mode:
+		"macro_select":
+			sel_start = c
+		"macro_place":
+			if macro_idx >= 0 and macro_idx < macro_lib.size():
+				var sub: Substance = world.db.get_sub(world.robot.selected) if world.robot.selected != "" else null
+				var err := Macroblocks.place(world, macro_lib[macro_idx], c, macro_rot, sub)
+				say(err if err != "" else "Макроблок «%s» построен" % macro_lib[macro_idx].name)
 		"build":
 			var sub := build_material()
 			var err := world.can_place(build_kind, c, sub)
@@ -331,6 +402,7 @@ func _save_screenshot() -> void:
 	var img := get_viewport().get_texture().get_image()
 	img.save_png(screenshot_path)
 	print("Скриншот сохранён: ", screenshot_path)
+	audio.stop_all()
 	get_tree().quit(0)
 
 ## Ищет место под цепочку «бур → пушка ~~> приёмник → бак» и прогоняет симуляцию.
@@ -367,21 +439,64 @@ func run_autotest() -> void:
 	out.call("изготовление крюка: " + w.fabricate("hook", sub))
 	if not w.robot.modules.is_empty():
 		out.call("установка: " + w.robot.equip(w.robot.modules[0].uid))
+	var logi := _build_logistics(w)
 	for i in 1200:
 		w.tick(0.1)
 	var delivered := tank.total_mass() + recv.total_mass()
+	var logi_ok := true
+	if not logi.is_empty():
+		var wh = logi.warehouse
+		logi_ok = wh.master_id == wh.id and wh.total_mass() > 1.0
+		out.call("пневмопровод и склад: собран=%s, на складе %.1f кг" % [wh.master_id == wh.id, wh.total_mass()])
+	else:
+		out.call("нет места под пневмопровод — пропуск")
+	var w2 := SaveGame.from_dict(JSON.parse_string(JSON.stringify(SaveGame.to_dict(w))))
+	var save_ok := w2.machines.size() == w.machines.size() and absf(w2.robot.carried_mass() - w.robot.carried_mass()) < 0.01
+	out.call("сохранение/загрузка: %s" % ("ок" if save_ok else "РАСХОЖДЕНИЕ"))
 	out.call("доставлено: %.1f кг; знаний: %d; известно тегов: %d" % [delivered, w.robot.knowledge, w.robot.known_tags.size()])
 	out.call("цель: " + w.goals.text())
-	var ok := delivered > 1.0 and w.robot.has_module("hook")
+	var ok := delivered > 1.0 and w.robot.has_module("hook") and logi_ok and save_ok
 	if screenshot_path != "":
 		selected_cell = cannon.cell
 		w.robot.pos = Vector2(cannon.cell) + Vector2(0.5, 1.5)
+		if not logi.is_empty():
+			logi.inlet.store(Portion.new(w.starter, 10.0))
+			selected_cell = logi.inlet.cell
+			w.robot.pos = Vector2(logi.inlet.cell) + Vector2(5.5, 2.5)
 		cam.position = w.robot.pos * T
 		return
 	_finish_autotest(ok)
 
+## Пневмопровод «вход → 8 сегментов → выход» в склад 2×2 на свободном месте.
+func _build_logistics(w: World) -> Dictionary:
+	var sub := w.starter
+	for r in range(3, 25):
+		for oy in range(-r, r + 1):
+			var o: Vector2i = w.planet.spawn + Vector2i(-r, oy)
+			var free := true
+			for dy in range(0, 3):
+				for dx in range(0, 13):
+					var c := o + Vector2i(dx, dy)
+					if not w.planet.buildable(c) or w.grid.has(c) or w.planet.deposits.has(c):
+						free = false
+			if not free:
+				continue
+			var inlet := w.place("tube_inlet", o, 0, sub, true)
+			for x in range(1, 9):
+				w.place("tube", o + Vector2i(x, 0), 0, sub, true)
+			w.place("tube_outlet", o + Vector2i(9, 0), 0, sub, true)
+			var wh := w.place("warehouse_section", o + Vector2i(10, 0), 0, sub, true)
+			w.place("warehouse_section", o + Vector2i(11, 0), 0, sub, true)
+			w.place("warehouse_section", o + Vector2i(10, 1), 0, sub, true)
+			w.place("warehouse_section", o + Vector2i(11, 1), 0, sub, true)
+			w.place("pump", o + Vector2i(0, 1), 0, sub, true)
+			inlet.store(Portion.new(sub, 8.0))
+			return {"inlet": inlet, "warehouse": wh}
+	return {}
+
 func _finish_autotest(ok: bool) -> void:
 	print("AUTOTEST ", "OK" if ok else "FAILED")
+	audio.stop_all()
 	get_tree().quit(0 if ok else 1)
 
 func _find_chain_site(w: World) -> Dictionary:

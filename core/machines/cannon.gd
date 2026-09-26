@@ -66,6 +66,7 @@ func fire(w, p: float) -> void:
 			w.log_event(cell, e)
 	payload.append_array(extra)
 	w.gas.take_gas(id, w.gas.amount(id) * 0.7)
+	w.sound("thump", cell)
 	_cd = 1.0
 	w.robot.xp.firekeeper += 0.5
 	if w.rng.chance(stats.burst_risk * p / stats.max_p):

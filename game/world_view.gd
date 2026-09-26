@@ -54,6 +54,7 @@ func _draw() -> void:
 	_draw_ground(vr)
 	_draw_pipes()
 	_draw_machines(vr)
+	_draw_structures()
 	_draw_links()
 	_draw_wires()
 	_draw_drones()
@@ -151,7 +152,8 @@ const SHORT := {"drill": "Бур", "container": "Конт", "tank": "Бак", "r
 	"condenser": "Хол", "treater": "Обр", "compressor": "Компр", "decompressor": "Деко", "distiller": "Дист",
 	"centrifuge": "Центр", "magnet_sep": "Магн", "filter": "Фильтр", "electrolyzer": "Элек", "sinter": "Спек",
 	"irradiator": "Облуч", "loom": "Ткач", "sensor": "Дат", "gate_and": "И", "gate_or": "ИЛИ", "gate_not": "НЕ",
-	"launch_silo": "Шахта", "dome": "Купол", "beacon": "Маяк"}
+	"launch_silo": "Шахта", "dome": "Купол", "beacon": "Маяк", "tube": "", "tube_inlet": "Вход", "tube_outlet": "Выход",
+	"warehouse_section": "Склад"}
 
 func _draw_machines(vr: Rect2i) -> void:
 	for m in world.machines.values():
@@ -165,7 +167,10 @@ func _draw_machine(kind: String, c: Vector2i, facing: int, col: Color, m = null,
 	var a := 0.45 if ghost else 1.0
 	var body := Color(col.darkened(0.25), a)
 	var info: Dictionary = Buildings.KINDS[kind]
-	if kind == "pipe":
+	if kind == "tube":
+		draw_rect(r.grow(-8), Color(0.25, 0.28, 0.32, a))
+		draw_rect(r.grow(-8), Color(body, a), false, 3.0)
+	elif kind == "pipe":
 		draw_circle(ctr, 7.0, Color(body, a))
 		draw_arc(ctr, 7.0, 0, TAU, 12, Color(0, 0, 0, 0.5 * a), 1.5)
 	elif kind in ["sensor", "gate_and", "gate_or", "gate_not"]:
@@ -183,7 +188,7 @@ func _draw_machine(kind: String, c: Vector2i, facing: int, col: Color, m = null,
 	if label != "":
 		draw_string(font, r.position + Vector2(1, T * 0.6), label, HORIZONTAL_ALIGNMENT_CENTER, T - 2, 8, Color(1, 1, 1, 0.9 * a))
 	# Направление выхода.
-	if kind != "pipe" and kind != "fabricator" and kind != "launch_silo":
+	if not kind in ["pipe", "tube", "fabricator", "launch_silo"]:
 		var d := Vector2(Machine.DIRS[facing])
 		var tip := ctr + d * (T * 0.5 - 2.0)
 		var side := Vector2(-d.y, d.x) * 5.0
@@ -210,12 +215,31 @@ func _draw_machine(kind: String, c: Vector2i, facing: int, col: Color, m = null,
 	if m.hp < m.max_hp() * 0.99:
 		var hf: float = clamp(m.hp / m.max_hp(), 0.0, 1.0)
 		draw_rect(Rect2(r.position + Vector2(3, -4), Vector2((T - 6) * hf, 3)), Color(0.9, 0.3, 0.2))
-	if m.has_gas() and kind != "pipe":
+	if m.has_gas() and not kind in ["pipe", "tube"]:
 		draw_arc(ctr, T * 0.3, -PI / 2, -PI / 2 + TAU * clamp(world.gas.pressure(m.id) / 10.0, 0.0, 1.0), 16, pressure_color(world.gas.pressure(m.id)), 2.0)
 	if world.logic.outputs.get(m.id, false):
 		draw_circle(r.position + Vector2(6, 6), 3.0, Color(1, 0.9, 0.2))
 	if m.stats.get("light", false):
 		draw_circle(ctr, T * 0.8, Color(1, 1, 0.7, 0.07))
+
+func _draw_structures() -> void:
+	for m in world.machines.values():
+		if m.kind == "warehouse_section" and m.master_id == m.id:
+			var r := Rect2(Vector2(m.cell) * T, Vector2(T * 2, T * 2)).grow(-1)
+			draw_rect(r, Color(0.9, 0.8, 0.4, 0.9), false, 3.0)
+			var f: float = clamp(m.total_mass() / m.capacity(), 0.0, 1.0)
+			draw_rect(Rect2(r.position + Vector2(4, r.size.y - 8), Vector2((r.size.x - 8) * f, 4)), Color(0.4, 0.9, 0.4))
+		elif m.kind == "tube_inlet" and not m.path.is_empty():
+			for i in range(m.path.size() - 1):
+				draw_line(cell_center(m.path[i]), cell_center(m.path[i + 1]), Color(0.5, 0.8, 1.0, 0.35), 4.0)
+	for cap in world.tube_capsules:
+		var i := int(cap.pos)
+		var k: float = cap.pos - i
+		var a := cell_center(cap.path[i])
+		var b := cell_center(cap.path[min(i + 1, cap.path.size() - 1)])
+		var p := a.lerp(b, k)
+		draw_circle(p, 7.0, Color(0.15, 0.15, 0.18))
+		draw_circle(p, 5.0, cap.payload[0].substance.color if not cap.payload.is_empty() else Color.WHITE)
 
 func _draw_links() -> void:
 	for m in world.machines.values():
@@ -309,6 +333,27 @@ func _draw_tool_preview() -> void:
 			draw_rect(r, Color(0.3, 1.0, 0.4, 0.8) if err == "" else Color(1.0, 0.3, 0.3, 0.8), false, 2.0)
 		"remove":
 			draw_rect(r, Color(1, 0.3, 0.3, 0.8), false, 2.0)
+		"macro_select":
+			var sr: Rect2i = main.selection_rect()
+			draw_rect(Rect2(Vector2(sr.position) * T, Vector2(sr.size) * T), Color(0.4, 0.8, 1.0, 0.15))
+			draw_rect(Rect2(Vector2(sr.position) * T, Vector2(sr.size) * T), Color(0.4, 0.8, 1.0, 0.9), false, 2.0)
+		"macro_place":
+			if main.macro_idx >= 0 and main.macro_idx < main.macro_lib.size():
+				var mb: Dictionary = main.macro_lib[main.macro_idx]
+				var sub: Substance = world.db.get_sub(world.robot.selected) if world.robot.selected != "" else null
+				var err := Macroblocks.can_place(world, mb, mc, main.macro_rot, sub)
+				for e in Macroblocks.footprint(mb, mc, main.macro_rot):
+					_draw_machine(e[1].kind, e[0], e[2], sub.color if sub != null else Color.GRAY, null, true)
+				var sz := Macroblocks.rotated_size(mb, main.macro_rot)
+				draw_rect(Rect2(Vector2(mc) * T, Vector2(sz) * T), Color(0.3, 1.0, 0.4, 0.9) if err == "" else Color(1.0, 0.3, 0.3, 0.9), false, 2.0)
+				var size := Vector2i(int(mb.size[0]), int(mb.size[1]))
+				for p in mb.ports:
+					var c: Vector2i = mc + Macroblocks.rot_off(Vector2i(int(p.off[0]), int(p.off[1])), size, main.macro_rot)
+					var d := Vector2(Machine.DIRS[(int(p.dir) + main.macro_rot) % 4])
+					var base := cell_center(c) + d * T * 0.5
+					var col := Color(0.4, 1.0, 0.5) if p.type == "out" else Color(1.0, 0.6, 0.3)
+					var tip := base + d * (10.0 if p.type == "out" else -10.0)
+					draw_line(base, tip, col, 3.0)
 		"wire", "link":
 			draw_rect(r, Color(1, 0.9, 0.3, 0.8), false, 2.0)
 			if main.pending_cell != null:
