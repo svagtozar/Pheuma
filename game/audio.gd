@@ -35,6 +35,9 @@ func _ready() -> void:
 		"rocket": _mix([_sweep_noise(1.6, 0.25, 0.08, 0.8), _tone(80, 50, 1.6, "sine", 1.5, 0.5)]),
 		"alarm": _mix([_seq([700, 900, 700, 900], 0.1, 0.25, "square")]),
 		"crackle": _mix([_noise(0.06, 60.0, 0.7, 0.25)]),
+		"puff": _mix([_noise(0.25, 10.0, 0.5, 0.16)]),
+		"zap": _mix([_noise(0.12, 40.0, 0.95, 0.3), _tone(2200, 900, 0.12, "square", 30.0, 0.12)]),
+		"drip": _mix([_tone(1200, 500, 0.12, "sine", 25.0, 0.3)]),
 	}
 	ambient = AudioStreamPlayer.new()
 	ambient.stream = _to_wav(_noise(4.0, 0.0, 0.025, 0.6), true)
@@ -66,7 +69,8 @@ func play(name: String, dist: float = 0.0) -> void:
 	if world == null or not streams.has(name) or dist > MAX_DIST:
 		return
 	var now := Time.get_ticks_msec()
-	if now - _last.get(name, 0) < 50:
+	var gap := 300 if name in ["puff", "drip", "zap"] else 50
+	if now - _last.get(name, 0) < gap:
 		return
 	_last[name] = now
 	for p in players:

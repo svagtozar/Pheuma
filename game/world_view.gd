@@ -7,12 +7,22 @@ var world: World
 var main                       # game/main.gd — состояние инструментов для превью
 var font: Font
 var _t := 0.0
+var fx := FxLayer.new()
 
 func _ready() -> void:
 	font = ThemeDB.fallback_font
 
 func _process(dt: float) -> void:
 	_t += dt
+	if world != null:
+		for e in world.fx:
+			fx.event(e)
+		world.fx.clear()
+		var vr := _visible_rect()
+		for m in world.machines.values():
+			if vr.has_point(m.cell):
+				fx.machine(m, dt)
+		fx.update(dt)
 	queue_redraw()
 
 static func cell_center(c: Vector2i) -> Vector2:
@@ -60,6 +70,7 @@ func _draw() -> void:
 	_draw_event()
 	_draw_drones()
 	_draw_fires()
+	fx.draw(self, font)
 	_draw_robot()
 	_draw_projectiles()
 	_draw_tool_preview()
@@ -144,10 +155,23 @@ func _draw_pipes() -> void:
 		var b = world.machines.get(e.b)
 		if a == null or b == null:
 			continue
-		var p := (world.gas.pressure(e.a) + world.gas.pressure(e.b)) / 2.0
+		var pa: float = world.gas.pressure(e.a)
+		var pb: float = world.gas.pressure(e.b)
+		var p := (pa + pb) / 2.0
 		var col := pressure_color(p) if e.open else Color(0.3, 0.3, 0.3)
-		draw_line(cell_center(a.cell), cell_center(b.cell), col.darkened(0.3), 9.0)
-		draw_line(cell_center(a.cell), cell_center(b.cell), col, 5.0)
+		var ca := cell_center(a.cell)
+		var cb := cell_center(b.cell)
+		draw_line(ca, cb, col.darkened(0.3), 9.0)
+		draw_line(ca, cb, col, 5.0)
+		# Газ течёт: бусины бегут от высокого давления к низкому, быстрее при большом перепаде.
+		var dp: float = pa - pb
+		if e.open and absf(dp) > 0.05:
+			var from := ca if dp > 0.0 else cb
+			var to := cb if dp > 0.0 else ca
+			var speed: float = clampf(absf(dp) * 1.5, 0.3, 3.0)
+			for i in 3:
+				var f: float = fposmod(_t * speed + i / 3.0, 1.0)
+				draw_circle(from.lerp(to, f), 2.0, col.lightened(0.45))
 
 const SHORT := {"drill": "Бур", "container": "Конт", "tank": "Бак", "receiver": "Приём", "fabricator": "Фаб",
 	"pump": "Насос", "pipe": "", "valve": "Клап", "cannon": "Пушка", "crusher": "Дроб", "furnace": "Печь",
@@ -217,9 +241,19 @@ func _draw_machine(kind: String, c: Vector2i, facing: int, col: Color, m = null,
 		var f: float = clamp(m.total_mass() / m.capacity(), 0.0, 1.0)
 		draw_rect(Rect2(r.position + Vector2(3, T - 6), Vector2((T - 6) * f, 3)), Color(0.4, 0.9, 0.4))
 		if not m.items.is_empty():
-			draw_circle(r.position + Vector2(T - 7, 11), 4.0, m.items[0].substance.color)
+			# До трёх самых крупных порций: размер — по доле массы.
+			var its: Array = m.items.duplicate()
+			its.sort_custom(func(a, b): return a.mass > b.mass)
+			var tot: float = maxf(m.total_mass(), 0.001)
+			for i in min(3, its.size()):
+				var rad: float = 2.0 + 3.0 * sqrt(its[i].mass / tot)
+				draw_circle(r.position + Vector2(T - 7, 9 + i * 7), rad, its[i].substance.color)
 	if m is Processor and m.busy != null:
-		draw_circle(ctr + Vector2(0, 6), 4.0 + 1.5 * sin(_t * 8.0), m.busy.substance.color)
+		# Порция едет от входа (сзади) к центру по мере работы.
+		var back := -Vector2(Machine.DIRS[m.facing])
+		var k: float = clampf(m.progress / m.proc.dur, 0.0, 1.0)
+		var pos := ctr + back * (T * 0.4) * (1.0 - k)
+		draw_circle(pos, 4.0 + 1.0 * sin(_t * 8.0), m.busy.substance.color)
 	if m.hp < m.max_hp() * 0.99:
 		var hf: float = clamp(m.hp / m.max_hp(), 0.0, 1.0)
 		draw_rect(Rect2(r.position + Vector2(3, -4), Vector2((T - 6) * hf, 3)), Color(0.9, 0.3, 0.2))

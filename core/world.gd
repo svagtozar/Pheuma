@@ -35,6 +35,7 @@ var built_kinds := {}
 var meta := {}                  # данные интерфейса, которые нужно сохранять (шаг обучения)
 var events: Array = []          # {"cell", "text", "t"} для интерфейса
 var sfx: Array = []             # {"name", "cell"} — звуки для game/audio.gd
+var fx: Array = []              # {"kind", "cell", "col", "text"} — видимые эффекты для game/fx.gd
 var time := 0.0
 var starter: Substance
 var _next_id := 1
@@ -93,6 +94,12 @@ func sound(name: String, cell: Vector2i) -> void:
 	sfx.append({"name": name, "cell": cell})
 	if sfx.size() > 32:
 		sfx.remove_at(0)
+
+## Видимый эффект (частицы, всплывающий текст). Ядро только копит, рисует game/fx.gd.
+func add_fx(kind: String, cell: Vector2i, col: Color = Color.WHITE, text: String = "") -> void:
+	fx.append({"kind": kind, "cell": cell, "col": col, "text": text})
+	if fx.size() > 200:
+		fx.remove_at(0)
 
 func time_factor() -> float:
 	var f: float = event_mods.get("time_boost", 1.0)
@@ -226,7 +233,7 @@ func possible_of(s: Substance) -> Array:
 	return out
 
 ## Тег вещества стал известен (why — как это выяснилось).
-func reveal(s: Substance, tag: String, why: String = "") -> void:
+func reveal(s: Substance, tag: String, why: String = "", cell = null) -> void:
 	if s == null or not tag in s.tags:
 		return
 	var k := _known(s)
@@ -234,6 +241,9 @@ func reveal(s: Substance, tag: String, why: String = "") -> void:
 		return
 	k[tag] = true
 	discover_tag(tag)
+	# Всплывающая находка — там, где её сделали (молчаливое наследование знаний — без неё).
+	if cell != null or why != "":
+		add_fx("reveal", cell if cell != null else robot_cell(), MaterialTags.TAGS[tag].col, "«%s»" % MaterialTags.display(tag))
 	if why != "":
 		log_event(robot_cell(), "%s: %s → «%s»" % [s.name, why, MaterialTags.display(tag)])
 	var hyp: Array = robot.hypotheses.get(s.id, [])
@@ -242,7 +252,7 @@ func reveal(s: Substance, tag: String, why: String = "") -> void:
 		robot.knowledge += 1
 		robot.xp.shaman += 3
 		log_event(robot_cell(), "Догадка верна: %s — «%s» (+1 знание)" % [s.name, MaterialTags.display(tag)])
-	_check_identified(s)
+	_check_identified(s, cell if cell != null else (robot_cell() if why != "" else null))
 
 func exclude(s: Substance, tag: String) -> void:
 	if s == null or tag in s.tags:
@@ -255,10 +265,12 @@ func exclude(s: Substance, tag: String) -> void:
 			hyp.erase(tag)
 			log_event(robot_cell(), "Догадка не подтвердилась: у %s нет «%s»" % [s.name, MaterialTags.display(tag)])
 
-func _check_identified(s: Substance) -> void:
+func _check_identified(s: Substance, cell = null) -> void:
 	var k := _known(s)
 	if unknown_count(s) == 0 and not k.get("_done", false):
 		k["_done"] = true
+		if cell != null:
+			add_fx("identified", cell, s.color, "%s опознан!" % s.name)
 		robot.knowledge += 1
 		robot.xp.shaman += 3
 		log_event(robot_cell(), "Материал опознан: %s — %s (+1 знание)" % [s.name, s.tag_names()])
@@ -278,7 +290,7 @@ func touch(s: Substance) -> void:
 			reveal(s, t, Probes.SIGNS[t][0])
 		else:
 			exclude(s, t)
-	_check_identified(s)
+	_check_identified(s, robot_cell())
 
 ## Залежь этого вещества рядом с роботом, из которой можно взять образец (или null).
 func probe_deposit(sub_id: String):
@@ -320,20 +332,22 @@ func probe(sub_id: String, probe_id: String, free: bool = false) -> String:
 	for t in Probes.PROBES[probe_id].tags:
 		if t in s.tags:
 			yes.append(Probes.SIGNS[t][0])
-			reveal(s, t)
+			reveal(s, t, "", robot_cell())
 		else:
 			if MaterialTags.is_exotic(t) and not robot.known_tags.has(t) and robot.passive("exotic_insight") <= 0:
 				continue   # незнакомое невозможное проба не называет (без «Знания невозможного»)
 			no.append(Probes.SIGNS[t][1])
 			exclude(s, t)
 	robot.xp.shaman += 1.0
+	add_fx("probe_" + probe_id, robot_cell(), s.color)
+	sound({"heat": "crackle", "drop": "drip", "magnet": "clunk", "spark": "zap", "count": "tick"}[probe_id], robot_cell())
 	var text := "%s, %s: %s" % [Probes.PROBES[probe_id].n, s.name, "; ".join(yes) if not yes.is_empty() else "ничего особенного"]
 	if not no.is_empty():
 		text += " (%s)" % ", ".join(no)
 	log_event(robot_cell(), text)
 	robot.last_probe = "%s, %s: %s%s" % [Probes.PROBES[probe_id].n, s.name, "; ".join(yes) if not yes.is_empty() else "ничего особенного",
 		(" (исключено: %d)" % no.size()) if not no.is_empty() else ""]
-	_check_identified(s)
+	_check_identified(s, robot_cell())
 	return ""
 
 ## Догадки: игрок помечает возможный тег; подтвердится — +1 знание.
@@ -382,6 +396,7 @@ func check_hypothesis(sub_id: String, tag: String) -> String:
 	if pid != "":
 		robot.tank -= Probes.PROBES[pid].gas * 0.5
 	touch(s)
+	add_fx("probe_" + (pid if pid != "" else "drop"), robot_cell(), s.color)
 	var sign: Array = Probes.SIGNS.get(tag, ["есть", "нет"])
 	if tag in s.tags:
 		reveal(s, tag, "проверка догадки: " + sign[0])
@@ -435,9 +450,11 @@ func on_processed(m: Machine, input: Portion, res: Dictionary) -> void:
 		discover_interaction(k)
 	# Наблюдение: сработавшее правило выдаёт теги входа («печь: сгорело → горючий»).
 	for t in res.get("matched", []):
-		reveal(input.substance, t, "%s: сработало" % m.display_name())
+		reveal(input.substance, t, "%s: сработало" % m.display_name(), fx_cell(m))
 	for o in res.outs:
 		inherit_knowledge(input.substance, o[0].substance, res.added)
+	var outc: Color = res.outs[0][0].substance.color if not res.outs.is_empty() else input.substance.color
+	add_fx("process_" + m.pid, fx_cell(m), outc)
 	for t in res.added:
 		discover_tag(t)
 	stats.processed += 1
@@ -1075,7 +1092,15 @@ func handling_env(m, ctx: String) -> Dictionary:
 func _apply_handling_result(res: Dictionary, c: Vector2i, sub: Substance = null) -> void:
 	for k in res.discovered:
 		discover_interaction(k)
-	observe(res, sub)
+	observe(res, sub, c)
+	if res.lost > 0.001 and sub != null:
+		var leaky := false
+		for t in res.get("revealed", []):
+			if t in ["phasing", "superfluid"]:
+				leaky = true
+		add_fx("drip" if leaky else "vapor", c, sub.color)
+		if near_robot(c, 8.0):
+			sound("drip" if leaky else "puff", c)
 	if res.fire:
 		fires[c] = max(fires.get(c, 0.0), 1.5)
 	for e in res.events:
@@ -1083,12 +1108,21 @@ func _apply_handling_result(res: Dictionary, c: Vector2i, sub: Substance = null)
 
 ## Правила обращения для груза машин сетки (мира или свёрнутого макроблока).
 ## Наблюдение: эффекты обращения, которые заметно сработали, выдают теги вещества.
-func observe(res: Dictionary, sub: Substance) -> void:
+func observe(res: Dictionary, sub: Substance, cell = null) -> void:
 	if sub == null:
 		return
 	for t in res.get("revealed", []):
 		var r: Array = HandlingRules.rules_for(t)
-		reveal(sub, t, "замечено — " + (r[0].desc.to_lower().trim_suffix(".") if not r.is_empty() else "ведёт себя странно"))
+		reveal(sub, t, "замечено — " + (r[0].desc.to_lower().trim_suffix(".") if not r.is_empty() else "ведёт себя странно"), cell)
+
+## Клетка машины на карте (для машин внутри свёрнутого блока — клетка блока).
+func fx_cell(m: Machine) -> Vector2i:
+	if machines.has(m.id) and machines[m.id] == m:
+		return m.cell
+	for b in machines.values():
+		if b is MacroMachine and b.inner.machines.get(m.id) == m:
+			return b.cell
+	return m.cell
 
 func handle_machines(grid, dt: float, event_cell = null) -> void:
 	for m in grid.machines.values().duplicate():

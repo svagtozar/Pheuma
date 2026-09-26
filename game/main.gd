@@ -37,6 +37,7 @@ var route_tag := ""
 var route_tag_pick := ""
 var tutorial: Tutorial = null
 var _uitest := false
+var _demo := false          # --demo: у робота строится небольшой завод (для скриншотов и замера кадров)
 var sel_start = null
 var _autosave_t := 0.0
 
@@ -78,6 +79,8 @@ func _ready() -> void:
 			open_window = a.substr(7)
 		elif a == "--menu":
 			want_menu = true
+		elif a == "--demo":
+			_demo = true
 	randomize()
 	view = WorldView.new()
 	view.main = self
@@ -106,6 +109,8 @@ func _ready() -> void:
 		open_main_menu()
 	else:
 		new_world(s if s >= 0 else randi() % 1000000)
+	if _demo:
+		call_deferred("_build_demo")
 	if _uitest:
 		call_deferred("run_uitest")
 	elif autotest:
@@ -626,7 +631,41 @@ func _wire_ends(w: Dictionary) -> Array:
 
 # ---------------------------------------------------------------- автотест и скриншот
 
+## Небольшой завод у робота: печь с насосом, дробилка, трубы к баку, летучее в открытом контейнере.
+func _build_demo() -> void:
+	var w := world
+	var o := w.planet.spawn + Vector2i(2, -3)
+	for dy in range(-1, 6):
+		for dx in range(-1, 8):
+			var q := o + Vector2i(dx, dy)
+			w.planet.set_tile(q, Planet.Tile.GROUND)
+			w.planet.deposits.erase(q)
+	var ore := w.db.add(Substance.new("demo_ore", "Демит", ["brittle", "flammable"]))
+	var vol := w.db.add(Substance.new("demo_gas", "Летан", ["volatile", "organic"]))
+	var feed := w.place("container", o, 0, w.starter, true)
+	feed.config.pass_through = true
+	feed.store(Portion.new(ore, 40.0))
+	var fur := w.place("furnace", o + Vector2i(1, 0), 0, w.starter, true)
+	w.place("container", o + Vector2i(2, 0), 0, w.starter, true)
+	var p := w.place("pump", o + Vector2i(1, 1), 0, w.starter, true)
+	p.config.target_p = 6.0
+	for i in 4:
+		w.place("pipe", o + Vector2i(1 + i, 2), 0, w.starter, true)
+	w.place("tank", o + Vector2i(5, 2), 0, w.starter, true)
+	var feed2 := w.place("container", o + Vector2i(4, 0), 0, w.starter, true)
+	feed2.config.pass_through = true
+	feed2.store(Portion.new(ore, 40.0))
+	w.place("crusher", o + Vector2i(5, 0), 0, w.starter, true)
+	w.place("container", o + Vector2i(6, 0), 0, w.starter, true)
+	var open := w.place("container", o + Vector2i(3, 4), 0, w.starter, true)
+	open.store(Portion.new(vol, 20.0))
+	w.robot.pos = Vector2(o) + Vector2(3.5, 3.0)
+	cam.position = w.robot.pos * T
+	cam.reset_smoothing()
+	assert(fur != null)
+
 func _save_screenshot() -> void:
+	print("Кадров в секунду: ", Engine.get_frames_per_second(), ", частиц: ", view.fx.parts.size())
 	var img := get_viewport().get_texture().get_image()
 	img.save_png(screenshot_path)
 	print("Скриншот сохранён: ", screenshot_path)

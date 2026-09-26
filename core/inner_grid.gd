@@ -90,7 +90,10 @@ func on_processed(m: Machine, input: Portion, res: Dictionary) -> void:
 	world.on_processed(m, input, res)
 
 func observe(res: Dictionary, sub: Substance) -> void:
-	world.observe(res, sub)
+	world.observe(res, sub, host.cell)
+
+func add_fx(kind: String, _c: Vector2i, col: Color = Color.WHITE, text: String = "") -> void:
+	world.add_fx(kind, host.cell, col, text)
 
 func net_receiver(_c: Vector2i):
 	return null
