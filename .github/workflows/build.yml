@@ -60,6 +60,9 @@ jobs:
       - name: Gameplay autotest
         run: ~/godot/godot --headless --path . -- --autotest --seed=7
 
+      - name: UI test (fabricator window and mouse building)
+        run: xvfb-run -a -s "-screen 0 1600x900x24" ~/godot/godot --path . --rendering-driver opengl3 -- --seed=5 --uitest
+
       - name: Export
         run: GODOT=~/godot/godot tools/export.sh
 

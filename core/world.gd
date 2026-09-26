@@ -5,6 +5,7 @@ extends RefCounted
 
 const MACHINE_LIMIT := 60
 const PICKUP_RADIUS := 0.8
+const FAB_RADIUS := 3.5
 
 var planet: Planet
 var db: SubstanceDB
@@ -380,6 +381,26 @@ func move_robot(delta: Vector2) -> void:
 func robot_speed() -> float:
 	return clamp(5.5 * 80.0 / robot.total_mass(), 2.5, 8.0)
 
+## Расстояние до ближайшего фабрикатора (INF, если его нет).
+func fabricator_distance() -> float:
+	var best := INF
+	for m in machines_of("fabricator"):
+		best = min(best, (Vector2(m.cell) + Vector2(0.5, 0.5)).distance_to(robot.pos))
+	return best
+
+## Подходящий материал для постройки: предпочтительный или любой из инвентаря.
+func pick_build_material(kind: String, preferred: Substance) -> Substance:
+	var cost := build_cost(kind)
+	if preferred != null and Buildings.check_material(kind, preferred, planet.ambient_temp) == "" and robot.mass_of(preferred.id) + 0.001 >= cost:
+		return preferred
+	var keys: Array = robot.inventory.keys()
+	keys.sort()
+	for id in keys:
+		var s := db.get_sub(id)
+		if Buildings.check_material(kind, s, planet.ambient_temp) == "" and robot.mass_of(id) + 0.001 >= cost:
+			return s
+	return null
+
 ## Ручная добыча залежи рядом с роботом.
 func mine(c: Vector2i, dt: float) -> String:
 	if not near_robot(c, 2.2):
@@ -455,10 +476,10 @@ func take_from(c: Vector2i) -> String:
 func fabricate(kind: String, sub: Substance) -> String:
 	var near := false
 	for m in machines_of("fabricator"):
-		if near_robot(m.cell, 2.5):
+		if near_robot(m.cell, FAB_RADIUS):
 			near = true
 	if not near:
-		return "подойдите к фабрикатору"
+		return "подойдите к фабрикатору (не дальше %.1f кл.)" % FAB_RADIUS
 	if not robot.blueprints.has(kind):
 		return "чертёж не изучен"
 	var err := Modules.check_material(kind, sub, planet.ambient_temp)

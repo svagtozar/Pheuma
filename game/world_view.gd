@@ -344,6 +344,12 @@ func _draw_tool_preview() -> void:
 		"build":
 			var sub: Substance = main.build_material()
 			var err: String = world.can_place(main.build_kind, mc, sub)
+			if main.build_kind == "drill":
+				for c in world.planet.deposits:
+					if not world.grid.has(c) and world.planet.deposits[c].amount > 0.0:
+						draw_rect(Rect2(Vector2(c) * T, Vector2(T, T)).grow(-2), Color(0.4, 1.0, 0.5, 0.55), false, 1.5)
+			if err != "":
+				draw_string(font, Vector2(mc) * T + Vector2(T + 4, T * 0.6), err, HORIZONTAL_ALIGNMENT_LEFT, -1, 12, Color(1.0, 0.45, 0.4))
 			_draw_machine(main.build_kind, mc, main.build_facing, sub.color if sub != null else Color.GRAY, null, true)
 			draw_rect(r, Color(0.3, 1.0, 0.4, 0.8) if err == "" else Color(1.0, 0.3, 0.3, 0.8), false, 2.0)
 		"remove":

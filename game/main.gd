@@ -29,6 +29,7 @@ var macro_collapsed := false
 var route_tag := ""
 var route_tag_pick := ""
 var tutorial: Tutorial = null
+var _uitest := false
 var sel_start = null
 var _autosave_t := 0.0
 
@@ -60,6 +61,9 @@ func _ready() -> void:
 			autotest = true
 		elif a == "--tutorial":
 			want_tutorial = true
+		elif a == "--uitest":
+			autotest = true
+			_uitest = true
 		elif a.begins_with("--screenshot="):
 			screenshot_path = a.substr(13)
 		elif a.begins_with("--open="):
@@ -85,7 +89,9 @@ func _ready() -> void:
 		start_tutorial()
 	else:
 		new_world(s if s >= 0 else randi() % 1000000)
-	if autotest:
+	if _uitest:
+		call_deferred("run_uitest")
+	elif autotest:
 		call_deferred("run_autotest")
 	if open_window == "briefing":
 		hud.show_briefing()
@@ -154,11 +160,16 @@ func mouse_cell() -> Vector2i:
 
 func build_material() -> Substance:
 	var r := world.robot
+	var pref: Substance = null
 	if build_sub_id != "" and r.inventory.has(build_sub_id):
-		return world.db.get_sub(build_sub_id)
-	if r.selected != "":
-		return world.db.get_sub(r.selected)
-	return null
+		pref = world.db.get_sub(build_sub_id)
+	elif r.selected != "":
+		pref = world.db.get_sub(r.selected)
+	if mode == "build" and build_kind != "":
+		var s := world.pick_build_material(build_kind, pref)
+		if s != null:
+			return s
+	return pref
 
 func set_mode(m: String) -> void:
 	mode = m
@@ -257,7 +268,10 @@ func _on_key(e: InputEventKey) -> void:
 	match e.keycode:
 		KEY_B: hud.toggle("palette")
 		KEY_K: hud.toggle("skills")
-		KEY_F: hud.toggle("fabricator")
+		KEY_F:
+			hud.toggle("fabricator")
+			if world.fabricator_distance() > World.FAB_RADIUS and hud.windows.fabricator.visible:
+				say("изготовление работает у фабрикатора: подойдите ближе" if world.fabricator_distance() < INF else "сначала поставьте фабрикатор (B)")
 		KEY_H, KEY_F1: hud.toggle("help")
 		KEY_X: set_mode("remove" if mode != "remove" else "none")
 		KEY_V: set_mode("wire" if mode != "wire" else "none")
@@ -564,6 +578,70 @@ func _build_logistics(w: World) -> Dictionary:
 			bat.accept(Portion.new(sub, 20.0), o + Vector2i(-1, 0))
 			return {"battery": bat, "warehouse": wh}
 	return {}
+
+## Проверка интерфейса: изготовить и установить модуль через кнопки окна фабрикатора.
+func run_uitest() -> void:
+	var w := world
+	var fc := w.planet.spawn + Vector2i(1, 0)
+	w.place("fabricator", fc, 0, w.starter)
+	w.robot.pos = Vector2(fc) + Vector2(0.5, 1.5)
+	await get_tree().process_frame
+	# Изучаем узел через окно прокачки.
+	hud.toggle("skills")
+	await get_tree().process_frame
+	var learn_btn := _find_button(hud.skills_box, "Пневмокрюк")
+	print("[uitest] кнопка узла: ", learn_btn != null, " disabled=", learn_btn.disabled if learn_btn else "-")
+	if learn_btn: learn_btn.pressed.emit()
+	await get_tree().process_frame
+	print("[uitest] чертёж крюка: ", w.robot.blueprints.has("hook"))
+	hud.toggle("fabricator")
+	await get_tree().process_frame
+	var bp := _find_button(hud.fab_box, "Пневмокрюк")
+	print("[uitest] кнопка чертежа: ", bp != null)
+	if bp: bp.pressed.emit()
+	await get_tree().process_frame
+	var go := _find_button(hud.fab_box, "Изготовить")
+	print("[uitest] кнопка «Изготовить»: ", go != null, " disabled=", go.disabled if go else "-", " материалов в списке=", hud.fab_mat.item_count if hud.fab_mat else -1)
+	if go: go.pressed.emit()
+	await get_tree().process_frame
+	print("[uitest] модулей в запасе: ", w.robot.modules.size(), " сообщение: ", message)
+	var eq := _find_button(hud.fab_box, "Установить")
+	if eq: eq.pressed.emit()
+	await get_tree().process_frame
+	print("[uitest] установлено: ", w.robot.equipped.map(func(m): return m.kind))
+	hud.close_all()
+	# Бур настоящим кликом мыши по ближайшей залежи.
+	var dep := Vector2i(-1, -1)
+	for c in w.planet.deposits:
+		if not w.grid.has(c) and (dep == Vector2i(-1, -1) or (Vector2(c) - w.robot.pos).length() < (Vector2(dep) - w.robot.pos).length()):
+			dep = c
+	w.robot.pos = Vector2(dep) + Vector2(0.5, 1.5)
+	cam.position = w.robot.pos * T
+	cam.reset_smoothing()
+	await get_tree().process_frame
+	await get_tree().process_frame
+	start_build("drill")
+	var screen := get_viewport().get_canvas_transform() * ((Vector2(dep) + Vector2(0.5, 0.5)) * T)
+	get_viewport().warp_mouse(screen)
+	await get_tree().process_frame
+	print("[uitest] мышь над клеткой ", mouse_cell(), ", залежь ", dep, ", проверка: «", w.can_place("drill", dep, build_material()), "»")
+	for pressed in [true, false]:
+		var ev := InputEventMouseButton.new()
+		ev.button_index = MOUSE_BUTTON_LEFT
+		ev.pressed = pressed
+		ev.position = screen
+		ev.global_position = screen
+		Input.parse_input_event(ev)
+		await get_tree().process_frame
+	var placed = w.machine_at(dep)
+	print("[uitest] бур поставлен: ", placed != null and placed.kind == "drill", " сообщение: ", message)
+	_finish_autotest(w.robot.has_module("hook") and placed != null)
+
+func _find_button(root: Node, text_part: String) -> Button:
+	for c in root.find_children("*", "Button", true, false):
+		if not c.is_queued_for_deletion() and text_part in c.text:
+			return c
+	return null
 
 func _finish_autotest(ok: bool) -> void:
 	print("AUTOTEST ", "OK" if ok else "FAILED")

@@ -22,6 +22,9 @@ var skills_title: Label
 var fab_box: VBoxContainer
 var fab_bp := ""
 var fab_mat: OptionButton
+var fab_go: Button
+var fab_reason: Label
+var fab_ids: Array = []
 var codex_label: RichTextLabel
 var briefing_label: RichTextLabel
 var tut_panel: PanelContainer
@@ -380,16 +383,21 @@ func _rebuild_palette() -> void:
 			var b := Button.new()
 			b.text = "%s (%.0f кг)" % [Buildings.name_of(k), world.build_cost(k)]
 			var reason := ""
+			var use: Substance = world.pick_build_material(k, sub)
 			if not world.robot.unlocked.has(k):
-				reason = "не изучено"
-			elif sub != null:
-				reason = Buildings.check_material(k, sub, world.planet.ambient_temp)
+				reason = "не изучено — откройте в прокачке (K)"
+			elif use == null:
+				var why := Buildings.check_material(k, sub, world.planet.ambient_temp) if sub != null else ""
+				reason = "нет подходящего материала: нужно %.0f кг твёрдого материала с твёрдостью ≥ %.1f%s" % [world.build_cost(k), Buildings.KINDS[k].get("hard", 0.0), " (" + why + ")" if why != "" else ""]
+			if use != null and use != sub and reason == "":
+				b.text += " — из «%s»" % use.name
 			b.tooltip_text = Buildings.desc_of(k) + ("\n\nНельзя: " + reason if reason != "" else "")
-			if sub != null and reason == "":
-				b.tooltip_text += "\n\nИз этого материала:\n" + "\n".join(ComponentStats.describe(k, sub, world.robot.passive("quality")))
+			if use != null and reason == "":
+				b.tooltip_text += "\n\nИз «%s»:\n" % use.name + "\n".join(ComponentStats.describe(k, use, world.robot.passive("quality")))
 			b.disabled = reason != ""
+			var uid: String = use.id if use != null else ""
 			b.pressed.connect(func():
-				main.start_build(k, sub_id)
+				main.start_build(k, uid)
 				windows.palette.visible = false)
 			flow.add_child(b)
 	var ml := _label(palette_box, 14)
@@ -461,15 +469,24 @@ func _rebuild_fab() -> void:
 	for c in fab_box.get_children():
 		if c.get_index() > 0:
 			c.queue_free()
+	fab_go = null
+	fab_reason = null
 	var r := world.robot
-	var near := false
-	for m in world.machines_of("fabricator"):
-		if world.near_robot(m.cell, 2.5):
-			near = true
+	var ability_bps: Array = r.blueprints.keys().filter(func(k): return Modules.MODULES[k].slot == "ability")
 	var l := _label(fab_box, 13)
-	l.text = "Изготовление доступно рядом с фабрикатором." if not near else "Выберите чертёж и материал. Свойства модуля зависят от материала."
+	l.text = "Выберите чертёж и материал — свойства модуля зависят от материала. Работает, если робот не дальше %.1f кл. от фабрикатора." % World.FAB_RADIUS
+	if ability_bps.is_empty():
+		var hint := _label(fab_box, 13)
+		hint.add_theme_color_override("font_color", Color(1.0, 0.85, 0.4))
+		hint.text = "Чертежей модулей с абилками пока нет. Откройте прокачку (K) и изучите первый узел любого класса — он стоит 1 знание и открывает чертёж. Здесь пока можно сделать новый корпус или ручной бур."
+		var kb := Button.new()
+		kb.text = "Открыть прокачку"
+		kb.pressed.connect(func(): toggle("skills"))
+		fab_box.add_child(kb)
 	var bps := HFlowContainer.new()
 	fab_box.add_child(bps)
+	if fab_bp == "" or not r.blueprints.has(fab_bp):
+		fab_bp = ability_bps[0] if not ability_bps.is_empty() else "hull"
 	for k in Modules.MODULES:
 		if not r.blueprints.has(k):
 			continue
@@ -492,13 +509,13 @@ func _rebuild_fab() -> void:
 		fab_mat = OptionButton.new()
 		fab_mat.custom_minimum_size = Vector2(520, 0)
 		h.add_child(fab_mat)
-		var ids := _eligible(func(s): return Modules.check_material(fab_bp, s, world.planet.ambient_temp))
-		_fill_material_option(fab_mat, ids, r.selected)
+		fab_ids = _eligible(func(s): return Modules.check_material(fab_bp, s, world.planet.ambient_temp) if world.robot.mass_of(s.id) >= d.cost else "мало")
+		_fill_material_option(fab_mat, fab_ids, r.selected)
 		var preview := _label(fab_box, 12)
 		var upd := func():
 			var sid := _selected_meta(fab_mat)
 			if sid == "":
-				preview.text = "Нет подходящего материала."
+				preview.text = ""
 				return
 			var sk: String = fab_bp if fab_bp in ["hull", "hand_drill"] else "module"
 			var st := ComponentStats.compute(sk, world.db.get_sub(sid), r.passive("quality"))
@@ -506,13 +523,16 @@ func _rebuild_fab() -> void:
 				st.max_hp, st.hardness, st.mass, st.flex, st.shield_heat * 100, st.shield_radiation * 100, st.shield_toxic * 100, st.shield_acid * 100]
 		upd.call()
 		fab_mat.item_selected.connect(func(_i): upd.call())
-		var go := Button.new()
-		go.text = "Изготовить"
-		go.disabled = not near or ids.is_empty()
-		go.pressed.connect(func():
-			main.say(world.fabricate(fab_bp, world.db.get_sub(_selected_meta(fab_mat))))
+		fab_go = Button.new()
+		fab_go.text = "Изготовить"
+		fab_go.pressed.connect(func():
+			var sid := _selected_meta(fab_mat)
+			main.say(world.fabricate(fab_bp, world.db.get_sub(sid)) if sid != "" else "нет подходящего материала")
 			_rebuild_fab())
-		h.add_child(go)
+		h.add_child(fab_go)
+		fab_reason = _label(fab_box, 13)
+		fab_reason.add_theme_color_override("font_color", Color(1.0, 0.45, 0.4))
+		_update_fab_state()
 	var sep := HSeparator.new()
 	fab_box.add_child(sep)
 	var ml := _label(fab_box, 13)
@@ -545,6 +565,23 @@ func _rebuild_fab() -> void:
 			main.say(r.equip(uid))
 			_rebuild_fab())
 		hb.add_child(eb)
+
+## Живое состояние кнопки «Изготовить»: почему нельзя — красным.
+func _update_fab_state() -> void:
+	if fab_go == null or not is_instance_valid(fab_go):
+		return
+	var why := ""
+	var dist := world.fabricator_distance()
+	if dist == INF:
+		why = "Нет фабрикатора: поставьте его (B → Добыча и хранение → Фабрикатор)."
+	elif dist > World.FAB_RADIUS:
+		why = "Подойдите к фабрикатору: сейчас %.1f кл., нужно не дальше %.1f." % [dist, World.FAB_RADIUS]
+	elif fab_ids.is_empty():
+		var d: Dictionary = Modules.MODULES[fab_bp]
+		why = "Нет подходящего материала: нужно %.0f кг твёрдого материала с твёрдостью ≥ %.1f%s." % [d.cost, d.get("hard", 0.0),
+			" и тегом " + " или ".join(d.any.map(func(t): return MaterialTags.display(t))) if d.has("any") else ""]
+	fab_go.disabled = why != ""
+	fab_reason.text = why
 
 func _rebuild_codex() -> void:
 	var r := world.robot
@@ -596,6 +633,10 @@ func refresh() -> void:
 	var mode_text := {"none": "", "build": "Строительство: %s — ЛКМ поставить, R повернуть, ПКМ отмена" % (Buildings.name_of(main.build_kind) if main.build_kind != "" else ""),
 		"macro_select": "Макроблок: протяните ЛКМ по машинам", "macro_place": "Макроблок%s: ЛКМ поставить, R повернуть, C свернуть/развернуть, ПКМ отмена" % (" (свёрнутый)" if main.macro_collapsed else ""),
 		"remove": "Снос — ЛКМ по машине", "wire": "Провод — источник, затем приёмник (Shift — вход 2)", "link": "Наведение пушки — пушка, затем приёмник"}
+	if main.mode == "build" and main.build_kind != "":
+		var err: String = world.can_place(main.build_kind, main.mouse_cell(), main.build_material())
+		var bm: Substance = main.build_material()
+		mode_text["build"] += "\nМатериал: %s. %s" % [bm.name if bm != null else "—", "Можно ставить." if err == "" else "Здесь нельзя: " + err]
 	var sel := world.db.get_sub(r.selected) if r.selected != "" else null
 	status_label.text = "Корпус %.0f/%.0f   Баллон %.1f/%.1f   Масса %.0f   Бур тв. %.1f   Выбрано: %s\n%s\n%s" % [
 		r.hp, r.max_hp(), r.tank, r.tank_cap(), r.total_mass(), r.mining_hardness(),
@@ -614,6 +655,8 @@ func refresh() -> void:
 	msg_label.visible = main.message_t > 0.0
 	_refresh_inventory()
 	_layout()
+	if windows.fabricator.visible:
+		_update_fab_state()
 	if _t > 0.2:
 		_t = 0.0
 		_refresh_inspector()
@@ -669,6 +712,8 @@ func _refresh_inspector() -> void:
 	_btn("Снести", func():
 		world.remove_at(m.cell)
 		main.selected_cell = null)
+	if m.kind == "fabricator":
+		_btn("Открыть фабрикатор (F)", func(): if not windows.fabricator.visible: toggle("fabricator"))
 	if m.config.has("pass_through"):
 		_btn("Выдача: %s" % ("да" if m.config.pass_through else "нет"), func(): m.config.pass_through = not m.config.pass_through)
 	if m.config.has("tag"):
