@@ -36,7 +36,9 @@ static func world(tags: Array = [], temp: float = 15.0) -> World:
 	g.id = "science"
 	p.goal = g
 	p.db.add(p.atmosphere)
-	return World.new(p)
+	var w := World.new(p)
+	w.director.enabled = false   # события в тестах машин запускаются только явно
+	return w
 
 static func run(w: World, seconds: float) -> void:
 	for i in int(seconds * 10):

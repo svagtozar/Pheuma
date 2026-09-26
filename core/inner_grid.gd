@@ -28,6 +28,8 @@ var rng: Rng:
 	get: return world.rng
 var stats: Dictionary:
 	get: return world.stats
+var event_mods: Dictionary:
+	get: return world.event_mods
 
 func _init(w: World, h, p_size: Vector2i) -> void:
 	_outer = weakref(w)
@@ -99,7 +101,7 @@ func handling_env(m, _ctx: String) -> Dictionary:
 				hot = true
 	return {"planet": planet, "db": db, "rng": rng, "container": m.built_from if m != null else null,
 		"neighbors": m.items if m != null else [], "hot_nearby": hot,
-		"shield": robot.shield(), "safe_fire": robot.passive("safe_fire") > 0}
+		"shield": robot.shield(), "safe_fire": robot.passive("safe_fire") > 0, "corrosion": world.event_mods.corrosion}
 
 func drop_portions(_c: Vector2i, arr: Array) -> void:
 	world.drop_portions(host.cell, arr)

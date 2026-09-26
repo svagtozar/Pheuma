@@ -126,7 +126,7 @@ static func _apply(r: Dictionary, p: Portion, mass0: float, phase: int, ctx: Str
 			for t in CORROSION_PROOF:
 				if cont.has(t):
 					return
-			res.container_damage += rate * dt * min(1.0, mass0 / 5.0)
+			res.container_damage += rate * env.get("corrosion", 1.0) * dt * min(1.0, mass0 / 5.0)
 		"phase_leak":
 			if cont != null and cont.has("anchoring"):
 				return

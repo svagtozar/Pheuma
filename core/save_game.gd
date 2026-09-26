@@ -112,6 +112,8 @@ static func to_dict(w: World) -> Dictionary:
 	d.overrides = w.tile_overrides.keys().map(func(c): return [c.x, c.y, w.tile_overrides[c].tile, w.tile_overrides[c].t])
 	d.launched = w.launched
 	d.built_kinds = w.built_kinds.keys()
+	d.events = w.director.to_dict()
+	d.stats = w.stats
 	d.meta = w.meta
 	d.goals = {"stage": w.goals.stage, "hold": w.goals.hold, "completed": w.goals.completed, "progress": w.goals.progress}
 	var r := w.robot
@@ -152,6 +154,11 @@ static func from_dict(d: Dictionary) -> World:
 		w.tile_overrides[Vector2i(int(o[0]), int(o[1]))] = {"tile": int(o[2]), "t": float(o[3])}
 	w.launched = {"mass": float(d.launched.mass), "tags": d.launched.tags, "exotic": float(d.launched.exotic)}
 	w.meta = d.get("meta", {})
+	if d.has("stats"):
+		for k in d.stats:
+			w.stats[k] = int(d.stats[k])
+	if d.has("events"):
+		w.director.from_dict(d.events)
 	w.built_kinds = {}
 	for k in d.built_kinds:
 		w.built_kinds[k] = true

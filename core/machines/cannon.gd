@@ -123,7 +123,8 @@ func fire(w, p: float) -> void:
 		total += q.mass
 		scatter = max(scatter, Handling.cannon_scatter(q, w.planet))
 	factor = factor / total if total > 0.0 else 1.0
-	scatter *= (1.0 - w.robot.passive("aim"))
+	var storm: float = w.event_mods.scatter
+	scatter = (scatter * storm + (2.0 if storm > 1.0 else 0.0)) * (1.0 - w.robot.passive("aim"))
 	var rng_tiles := range_for(p, w.planet) * factor * range_mult()
 	var dist := from.distance_to(to)
 	var dest := to

@@ -18,7 +18,9 @@ var machines := {}              # id → Machine
 var grid := {}                  # Vector2i → id
 var ground := {}                # Vector2i → Array[Portion]
 var projectiles: Array = []     # {from, to, t, dur, payload, orbit}
-var stats := {"shots": 0, "hits": 0, "processed": 0, "orbit": 0}
+var stats := {"shots": 0, "hits": 0, "processed": 0, "orbit": 0, "lost": 0}
+var director: EventDirector
+var event_mods := {"scatter": 1.0, "corrosion": 1.0}
 var drones: Array = []          # {src, dst, pos, cargo, speed, cap}
 var drone_pending := -1
 var revealed := {}              # клетки залежей, найденные сканером
@@ -47,6 +49,7 @@ func _init(p: Planet) -> void:
 	gas.atm_pressure = p.atm_pressure
 	gas.ambient = p.ambient_temp
 	goals = GoalsTracker.new(self)
+	director = EventDirector.new(self)
 	starter = db.add(Substance.new("pod", "Сплав капсулы", ["metallic", "dense"], {"hard": 0.5, "melt": 100.0}))
 	starter.name = "Сплав капсулы"
 	robot.pos = Vector2(p.spawn) + Vector2(0.5, 0.5)
@@ -278,6 +281,7 @@ func destroy(m: Machine, reason: String) -> void:
 		return
 	log_event(m.cell, "%s разрушен: %s" % [m.display_name(), reason])
 	sound("boom", m.cell)
+	stats.lost += 1
 	_drop_contents(m)
 	_erase(m)
 
@@ -550,6 +554,9 @@ func _land(pr: Dictionary) -> void:
 	if pr.orbit:
 		return
 	var c := Vector2i(floori(pr.to.x), floori(pr.to.y))
+	if pr.kind == "meteor":
+		director.meteor_hit(c)
+		return
 	sound("land", c)
 	var payload: Array = pr.payload
 	if robot.has_module("magnet") and robot.pos.distance_to(pr.to) < 3.0:
@@ -612,6 +619,7 @@ func tick(dt: float) -> void:
 		_handling_acc = 0.0
 	_tick_robot(dt)
 	_tick_world_hazards(dt)
+	director.tick(dt)
 	goals.tick(dt)
 
 func _tick_logic() -> void:
@@ -750,7 +758,7 @@ func handling_env(m, ctx: String) -> Dictionary:
 				hot = true
 	return {"planet": planet, "db": db, "rng": rng, "container": m.built_from if m != null else null,
 		"neighbors": m.items if m != null else [], "hot_nearby": hot,
-		"shield": robot.shield(), "safe_fire": robot.passive("safe_fire") > 0}
+		"shield": robot.shield(), "safe_fire": robot.passive("safe_fire") > 0, "corrosion": event_mods.corrosion}
 
 func _apply_handling_result(res: Dictionary, c: Vector2i) -> void:
 	for k in res.discovered:
