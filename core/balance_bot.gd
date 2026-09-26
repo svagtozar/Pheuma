@@ -79,9 +79,10 @@ func material_for(kind: String, check: Callable = Callable()) -> Substance:
 	# Стартовый сплав держим на пусковую шахту, если цель требует отправки на орбиту.
 	var reserve := 0.0
 	if kind != "launch_silo":
-		for st in w.planet.goal.stages:
-			if st.type.begins_with("launch") and w.machines_of("launch_silo").is_empty():
-				reserve = w.build_cost("launch_silo")
+		for raw in w.planet.goal.stages:
+			for st in Goals.options(raw):
+				if st.type.begins_with("launch") and w.machines_of("launch_silo").is_empty():
+					reserve = w.build_cost("launch_silo")
 	for id in w.robot.inventory:
 		var s: Substance = w.db.get_sub(id)
 		var spare: float = w.robot.mass_of(id) - (reserve if s == w.starter else 0.0)
@@ -485,7 +486,16 @@ func play() -> void:
 	learn_what_we_can()
 	var goal: Dictionary = w.planet.goal
 	for i in goal.stages.size():
-		var st: Dictionary = goal.stages[i]
+		_take_reward()
+		if w.goals.choice_pending():
+			var alts: Array = w.goals.raw_stage(i).alt
+			var pick := 0
+			for k in alts.size():
+				if PREFER.find(alts[k].type) < PREFER.find(alts[pick].type):
+					pick = k
+			w.goals.choose(pick)
+			note("выбран путь: %s" % alts[pick].desc)
+		var st: Dictionary = w.goals.current()
 		_stage_start = w.time
 		var why := do_stage(st)
 		var ok: bool = w.goals.stage > i or w.goals.completed
@@ -500,6 +510,22 @@ func play() -> void:
 						", реагент %.1f" % m.reagent.mass if m is Processor and m.reagent != null else ""])
 		stages.append({"desc": st.desc, "ok": ok, "time": w.time - _stage_start, "why": why})
 		if not ok:
+			return
+	_take_reward()
+
+## Какие типы этапов бот выбирает охотнее (раньше в списке — лучше).
+const PREFER := ["stockpile_tags", "launch_mass", "launch_tag", "build_count", "discover_tags", "stockpile_mass",
+	"machines_working", "deliveries", "beacon_hold", "discover_exotic", "launch_exotic", "discover_interactions",
+	"sensor_network", "dome_env", "phasing_contained"]
+const REWARD_PREFER := ["supply", "slot", "knowledge", "blueprint", "repair", "survey"]
+
+func _take_reward() -> void:
+	var offer: Array = w.goals.reward_pending
+	if offer.is_empty():
+		return
+	for id in REWARD_PREFER:
+		if id in offer:
+			note("награда: %s — %s" % [Rewards.CARDS[id].n, w.goals.take_reward(id)])
 			return
 
 func do_stage(st: Dictionary) -> String:
@@ -538,6 +564,32 @@ func do_stage(st: Dictionary) -> String:
 			return _discover(st)
 		"sensor_network":
 			return _sensors(st.n)
+		"stockpile_mass":
+			var cap := 0.0
+			for m in w.machines.values():
+				if m.is_storage():
+					cap += m.capacity()
+			var any := _soft_materials()
+			var guard := 0
+			while cap < st.mass * 1.2 and guard < 8 and not any.is_empty():
+				guard += 1
+				var snk := build_chain({"mat": any[guard % any.size()], "steps": [], "locked": []}, "container")
+				if snk == null:
+					break
+				cap += snk.capacity()
+			return "" if cap >= st.mass else "не хватило места под запас"
+		"machines_working":
+			var any := _soft_materials()
+			var n := 0
+			for i in st.n + 2:
+				if n >= st.n or any.is_empty():
+					break
+				var pl := {"mat": any[i % any.size()], "steps": [{"op": "process", "pid": "furnace", "kind": "furnace", "out": 0}], "locked": []}
+				if build_chain(pl, "container") != null:
+					n += 1
+			return "" if n >= st.n else "не поставить %d линий обработки" % st.n
+		"deliveries":
+			return _deliveries()
 		"dome_env":
 			return _dome(st)
 		"beacon_hold":
@@ -553,6 +605,40 @@ func do_stage(st: Dictionary) -> String:
 			var chk := func(s): return s.has("anchoring")
 			return "" if produce("phasing", ["tank", chk]) != null else "не получить фазирующее или бак из якорного"
 	return "бот не умеет этап «%s»" % st.type
+
+func _soft_materials() -> Array:
+	return w.planet.materials.filter(func(s): return minable(s) and s.phase_at(w.planet.ambient_temp) == Substance.Phase.SOLID and not deposits_of(s, true).is_empty())
+
+## Бур → пушка (+насос) ~~> приёмник → контейнер.
+func _deliveries() -> String:
+	var any := _soft_materials()
+	if any.is_empty():
+		return "нечего возить"
+	for s in any:
+		for dep in deposits_of(s, true).slice(0, 20):
+			for f in 4:
+				var d: Vector2i = Machine.DIRS[f]
+				var ok := true
+				for k in [1, 5, 6]:
+					if not is_free(dep + d * k):
+						ok = false
+				var pc: Vector2i = dep + d + Machine.DIRS[(f + 1) % 4]
+				if not ok or not is_free(pc):
+					continue
+				if build("drill", dep, f, func(m): return m.hardness + 0.5 >= s.hardness) == null:
+					return "не поставить бур"
+				var cannon := build("cannon", dep + d, f)
+				var recv := build("receiver", dep + d * 5, f)
+				var box := build("container", dep + d * 6, f)
+				if cannon == null or recv == null or box == null:
+					return "не собрать пушечную линию"
+				var p := build("pump", pc, 0)
+				if p != null:
+					p.config.target_p = 5.0
+				w.link_cannon(cannon.cell, recv.cell)
+				note("пушечная линия %d,%d → %d,%d" % [cannon.cell.x, cannon.cell.y, recv.cell.x, recv.cell.y])
+				return ""
+	return "нет места под пушечную линию"
 
 func _free_near(c: Vector2i) -> Vector2i:
 	for r in range(2, 30):

@@ -27,6 +27,7 @@ var unlocked := {}                    # постройки
 var known_tags := {}
 var analyzed := {}                    # id материалов с раскрытыми тегами
 var known_interactions := {}
+var bonus_slots := 0                  # награды за этапы
 var _next_module := 1
 
 func _init() -> void:
@@ -47,7 +48,7 @@ func passive(key: String) -> float:
 	return s
 
 func slots() -> int:
-	return BASE_SLOTS + int(passive("slots"))
+	return BASE_SLOTS + int(passive("slots")) + bonus_slots
 
 func max_hp() -> float:
 	return hull.stats.max_hp * 1.2 if hull != null else 60.0

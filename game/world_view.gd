@@ -57,6 +57,7 @@ func _draw() -> void:
 	_draw_structures()
 	_draw_links()
 	_draw_wires()
+	_draw_event()
 	_draw_drones()
 	_draw_fires()
 	_draw_robot()
@@ -291,6 +292,30 @@ func _draw_wires() -> void:
 			draw_circle(p * T, 4.0, col)
 		draw_circle(poly[-1], 3.0, Color(0.9, 0.4, 0.4) if w.port == 1 else Color(0.4, 0.8, 0.9))
 
+func _draw_event() -> void:
+	var d: EventDirector = world.director
+	if d.current.is_empty():
+		return
+	var id: String = d.current.id
+	var ctr := cell_center(d.center())
+	var warn: bool = d.current.phase == "warn"
+	var k := 0.5 + 0.5 * sin(_t * (6.0 if warn else 3.0))
+	match id:
+		"meteors", "flare":
+			var col := Color(1.0, 0.45, 0.2) if id == "meteors" else Color(0.8, 0.5, 1.0)
+			var r: float = (float(d.current.radius) + 0.5) * T
+			var n := 48
+			for i in range(0, n, 2):
+				draw_arc(ctr, r, TAU * i / n, TAU * (i + 1) / n, 3, Color(col, 0.5 + 0.4 * k), 2.0)
+			if not warn:
+				draw_circle(ctr, r, Color(col, 0.06))
+		"geyser":
+			draw_circle(ctr, T * 0.35 + 3.0 * k, Color(0.8, 0.9, 1.0, 0.35 if warn else 0.7))
+			if not warn:
+				for i in 3:
+					var y := fmod(_t * 30.0 + i * 12.0, 36.0)
+					draw_circle(ctr + Vector2(sin(_t * 3.0 + i) * 4.0, -y), 5.0 - y * 0.1, Color(0.85, 0.9, 1.0, 0.5 - y / 80.0))
+
 func _draw_drones() -> void:
 	for d in world.drones:
 		var p: Vector2 = d.pos * T
@@ -327,6 +352,12 @@ func _draw_projectiles() -> void:
 		var b: Vector2 = pr.to * T
 		var h := a.distance_to(b) * 0.35
 		var pos := a.lerp(b, k) - Vector2(0, sin(PI * k) * h)
+		if pr.kind == "meteor":
+			var mp: Vector2 = a.lerp(b, k)
+			draw_line(mp, mp - (b - a).normalized() * 26.0, Color(1.0, 0.6, 0.2, 0.7), 4.0)
+			draw_circle(mp, 5.0, Color(1.0, 0.8, 0.4))
+			draw_circle(b, 6.0 + 10.0 * k, Color(1.0, 0.3, 0.1, 0.25))
+			continue
 		if pr.kind == "rocket":
 			pos = a.lerp(b, k * k)
 			draw_circle(pos + Vector2(0, 10), 6.0, Color(1, 0.7, 0.2, 0.7))

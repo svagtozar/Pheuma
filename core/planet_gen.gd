@@ -78,7 +78,10 @@ static func _choose_goal(p: Planet, rng: Rng) -> Dictionary:
 	var goal: Dictionary = Goals.TEMPLATES[gid].duplicate(true)
 	goal.id = gid
 	var rare := _choose_rare_tag(p, rng)
-	for st in goal.stages:
+	var flat: Array = []
+	for raw in goal.stages:
+		flat.append_array(Goals.options(raw))
+	for st in flat:
 		if st.has("tag") and st.tag == "{rare}":
 			st.tag = rare
 		if st.has("tags") and st.tags.has("{rare}"):

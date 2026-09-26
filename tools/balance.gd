@@ -68,6 +68,12 @@ func report(rows: Array, secs: float) -> String:
 			total += 1
 			if m.hardness <= w.starter.hardness + 0.5: soft += 1
 			if m.phase_at(w.planet.ambient_temp) == Substance.Phase.SOLID: solid += 1
+	var ev := 0
+	var lost := 0
+	for r in rows:
+		ev += r.w.director.count
+		lost += r.w.stats.lost
+	s += "\n## События\n\n- всего событий: %d (в среднем %.1f на планету)\n- машин потеряно: %d\n" % [ev, float(ev) / max(1, rows.size()), lost]
 	s += "\n## Материалы\n\n- копаются стартовым буром: %d%%\n- твёрдые при температуре среды: %d%%\n" % [int(100 * soft / max(1, total)), int(100 * solid / max(1, total))]
 	s += "\n## По планетам\n\n"
 	for r in rows:
@@ -75,5 +81,6 @@ func report(rows: Array, secs: float) -> String:
 		s += "### seed %d — %s, %s\n" % [r.seed, w.planet.goal.n, ", ".join(w.planet.tags.map(func(t): return PlanetTags.display(t)))]
 		for st in r.bot.stages:
 			s += "- %s: %s\n" % [st.desc, "%.1f мин" % (st.time / 60.0) if st.ok else "НЕТ — " + st.why]
+		s += "- событий: %d, машин потеряно: %d\n" % [w.director.count, w.stats.lost]
 		s += "<details><summary>журнал бота</summary>\n\n" + "\n".join(r.bot.notes.slice(0, 60).map(func(x): return "    " + x)) + "\n</details>\n\n"
 	return s

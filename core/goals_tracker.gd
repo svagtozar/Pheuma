@@ -9,6 +9,9 @@ var stage := 0
 var hold := 0.0
 var progress := 0.0
 var completed := false
+var choices := {}           # номер этапа (строкой) → выбранный вариант
+var reward_pending: Array = []
+var base_hits := 0
 var _acc := 0.0
 
 func _init(world) -> void:
@@ -17,12 +20,39 @@ func _init(world) -> void:
 func goal() -> Dictionary:
 	return w.planet.goal
 
-func current() -> Dictionary:
+func raw_stage(i: int) -> Dictionary:
 	var st: Array = goal().stages
-	return st[min(stage, st.size() - 1)]
+	return st[min(i, st.size() - 1)]
+
+## Нужно выбрать путь для текущего этапа.
+func choice_pending() -> bool:
+	return not completed and raw_stage(stage).has("alt") and not choices.has(str(stage))
+
+func current() -> Dictionary:
+	var raw := raw_stage(stage)
+	if raw.has("alt"):
+		if choices.has(str(stage)):
+			return raw.alt[int(choices[str(stage)])]
+		return {"type": "choice", "desc": "Выберите путь для следующего этапа"}
+	return raw
+
+func choose(idx: int) -> void:
+	choices[str(stage)] = idx
+	base_hits = w.stats.hits
+	hold = 0.0
+	w.log_event(w.robot_cell(), "Выбран путь: " + current().desc)
+
+func take_reward(id: String) -> String:
+	if not id in reward_pending:
+		return ""
+	reward_pending = []
+	w.sound("fanfare", w.robot_cell())
+	var msg := Rewards.apply(w, id)
+	w.log_event(w.robot_cell(), "Награда: %s — %s" % [Rewards.CARDS[id].n, msg])
+	return msg
 
 func tick(dt: float) -> void:
-	if completed:
+	if completed or choice_pending():
 		return
 	_acc += dt
 	if _acc < 1.0:
@@ -37,10 +67,12 @@ func advance() -> void:
 	w.log_event(w.planet.spawn, "Этап выполнен: " + current().desc)
 	w.robot.knowledge += 3
 	w.robot.xp.chief += 20
+	reward_pending = Rewards.offer(w, stage)
 	w.sound("fanfare", w.robot_cell())
 	stage += 1
 	hold = 0.0
 	progress = 0.0
+	base_hits = w.stats.hits
 	if stage >= goal().stages.size():
 		completed = true
 		stage = goal().stages.size() - 1
@@ -100,6 +132,20 @@ func evaluate(st: Dictionary, dt: float) -> float:
 						if p.has("phasing"):
 							s += p.mass
 			return s / st.mass
+		"deliveries":
+			return float(w.stats.hits - base_hits) / st.n
+		"machines_working":
+			var c := 0
+			for m in w.all_machines():
+				if m is Processor and m.busy != null and m.enabled:
+					c += 1
+			return float(c) / st.n
+		"stockpile_mass":
+			var s := 0.0
+			for m in w.all_machines():
+				if m.is_storage():
+					s += m.total_mass()
+			return s / st.mass
 		"beacon_hold":
 			var ok := false
 			for m in w.machines_of("beacon"):
@@ -118,6 +164,10 @@ func text() -> String:
 		s += "\n  " + ", ".join(parts)
 	if st.has("tag"):
 		s += "\n  тег: " + MaterialTags.display(st.tag)
+	if choice_pending():
+		s = "%s — этап %d/%d: выберите путь (окно выбора)" % [goal().n, stage + 1, goal().stages.size()]
+	if st.type == "deliveries":
+		s += "\n  доставлено: %d/%d" % [w.stats.hits - base_hits, st.n]
 	if completed:
 		s = "%s — ВЫПОЛНЕНО. Нажмите N для новой планеты." % goal().n
 	return s

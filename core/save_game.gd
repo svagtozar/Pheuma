@@ -115,7 +115,8 @@ static func to_dict(w: World) -> Dictionary:
 	d.events = w.director.to_dict()
 	d.stats = w.stats
 	d.meta = w.meta
-	d.goals = {"stage": w.goals.stage, "hold": w.goals.hold, "completed": w.goals.completed, "progress": w.goals.progress}
+	d.goals = {"stage": w.goals.stage, "hold": w.goals.hold, "completed": w.goals.completed, "progress": w.goals.progress,
+		"choices": w.goals.choices, "reward_pending": w.goals.reward_pending, "base_hits": w.goals.base_hits}
 	var r := w.robot
 	d.robot = {"pos": [r.pos.x, r.pos.y], "hp": r.hp, "tank": r.tank, "selected": r.selected,
 		"inventory": r.inventory.values().map(func(p): return p_to(p)),
@@ -123,7 +124,7 @@ static func to_dict(w: World) -> Dictionary:
 		"hull": mod_to(r.hull), "drill": mod_to(r.drill), "next_module": r._next_module,
 		"xp": r.xp, "knowledge": r.knowledge, "learned": r.learned.keys(), "blueprints": r.blueprints.keys(),
 		"unlocked": r.unlocked.keys(), "known_tags": r.known_tags.keys(), "analyzed": r.analyzed.keys(),
-		"interactions": r.known_interactions.keys(), "last_safe": [r.last_safe.x, r.last_safe.y]}
+		"interactions": r.known_interactions.keys(), "last_safe": [r.last_safe.x, r.last_safe.y], "bonus_slots": r.bonus_slots}
 	return d
 
 static func from_dict(d: Dictionary) -> World:
@@ -166,6 +167,9 @@ static func from_dict(d: Dictionary) -> World:
 	w.goals.hold = float(d.goals.hold)
 	w.goals.completed = d.goals.completed
 	w.goals.progress = float(d.goals.progress)
+	w.goals.choices = d.goals.get("choices", {})
+	w.goals.reward_pending = d.goals.get("reward_pending", [])
+	w.goals.base_hits = int(d.goals.get("base_hits", 0))
 	var rd: Dictionary = d.robot
 	var r := w.robot
 	r.pos = Vector2(rd.pos[0], rd.pos[1])
@@ -185,6 +189,7 @@ static func from_dict(d: Dictionary) -> World:
 	for k in rd.xp:
 		r.xp[k] = float(rd.xp[k])
 	r.knowledge = int(rd.knowledge)
+	r.bonus_slots = int(rd.get("bonus_slots", 0))
 	r.last_safe = v2i(rd.last_safe)
 	r.learned = _as_set(rd.learned)
 	r.blueprints = _as_set(rd.blueprints)

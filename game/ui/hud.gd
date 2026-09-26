@@ -33,6 +33,11 @@ var briefing_label: RichTextLabel
 var tut_panel: PanelContainer
 var tut_label: RichTextLabel
 var tut_done_btn: Button
+var event_panel: PanelContainer
+var event_label: Label
+var choice_box: VBoxContainer
+var reward_box: VBoxContainer
+const MODAL := ["briefing", "choice", "reward"]
 
 var _placed: Array = []       # [Control, anchor, offset]
 var _inv_sig := ""
@@ -116,6 +121,7 @@ func _window(name: String, size: Vector2, title: String) -> VBoxContainer:
 	close.text = "✕"
 	close.pressed.connect(func(): p.visible = false)
 	head.add_child(close)
+	close.visible = not name in ["choice", "reward"]
 	windows[name] = p
 	return v
 
@@ -187,6 +193,23 @@ func _build() -> void:
 	off.pressed.connect(func(): main.end_tutorial(false))
 	th.add_child(off)
 	tut_panel.visible = false
+
+	# Событие планеты.
+	event_panel = _panel(Vector2(-300, 8), Vector2(600, 0), Control.PRESET_CENTER_TOP)
+	var esb := StyleBoxFlat.new()
+	esb.bg_color = Color(0.25, 0.08, 0.05, 0.88)
+	esb.border_color = Color(1.0, 0.5, 0.3)
+	esb.set_border_width_all(1)
+	esb.set_corner_radius_all(4)
+	esb.set_content_margin_all(8)
+	event_panel.add_theme_stylebox_override("panel", esb)
+	event_label = _label(event_panel, 14)
+	event_label.custom_minimum_size = Vector2(584, 0)
+	event_panel.visible = false
+
+	# Выбор пути и награда за этап.
+	choice_box = _window("choice", Vector2(800, 250), "Выбор пути")
+	reward_box = _window("reward", Vector2(820, 250), "Этап выполнен — выберите награду")
 
 	# Палитра построек.
 	var pv := _window("palette", Vector2(820, 600), "Постройки (B)")
@@ -279,6 +302,11 @@ J — справочник тегов: как теги меняют обраще
 Esc — пауза и меню (сохранение в слоты, загрузка, настройки, выход в главное меню).
 P — пауза без меню. Shift+N — новая планета. H — эта справка.
 
+События планеты: метеоритные дожди, гейзеры, бури, землетрясения, кислотные ливни, вспышки
+   аномалии, перепады температуры. Сначала предупреждение (красный баннер сверху), потом само событие.
+   Почти каждое несёт и угрозу, и возможность: новые залежи, бесплатный газ, невозможные теги.
+Цели: у этапов 2 и 3 можно выбрать путь. За каждый этап — одна награда из трёх карточек.
+
 Выход машин — по стрелке, второй выход (у разделителей) — голубая стрелка справа.
 Вход — сзади и сбоку; у обработчика и облучателя левый бок — вход реагента/источника.
 Каждая постройка сделана из материала и наследует его свойства: предельное давление,
@@ -290,7 +318,7 @@ func toggle(name: String) -> void:
 	var w: Control = windows[name]
 	var show := not w.visible
 	for k in windows:
-		if k != "briefing":
+		if not k in MODAL:
 			windows[k].visible = false
 	w.visible = show
 	_layout()
@@ -303,11 +331,11 @@ func toggle(name: String) -> void:
 
 func close_all() -> void:
 	for k in windows:
-		if k != "briefing":
+		if not k in MODAL:
 			windows[k].visible = false
 
 func blocks_game() -> bool:
-	return windows.briefing.visible or windows.help.visible
+	return windows.briefing.visible or windows.help.visible or windows.choice.visible or windows.reward.visible
 
 func handle_key(e: InputEventKey) -> bool:
 	if windows.briefing.visible:
@@ -331,8 +359,9 @@ func show_briefing() -> void:
 	s += "Материалов на планете: %d (теги неизвестны до анализа)\n\n" % p.materials.size()
 	s += "[b]Цель: %s[/b]\n%s\n" % [p.goal.n, p.goal.desc]
 	var i := 1
-	for st in p.goal.stages:
-		s += "  %d. %s\n" % [i, st.desc]
+	for raw in p.goal.stages:
+		var opts: Array = Goals.options(raw)
+		s += "  %d. %s\n" % [i, " [color=#9fb0c0]или[/color] ".join(opts.map(func(o): return o.desc))]
 		i += 1
 	if p.goal.has("rare") and p.goal.id == "mining":
 		s += "  Редкий тег: [color=#ffd479]%s[/color]\n" % MaterialTags.display(p.goal.rare)
@@ -654,6 +683,8 @@ func refresh() -> void:
 		mode_text.get(main.mode, "")]
 	if main.sim.paused and not blocks_game():
 		status_label.text += "   ПАУЗА"
+	_refresh_event()
+	_refresh_goal_windows()
 	var t: Tutorial = main.tutorial
 	tut_panel.visible = t != null
 	if t != null:
@@ -669,6 +700,74 @@ func refresh() -> void:
 	if _t > 0.2:
 		_t = 0.0
 		_refresh_inspector()
+
+func _refresh_event() -> void:
+	var txt: String = world.director.status_text()
+	event_panel.visible = txt != ""
+	event_label.text = txt
+	# Баннер события — под панелью обучения, если она видна.
+	for e in _placed:
+		if e[0] == event_panel:
+			e[2] = Vector2(-300, (tut_panel.size.y + 16.0) if tut_panel.visible else 8.0)
+
+func _card(parent: Container, title: String, body: String, f: Callable) -> void:
+	var b := Button.new()
+	b.custom_minimum_size = Vector2(240, 150)
+	b.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	b.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	b.add_theme_font_size_override("font_size", 14)
+	b.text = "%s\n\n%s" % [title, body]
+	b.pressed.connect(f)
+	parent.add_child(b)
+
+## Окна выбора пути и награды открываются сами, когда трекер цели их ждёт.
+func _refresh_goal_windows() -> void:
+	var g: GoalsTracker = world.goals
+	if main.in_menu or main.menus.any_open() or windows.briefing.visible:
+		return
+	if not g.reward_pending.is_empty():
+		if not windows.reward.visible:
+			for c in reward_box.get_children():
+				if c.get_index() > 0:
+					c.queue_free()
+			var l := _label(reward_box, 13)
+			l.text = "Возьмите одну карточку."
+			var row := HBoxContainer.new()
+			row.add_theme_constant_override("separation", 10)
+			reward_box.add_child(row)
+			for id in g.reward_pending:
+				var cid: String = id
+				_card(row, Rewards.CARDS[cid].n, Rewards.CARDS[cid].desc, func():
+					main.say(g.take_reward(cid))
+					windows.reward.visible = false)
+			windows.reward.visible = true
+			_layout()
+		return
+	windows.reward.visible = false
+	if g.choice_pending():
+		if not windows.choice.visible:
+			for c in choice_box.get_children():
+				if c.get_index() > 0:
+					c.queue_free()
+			var l := _label(choice_box, 13)
+			l.text = "%s — этап %d из %d. Выберите, как его пройти:" % [g.goal().n, g.stage + 1, g.goal().stages.size()]
+			var row := HBoxContainer.new()
+			row.add_theme_constant_override("separation", 10)
+			choice_box.add_child(row)
+			var alts: Array = g.raw_stage(g.stage).alt
+			for i in alts.size():
+				var idx: int = i
+				var st: Dictionary = alts[i]
+				var extra := ""
+				if st.has("tag"):
+					extra = "\nтег: " + MaterialTags.display(st.tag)
+				_card(row, st.desc, st.get("pitch", "") + extra, func():
+					g.choose(idx)
+					windows.choice.visible = false)
+			windows.choice.visible = true
+			_layout()
+	else:
+		windows.choice.visible = false
 
 func _refresh_inventory() -> void:
 	var r := world.robot

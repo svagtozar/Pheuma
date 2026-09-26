@@ -5,7 +5,8 @@ extends Node2D
 ##   --seed=N          — планета с заданным seed
 ##   --autotest        — собрать цепочку, прогнать симуляцию, проверить и выйти
 ##   --screenshot=путь — сохранить скриншот через пару секунд и выйти
-##   --open=окно       — открыть окно (palette, skills, fabricator, codex, help, briefing)
+##   --open=окно       — открыть окно (palette, skills, fabricator, codex, help, briefing,
+##                       pause, settings, slots, end, event, choice, reward)
 ##   --tutorial        — начать обучение (при первом запуске оно включается само)
 
 const T := 32.0
@@ -116,6 +117,14 @@ func _ready() -> void:
 	elif open_window == "slots":
 		SaveGame.save_file(world, "slot1")
 		menus.open_slots("load", "pause")
+	elif open_window == "event":
+		world.director.enabled = true
+		world.director.start("meteors", world.robot_cell() + Vector2i(4, -2))
+		world.director.current.t = 0.01
+	elif open_window == "choice":
+		world.goals.stage = 1
+	elif open_window == "reward":
+		world.goals.reward_pending = Rewards.offer(world, 0)
 	elif open_window == "end":
 		menus.show_run_end(world)
 	elif open_window == "briefing":
@@ -738,6 +747,27 @@ func run_uitest() -> void:
 		await get_tree().process_frame
 	var placed = w.machine_at(dep)
 	print("[uitest] бур поставлен: ", placed != null and placed.kind == "drill", " сообщение: ", message)
+	# Награда за этап и выбор пути — через карточки окна.
+	w.goals.reward_pending = Rewards.offer(w, 0)
+	await get_tree().process_frame
+	await get_tree().process_frame
+	var card := _find_button(hud.reward_box, "")
+	for c in hud.reward_box.find_children("*", "Button", true, false):
+		if c.text.contains(Rewards.CARDS[w.goals.reward_pending[0]].n):
+			card = c
+	var reward_ok := false
+	if card:
+		card.pressed.emit()
+		reward_ok = w.goals.reward_pending.is_empty()
+	w.goals.stage = 1
+	await get_tree().process_frame
+	await get_tree().process_frame
+	var alt0: String = w.goals.raw_stage(1).alt[0].desc
+	var choice_btn := _find_button(hud.choice_box, alt0)
+	if choice_btn:
+		choice_btn.pressed.emit()
+	var choice_ok: bool = w.goals.choices.has("1") and not w.goals.choice_pending()
+	print("[uitest] награда выбрана: ", reward_ok, ", путь выбран: ", choice_ok)
 	# Сохранение в слот через меню паузы и загрузка обратно.
 	var old_dir := SaveGame.DIR
 	SaveGame.DIR = "user://uitest_saves"
@@ -759,7 +789,7 @@ func run_uitest() -> void:
 	print("[uitest] слот: сохранён=", saved, " загружен=", loaded_ok, " машин ", world.machines.size(), "/", n_before)
 	SaveGame.delete_slot("slot1")
 	SaveGame.DIR = old_dir
-	_finish_autotest(w.robot.has_module("hook") and placed != null and saved and loaded_ok)
+	_finish_autotest(w.robot.has_module("hook") and placed != null and saved and loaded_ok and reward_ok and choice_ok)
 
 func _find_button(root: Node, text_part: String) -> Button:
 	for c in root.find_children("*", "Button", true, false):
