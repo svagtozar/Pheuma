@@ -120,3 +120,60 @@ func test_probe_from_nearby_deposit_for_liquids():
 	assert_almost_eq(w.planet.deposits[c].amount, 10.0 - Probes.SAMPLE_KG, 0.01)
 	w.robot.pos += Vector2(10, 0)
 	assert_ne(w.probe_error(gas.id, "heat"), "", "далеко от залежи — нельзя")
+
+# ---------------------------------------------------------------- догадки, «Все пробы», лаборатория
+
+func test_hypothesis_confirmed_gives_knowledge():
+	var w := _w()
+	var s := _give(w, ["magnetic", "dense"], 3.0)
+	w.touch(s)
+	assert_eq(w.toggle_hypothesis(s, "magnetic"), "")
+	var k0 := w.robot.knowledge
+	assert_eq(w.check_hypothesis(s.id, "magnetic"), "")
+	assert_true("magnetic" in w.known_tags_of(s))
+	assert_gt(w.robot.knowledge, k0, "верная догадка — знание")
+	assert_eq(w.hypotheses_of(s), [])
+	assert_almost_eq(w.robot.mass_of(s.id), 3.0 - Probes.SAMPLE_KG * 0.5, 0.01, "проверка вдвое дешевле пробы")
+
+func test_hypothesis_wrong_is_dropped():
+	var w := _w()
+	var s := _give(w, ["dense", "toxic"], 3.0)
+	w.toggle_hypothesis(s, "acidic")
+	var k0 := w.robot.knowledge
+	w.check_hypothesis(s.id, "acidic")
+	assert_true("acidic" in w.excluded_of(s))
+	assert_eq(w.hypotheses_of(s), [])
+	assert_eq(w.robot.knowledge, k0, "за неверную догадку знаний нет")
+
+func test_hypothesis_limits():
+	var w := _w()
+	var s := _give(w, ["dense", "toxic"], 3.0)
+	w.touch(s)
+	assert_ne(w.toggle_hypothesis(s, "dense"), "", "известное в догадки не ставится")
+	for t in ["acidic", "magnetic", "conductive"]:
+		assert_eq(w.toggle_hypothesis(s, t), "")
+	assert_ne(w.toggle_hypothesis(s, "toxic"), "", "не больше трёх догадок")
+	assert_ne(w.check_error(s.id, "phasing"), "", "наблюдаемый тег пробой не проверить")
+
+func test_probe_all_needs_node_and_identifies():
+	var w := _w()
+	var s := _give(w, ["magnetic", "conductive", "toxic"], 5.0)
+	assert_eq(w.probe_all(s.id), "")
+	assert_true(w.is_identified(s))
+
+func test_lab_probes_passing_portions_and_signals():
+	var w := _w()
+	w.robot.unlocked["lab"] = true
+	var s := w.db.add(Substance.new("lb", "Лабор", ["magnetic", "toxic"]))
+	var lab := w.place("lab", Vector2i(10, 10), 0, w.starter, true)
+	var out := w.place("container", Vector2i(11, 10), 0, w.starter, true)
+	lab.store(Portion.new(s, 5.0))
+	var got_signal := false
+	for i in 40:
+		w.tick(0.25)
+		if w.logic.outputs.get(lab.id, false) or lab.signal_out:
+			got_signal = true
+	assert_true(w.is_identified(s), "лаборатория опознала материал")
+	assert_true(got_signal, "сигнал — узнала новое")
+	assert_gt(out.total_mass(), 1.0, "остаток ушёл вперёд")
+	assert_lt(out.total_mass(), 5.0, "пробы потратили часть")

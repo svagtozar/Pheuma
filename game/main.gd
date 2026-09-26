@@ -862,13 +862,30 @@ func _uitest_probe(w: World) -> bool:
 	if btn: btn.pressed.emit()
 	await get_tree().process_frame
 	var k1: int = w.known_tags_of(s).size() + w.excluded_of(s).size()
-	if screenshot_path != "":
-		hud._inv_sig = ""
-		await get_tree().process_frame
-		await get_tree().process_frame
-		_save_screenshot()
 	print("[uitest] проба «Нагрев»: кнопка ", found, ", известно+исключено ", k0, " → ", k1, " (", w.sub_label(s), ")")
-	return found and k1 > k0
+	# Догадка: клик по возможному тегу, затем «Проверить».
+	var hyp_ok := true
+	var pos: Array = w.possible_of(s).filter(func(t): return w.check_error(s.id, t) == "")
+	if w.unknown_count(s) > 0 and not pos.is_empty():
+		hud._inv_sig = ""
+		hud._refresh_inventory()
+		var tb := _find_button(hud.inv_box, MaterialTags.display(pos[0]))
+		if tb: tb.pressed.emit()
+		var marked: bool = pos[0] in w.hypotheses_of(s)
+		if screenshot_path != "":
+			hud._inv_sig = ""
+			await get_tree().process_frame
+			await get_tree().process_frame
+			_save_screenshot()
+		hud._inv_sig = ""
+		hud._refresh_inventory()
+		var cb := _find_button(hud.inv_box, "Проверить")
+		var has_check := cb != null
+		if cb: cb.pressed.emit()
+		var settled: bool = pos[0] in w.known_tags_of(s) or pos[0] in w.excluded_of(s)
+		hyp_ok = marked and has_check and settled
+		print("[uitest] догадка «", MaterialTags.display(pos[0]), "»: поставлена ", marked, ", проверена ", settled)
+	return found and k1 > k0 and hyp_ok
 
 ## Схема «контейнер → фильтр → контейнер»: выделить рамкой, «Свернуть на месте»,
 ## в инспекторе блока сменить тег внутреннего фильтра, «Развернуть».

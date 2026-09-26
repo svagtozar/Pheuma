@@ -29,6 +29,7 @@ var analyzed := {}                    # id материалов, которых 
 var sub_known := {}                   # id материала → {тег: true (есть) | false (исключён)}
 var last_probe := ""                  # текст последней пробы (для карточки материала)
 var focus_sub := ""                   # залежь, которой коснулись (Z): её карточка в инвентаре
+var hypotheses := {}                  # id материала → [теги-догадки игрока]
 var known_interactions := {}
 var bonus_slots := 0                  # награды за этапы
 var _next_module := 1

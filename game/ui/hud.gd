@@ -279,6 +279,8 @@ Z — касание: физика материала рядом и видимы
    в карточке выбранного материала (инвентарь) — пробы Нагрев, Капля, Магнит, Ток, Счётчик. Проба тратит
    0.5 кг образца и говорит «есть/нет» про свой набор тегов. Что-то выдаёт только поведение: утечка из бака,
    пламя в печи, рост в контейнере — следите за журналом. Карточка: Известно / Исключено / Возможно.
+   Клик по возможному тегу — догадка (до трёх): «Проверить» вдвое дешевле пробы, верная догадка даёт знание.
+   Лаборатория (Шаман, «Чутьё веществ») сама пробует всё, что проходит насквозь, и даёт сигнал, узнав новое.
 Tab / [ ] — выбрать материал в инвентаре (или клик по строке). I — свернуть инвентарь.
    У выбранного материала: пробы, «Выбросить». Наведите курсор на машину — полное имя и состояние.
 G (удерживать) — подкачать бортовой баллон (от бака/трубы рядом или вручную из атмосферы).
@@ -794,7 +796,7 @@ func _refresh_inventory() -> void:
 		var ks: Substance = world.db.get_sub(k)
 		sig += "%s:%.1f:%s:%d:%d:%d;" % [k, r.inventory[k].mass, world.is_analyzed(ks), r.inventory[k].phase(),
 			world.known_tags_of(ks).size(), world.excluded_of(ks).size()]
-	sig += r.selected + ":%d:%s:%s" % [int(r.tank * 10.0), r.last_probe.length(), r.focus_sub]
+	sig += r.selected + ":%d:%s:%s:%s" % [int(r.tank * 10.0), r.last_probe.length(), r.focus_sub, str(r.hypotheses)]
 	var fs: Substance = world.db.get_sub(r.focus_sub) if r.focus_sub != "" else null
 	if fs != null:
 		sig += ":%d:%d:%s" % [world.known_tags_of(fs).size(), world.excluded_of(fs).size(), world.probe_deposit(fs.id) != null]
@@ -927,13 +929,55 @@ func _material_card(v: VBoxContainer, s: Substance) -> void:
 		lines.append("тв. %.1f · плотн. %.1f · плавится %.0f °C · кипит %.0f °C" % [s.hardness, s.density, s.melt, s.boil])
 	var ex: Array = world.excluded_of(s).map(func(t): return MaterialTags.display(t))
 	if not ex.is_empty():
-		lines.append("Исключено: " + ", ".join(ex))
-	if world.unknown_count(s) > 0:
-		var pos: Array = world.possible_of(s).map(func(t): return MaterialTags.display(t))
-		lines.append("Возможно: " + (", ".join(pos) if pos.size() <= 12 else ", ".join(pos.slice(0, 12)) + " …"))
+		lines.append("Исключено тегов: %d (наведите — список)" % ex.size())
+		info.mouse_filter = Control.MOUSE_FILTER_STOP
+		info.tooltip_text = "Исключено: " + ", ".join(ex)
 	info.text = "\n".join(lines)
 	info.add_theme_color_override("font_color", Color(0.75, 0.8, 0.88))
 	if world.unknown_count(s) > 0:
+		# Возможные теги — кнопки: клик ставит или снимает догадку.
+		var hyp: Array = world.hypotheses_of(s)
+		var ph := _label(v, 11)
+		ph.text = "Возможно (клик — догадка, до %d; верная даёт знание):" % world.MAX_HYPOTHESES
+		ph.add_theme_color_override("font_color", Color(0.75, 0.8, 0.88))
+		var pf := HFlowContainer.new()
+		v.add_child(pf)
+		var pos: Array = world.possible_of(s)
+		for t in pos.slice(0, 14):
+			var tb := Button.new()
+			var on: bool = t in hyp
+			tb.text = ("✦ " if on else "") + MaterialTags.display(t)
+			tb.flat = not on
+			tb.add_theme_font_size_override("font_size", 10)
+			tb.tooltip_text = "Распознать: " + Probes.how(t)
+			var tag: String = t
+			tb.pressed.connect(func():
+				var e3: String = world.toggle_hypothesis(s, tag)
+				if e3 != "":
+					main.say(e3)
+				_inv_sig = "")
+			pf.add_child(tb)
+		if pos.size() > 14:
+			var more := _label(pf, 10)
+			more.text = "…ещё %d" % (pos.size() - 14)
+		# Проверка догадок: вдвое дешевле пробы, но только про один тег.
+		if not hyp.is_empty():
+			var hf := HFlowContainer.new()
+			v.add_child(hf)
+			for t in hyp:
+				var cb := Button.new()
+				cb.text = "Проверить «%s»" % MaterialTags.display(t)
+				cb.add_theme_font_size_override("font_size", 11)
+				var cerr: String = world.check_error(s.id, t)
+				cb.disabled = cerr != ""
+				cb.tooltip_text = "Образец %.2f кг. %s" % [world.probe_cost() * 0.5, cerr]
+				var tag2: String = t
+				cb.pressed.connect(func():
+					var e4: String = world.check_hypothesis(s.id, tag2)
+					if e4 != "":
+						main.say(e4)
+					_inv_sig = "")
+				hf.add_child(cb)
 		var pb := HFlowContainer.new()
 		v.add_child(pb)
 		for id in Probes.ORDER:
@@ -953,6 +997,16 @@ func _material_card(v: VBoxContainer, s: Substance) -> void:
 					main.say(e2)
 				_inv_sig = "")
 			pb.add_child(b)
+		if r.passive("probe_all") > 0:
+			var all_b := Button.new()
+			all_b.text = "Все пробы"
+			all_b.add_theme_font_size_override("font_size", 11)
+			all_b.pressed.connect(func():
+				var e5: String = world.probe_all(s.id)
+				if e5 != "":
+					main.say(e5)
+				_inv_sig = "")
+			pb.add_child(all_b)
 	if r.last_probe != "" and r.last_probe.contains(s.name):
 		var lp := _label(v, 11)
 		lp.custom_minimum_size = Vector2(300, 0)

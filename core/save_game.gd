@@ -130,7 +130,7 @@ static func to_dict(w: World) -> Dictionary:
 		"modules": r.modules.map(func(m): return mod_to(m)), "equipped": r.equipped.map(func(m): return mod_to(m)),
 		"hull": mod_to(r.hull), "drill": mod_to(r.drill), "next_module": r._next_module,
 		"xp": r.xp, "knowledge": r.knowledge, "learned": r.learned.keys(), "blueprints": r.blueprints.keys(),
-		"unlocked": r.unlocked.keys(), "known_tags": r.known_tags.keys(), "analyzed": r.analyzed.keys(), "sub_known": r.sub_known,
+		"unlocked": r.unlocked.keys(), "known_tags": r.known_tags.keys(), "analyzed": r.analyzed.keys(), "sub_known": r.sub_known, "hypotheses": r.hypotheses,
 		"interactions": r.known_interactions.keys(), "last_safe": [r.last_safe.x, r.last_safe.y], "bonus_slots": r.bonus_slots}
 	return d
 
@@ -218,6 +218,7 @@ static func from_dict(d: Dictionary) -> World:
 	r.unlocked = _as_set(rd.unlocked)
 	r.known_tags = _as_set(rd.known_tags)
 	r.analyzed = _as_set(rd.analyzed)
+	r.hypotheses = rd.get("hypotheses", {})
 	if rd.has("sub_known"):
 		r.sub_known = rd.sub_known
 	else:

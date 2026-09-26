@@ -236,6 +236,12 @@ func reveal(s: Substance, tag: String, why: String = "") -> void:
 	discover_tag(tag)
 	if why != "":
 		log_event(robot_cell(), "%s: %s → «%s»" % [s.name, why, MaterialTags.display(tag)])
+	var hyp: Array = robot.hypotheses.get(s.id, [])
+	if tag in hyp:
+		hyp.erase(tag)
+		robot.knowledge += 1
+		robot.xp.shaman += 3
+		log_event(robot_cell(), "Догадка верна: %s — «%s» (+1 знание)" % [s.name, MaterialTags.display(tag)])
 	_check_identified(s)
 
 func exclude(s: Substance, tag: String) -> void:
@@ -244,6 +250,10 @@ func exclude(s: Substance, tag: String) -> void:
 	var k := _known(s)
 	if not k.has(tag):
 		k[tag] = false
+		var hyp: Array = robot.hypotheses.get(s.id, [])
+		if tag in hyp:
+			hyp.erase(tag)
+			log_event(robot_cell(), "Догадка не подтвердилась: у %s нет «%s»" % [s.name, MaterialTags.display(tag)])
 
 func _check_identified(s: Substance) -> void:
 	var k := _known(s)
@@ -312,8 +322,8 @@ func probe(sub_id: String, probe_id: String, free: bool = false) -> String:
 			yes.append(Probes.SIGNS[t][0])
 			reveal(s, t)
 		else:
-			if MaterialTags.is_exotic(t) and not robot.known_tags.has(t):
-				continue   # незнакомое невозможное проба не называет
+			if MaterialTags.is_exotic(t) and not robot.known_tags.has(t) and robot.passive("exotic_insight") <= 0:
+				continue   # незнакомое невозможное проба не называет (без «Знания невозможного»)
 			no.append(Probes.SIGNS[t][1])
 			exclude(s, t)
 	robot.xp.shaman += 1.0
@@ -325,6 +335,72 @@ func probe(sub_id: String, probe_id: String, free: bool = false) -> String:
 		(" (исключено: %d)" % no.size()) if not no.is_empty() else ""]
 	_check_identified(s)
 	return ""
+
+## Догадки: игрок помечает возможный тег; подтвердится — +1 знание.
+const MAX_HYPOTHESES := 3
+
+func toggle_hypothesis(s: Substance, tag: String) -> String:
+	var hyp: Array = robot.hypotheses.get(s.id, [])
+	if tag in hyp:
+		hyp.erase(tag)
+		return ""
+	if not tag in possible_of(s):
+		return "«%s» уже известен или исключён" % MaterialTags.display(tag)
+	if hyp.size() >= MAX_HYPOTHESES:
+		return "не больше %d догадок на материал" % MAX_HYPOTHESES
+	hyp.append(tag)
+	robot.hypotheses[s.id] = hyp
+	return ""
+
+func hypotheses_of(s: Substance) -> Array:
+	return robot.hypotheses.get(s.id, [])
+
+## Проверка одной догадки: вдвое дешевле пробы, но говорит только про один тег.
+func check_error(sub_id: String, tag: String) -> String:
+	var pid := Probes.probe_of(tag)
+	if pid == "" and not tag in Probes.VISIBLE:
+		return "этот тег пробой не проверить — только наблюдением"
+	if robot.mass_of(sub_id) + 0.001 < probe_cost() * 0.5 and probe_deposit(sub_id) == null:
+		return "нужно %.2f кг образца" % (probe_cost() * 0.5)
+	if pid != "" and robot.tank + 0.001 < Probes.PROBES[pid].gas * 0.5:
+		return "мало газа в баллоне"
+	return ""
+
+func check_hypothesis(sub_id: String, tag: String) -> String:
+	var s: Substance = db.get_sub(sub_id)
+	if s == null:
+		return "нет такого вещества"
+	var err := check_error(sub_id, tag)
+	if err != "":
+		return err
+	var cost := probe_cost() * 0.5
+	if robot.mass_of(sub_id) + 0.001 >= cost:
+		robot.take_item(sub_id, cost)
+	else:
+		planet.deposits[probe_deposit(sub_id)].amount -= cost
+	var pid := Probes.probe_of(tag)
+	if pid != "":
+		robot.tank -= Probes.PROBES[pid].gas * 0.5
+	touch(s)
+	var sign: Array = Probes.SIGNS.get(tag, ["есть", "нет"])
+	if tag in s.tags:
+		reveal(s, tag, "проверка догадки: " + sign[0])
+	else:
+		exclude(s, tag)
+	robot.last_probe = "Проверка «%s» у %s: %s" % [MaterialTags.display(tag), s.name, sign[0] if tag in s.tags else sign[1]]
+	return ""
+
+## Все доступные пробы разом (узел Шамана «Предвидение»).
+func probe_all(sub_id: String) -> String:
+	var s: Substance = db.get_sub(sub_id)
+	var done := 0
+	for pid in Probes.ORDER:
+		if s == null or is_identified(s):
+			break
+		if probe_error(sub_id, pid) == "":
+			probe(sub_id, pid)
+			done += 1
+	return "" if done > 0 else "ни одну пробу сейчас не провести"
 
 ## Полное раскрытие (награды, особые случаи): все теги известны.
 func analyze(s: Substance) -> void:

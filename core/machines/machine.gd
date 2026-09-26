@@ -46,6 +46,7 @@ static func create(p_kind: String) -> Machine:
 			"warehouse_section", "catch_net": m = Structure.new()
 			"battery_section": m = Battery.new()
 			"macro": m = MacroMachine.new()
+			"lab": m = Lab.new()
 			_: m = Machine.new()
 	m.kind = p_kind
 	m.info = d
