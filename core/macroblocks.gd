@@ -5,8 +5,9 @@ class_name Macroblocks
 
 const LIB_PATH := "user://macroblocks.json"
 
-## Снять макроблок с прямоугольника мира.
-static func capture(w: World, rect: Rect2i, name: String) -> Dictionary:
+## Снять макроблок с прямоугольника мира (или внутренности свёрнутого блока).
+## Свёрнутый блок в выделении становится частью со своей схемой (поле mb).
+static func capture(w, rect: Rect2i, name: String) -> Dictionary:
 	var parts: Array = []
 	var ids := {}
 	for m in w.machines.values():
@@ -23,7 +24,10 @@ static func capture(w: World, rect: Rect2i, name: String) -> Dictionary:
 			cfg.target = [ids[cfg.target].x, ids[cfg.target].y] if ids.has(cfg.target) else null
 		if cfg.has("routes"):
 			cfg.routes = cfg.routes.filter(func(r): return ids.has(int(r[1]))).map(func(r): return [r[0], [ids[int(r[1])].x, ids[int(r[1])].y]])
-		parts.append({"kind": m.kind, "off": [off.x, off.y], "facing": m.facing, "config": cfg})
+		var part := {"kind": m.kind, "off": [off.x, off.y], "facing": m.facing, "config": cfg}
+		if m is MacroMachine:
+			part.mb = m.template()
+		parts.append(part)
 	var wires: Array = []
 	var sig_in: Array = []
 	var sig_out: Array = []
@@ -63,6 +67,9 @@ static func compute_ports(mb: Dictionary) -> Array:
 		var info: Dictionary = Buildings.KINDS[p.kind]
 		var off := Vector2i(int(p.off[0]), int(p.off[1]))
 		var f := int(p.facing)
+		if p.kind == "macro":
+			_nested_ports(ports, p, off, f, rect)
+			continue
 		var outs := 0
 		if info.has("process"):
 			outs = Processes.PROCESSES[info.process].outs
@@ -85,6 +92,30 @@ static func compute_ports(mb: Dictionary) -> Array:
 					break
 	return ports
 
+## Порты вложенного блока — его собственные, повёрнутые вместе с ним; наружу
+## выходят те, что смотрят за край схемы.
+static func _nested_ports(ports: Array, p: Dictionary, off: Vector2i, f: int, rect: Rect2i) -> void:
+	var gas_done := false
+	for q in p.get("mb", {}).get("ports", []):
+		var d := (int(q.dir) + f) % 4
+		if q.type == "gas":
+			# Как у газовой машины: узел блока связан со всеми соседями.
+			if gas_done:
+				continue
+			gas_done = true
+			d = -1
+			for k in 4:
+				if not rect.has_point(off + Machine.DIRS[k]):
+					d = k
+					break
+			if d < 0:
+				continue
+		elif rect.has_point(off + Machine.DIRS[d]):
+			continue
+		var e := {"type": q.type, "off": [off.x, off.y], "dir": d, "kind": "macro"}
+		if not e in ports:
+			ports.append(e)
+
 static func describe_ports(mb: Dictionary) -> String:
 	var n := {"in": 0, "out": 0, "gas": 0}
 	for p in mb.ports:
@@ -100,9 +131,22 @@ static func describe_ports(mb: Dictionary) -> String:
 
 static func cost(w: World, mb: Dictionary) -> float:
 	var s := 0.0
-	for p in mb.parts:
-		s += w.build_cost(p.kind)
+	for k in MacroMachine.flat_kinds(mb):
+		s += w.build_cost(k)
 	return s
+
+## Проверить изучение и подобрать материалы для примитивов (с учётом уже отложенного).
+## Возвращает текст ошибки или "" и дописывает материалы в out_subs.
+static func _pick_subs(w: World, kinds: Array, preferred: Substance, reserved: Dictionary, out_subs: Array) -> String:
+	for kind in kinds:
+		if not w.robot.unlocked.has(kind):
+			return "не изучено: " + Buildings.name_of(kind)
+		var s := material_for(w, kind, preferred, reserved)
+		if s == null:
+			return "не хватает подходящего материала для «%s»" % Buildings.name_of(kind)
+		reserved[s.id] = reserved.get(s.id, 0.0) + w.build_cost(kind)
+		out_subs.append(s)
+	return ""
 
 static func rotated_size(mb: Dictionary, rot: int) -> Vector2i:
 	var s := Vector2i(int(mb.size[0]), int(mb.size[1]))
@@ -157,16 +201,18 @@ static func can_place(w: World, mb: Dictionary, origin: Vector2i, rot: int, pref
 	for e in footprint(mb, origin, rot):
 		var c: Vector2i = e[0]
 		var kind: String = e[1].kind
-		if not w.robot.unlocked.has(kind):
-			return "не изучено: " + Buildings.name_of(kind)
 		if not w.planet.buildable(c) or w.grid.has(c) or w.tile_overrides.has(c):
 			return "мешает клетка %d,%d" % [c.x, c.y]
 		if kind == "drill" and not w.planet.deposits.has(c):
 			return "бур из блока не на залежи"
-		var s := material_for(w, kind, preferred, reserved)
-		if s == null:
-			return "не хватает подходящего материала для «%s»" % Buildings.name_of(kind)
-		reserved[s.id] = reserved.get(s.id, 0.0) + w.build_cost(kind)
+		if kind == "macro":
+			var ce := MacroMachine.collapse_error(e[1].get("mb", {"parts": [{"kind": "macro"}]}))
+			if ce != "":
+				return ce
+		var kinds: Array = MacroMachine.flat_kinds(e[1].mb) if kind == "macro" else [kind]
+		var err := _pick_subs(w, kinds, preferred, reserved, [])
+		if err != "":
+			return err
 	if w.machines.size() + mb.parts.size() > w.machine_limit():
 		return "лимит машин"
 	return ""
@@ -179,15 +225,20 @@ static func place(w: World, mb: Dictionary, origin: Vector2i, rot: int, preferre
 	var by_off := {}
 	var placed: Array = []
 	for e in footprint(mb, origin, rot):
-		var s := material_for(w, e[1].kind, preferred, {})
-		var m := w.place(e[1].kind, e[0], e[2], s)
+		var m: Machine
+		if e[1].kind == "macro":
+			m = _place_nested(w, e[1].mb, e[0], e[2], preferred)
+		else:
+			m = w.place(e[1].kind, e[0], e[2], material_for(w, e[1].kind, preferred, {}))
 		by_off[Vector2i(int(e[1].off[0]), int(e[1].off[1]))] = m
 		placed.append([m, e[1]])
 	for pair in placed:
 		var m: Machine = pair[0]
 		for k in pair[1].config:
 			var v = pair[1].config[k]
-			if k == "target":
+			if m is MacroMachine:
+				m.config[k] = v
+			elif k == "target":
 				var t = by_off.get(Vector2i(int(v[0]), int(v[1]))) if v != null else null
 				m.config.target = t.id if t != null else -1
 			elif k == "routes":
@@ -209,6 +260,16 @@ static func place(w: World, mb: Dictionary, origin: Vector2i, rot: int, preferre
 	w.robot.xp.chief += 3.0
 	return ""
 
+## Свёрнутый блок как часть разворачиваемого: материалы списываются за все его примитивы.
+static func _place_nested(w: World, sub_mb: Dictionary, c: Vector2i, facing: int, preferred: Substance) -> MacroMachine:
+	var subs: Array = []
+	_pick_subs(w, MacroMachine.flat_kinds(sub_mb), preferred, {}, subs)
+	for i in subs.size():
+		w.robot.take_item(subs[i].id, w.build_cost(MacroMachine.flat_kinds(sub_mb)[i]))
+	var m: MacroMachine = w.place("macro", c, facing, preferred if preferred != null else subs[0], true)
+	m.setup(w, sub_mb, facing, subs)
+	return m
+
 ## Поставить макроблок свёрнутым в одну клетку. Материалы тратятся как на все части.
 static func can_place_collapsed(w: World, mb: Dictionary, c: Vector2i, preferred: Substance) -> String:
 	var err := MacroMachine.collapse_error(mb)
@@ -218,25 +279,17 @@ static func can_place_collapsed(w: World, mb: Dictionary, c: Vector2i, preferred
 		return "здесь нельзя строить"
 	if w.machines.size() >= w.machine_limit():
 		return "лимит машин"
-	var reserved := {}
-	for p in mb.parts:
-		if not w.robot.unlocked.has(p.kind):
-			return "не изучено: " + Buildings.name_of(p.kind)
-		var s := material_for(w, p.kind, preferred, reserved)
-		if s == null:
-			return "не хватает подходящего материала для «%s»" % Buildings.name_of(p.kind)
-		reserved[s.id] = reserved.get(s.id, 0.0) + w.build_cost(p.kind)
-	return ""
+	return _pick_subs(w, MacroMachine.flat_kinds(mb), preferred, {}, [])
 
 static func place_collapsed(w: World, mb: Dictionary, c: Vector2i, rot: int, preferred: Substance) -> String:
 	var err := can_place_collapsed(w, mb, c, preferred)
 	if err != "":
 		return err
 	var subs: Array = []
-	for p in mb.parts:
-		var s := material_for(w, p.kind, preferred, {})
-		w.robot.take_item(s.id, w.build_cost(p.kind))
-		subs.append(s)
+	var kinds := MacroMachine.flat_kinds(mb)
+	_pick_subs(w, kinds, preferred, {}, subs)
+	for i in subs.size():
+		w.robot.take_item(subs[i].id, w.build_cost(kinds[i]))
 	var housing: Substance = preferred if preferred != null else subs[0]
 	var m: MacroMachine = w.place("macro", c, rot, housing, true)
 	m.setup(w, mb, rot, subs)
@@ -321,6 +374,8 @@ static func unfold(w: World, macro: MacroMachine) -> String:
 		var d := SaveGame.machine_to(m, macro.inner.gas)
 		d.dst = origin + rot_off(m.cell, size, rot)
 		d.fac = (m.facing + rot) % 4
+		if m is MacroMachine:
+			d.extra.rot = (int(d.extra.rot) + rot) % 4   # вложенный блок поворачивается с внешним
 		dicts.append(d)
 	var wires: Array = macro.inner.logic.wires.values().filter(func(x): return x.from != MacroMachine.SIG_SOURCE)
 	w.logic.remove_machine(macro.id)

@@ -39,6 +39,8 @@ var choice_box: VBoxContainer
 var reward_box: VBoxContainer
 var macro_box: VBoxContainer
 var insp_inner := -1          # id внутренней машины свёрнутого блока, открытой в инспекторе
+var insp_path: Array = []     # id вложенных блоков, в которые зашли (от внешнего к внутреннему)
+var _insp_mid := -1
 const MODAL := ["briefing", "choice", "reward"]
 
 var _placed: Array = []       # [Control, anchor, offset]
@@ -1036,16 +1038,32 @@ func _refresh_inspector() -> void:
 			lines.append("  → %s: %s" % ["прямо" if o[1] == 0 else "вправо", world.sub_label(o[0].substance)])
 		if res.note != "":
 			lines.append("  " + res.note)
+	if m.id != _insp_mid:
+		_insp_mid = m.id
+		insp_path = []
 	var im = null
+	var level = m   # блок, внутренность которого сейчас открыта
 	if m is MacroMachine:
-		im = m.inner.machines.get(insp_inner)
+		var names: Array = [m.display_name()]
+		for i in insp_path.size():
+			var x = level.inner.machines.get(insp_path[i])
+			if not (x is MacroMachine):
+				insp_path = insp_path.slice(0, i)
+				break
+			level = x
+			names.append(x.display_name())
+		if not insp_path.is_empty():
+			lines.append("")
+			lines.append("Открыт: " + " › ".join(PackedStringArray(names)))
+			lines.append_array(level.describe(level.inner.parent))
+		im = level.inner.machines.get(insp_inner)
 		if im != null:
 			lines.append("")
-			lines.append("— Внутри: " + ", ".join(PackedStringArray(im.describe(m.inner).map(func(x): return str(x)))))
+			lines.append("— Внутри: " + ", ".join(PackedStringArray(im.describe(level.inner).map(func(x): return str(x)))))
 	inspector_label.text = "\n".join(lines)
 	inspector_panel.size = inspector_panel.get_combined_minimum_size()
-	var sig :="%d:%s:%s:%s:%d:%s:%s" % [m.id, str(m.config), m.manual_off, main.route_tag_pick, insp_inner,
-		str(im.config) if im != null else "", im.manual_off if im != null else false]
+	var sig :="%d:%s:%s:%s:%d:%s:%s:%s" % [m.id, str(m.config), m.manual_off, main.route_tag_pick, insp_inner,
+		str(im.config) if im != null else "", im.manual_off if im != null else false, str(insp_path)]
 	if sig == _insp_sig:
 		return
 	_insp_sig = sig
@@ -1059,16 +1077,25 @@ func _refresh_inspector() -> void:
 	if m.kind == "fabricator":
 		_btn("Открыть фабрикатор (F)", func(): if not windows.fabricator.visible: toggle("fabricator"))
 	if m is MacroMachine:
-		_btn("Развернуть", func(): main.unfold_macro(m))
-		var ids: Array = m.inner.machines.keys()
+		if insp_path.is_empty():
+			_btn("Развернуть", func(): main.unfold_macro(m))
+		else:
+			_btn("← Наверх", func():
+				self.insp_inner = self.insp_path.pop_back())
+		var ids: Array = level.inner.machines.keys()
 		ids.sort()
 		for iid in ids:
-			var x: Machine = m.inner.machines[iid]
+			var x: Machine = level.inner.machines[iid]
 			var mark := "▸ " if iid == insp_inner else ""
 			_btn("%s%s %d,%d" % [mark, x.display_name(), x.cell.x, x.cell.y], func(): self.insp_inner = -1 if self.insp_inner == iid else iid)
 		if im != null:
 			_btn("Выключить внутри" if not im.manual_off else "Включить внутри", func(): im.manual_off = not im.manual_off)
-			_config_buttons(im, m.inner)
+			if im is MacroMachine:
+				_btn("Открыть «%s»" % im.display_name(), func():
+					self.insp_path.append(im.id)
+					self.insp_inner = -1)
+			else:
+				_config_buttons(im, level.inner)
 		return
 	_config_buttons(m, world)
 

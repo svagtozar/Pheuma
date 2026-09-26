@@ -151,7 +151,7 @@ func all_machines() -> Array:
 	var out: Array = []
 	for m in machines.values():
 		if m is MacroMachine:
-			out.append_array(m.inner.machines.values())
+			out.append_array(m.all_inner())
 		else:
 			out.append(m)
 	return out
@@ -537,7 +537,7 @@ func remove_at(c: Vector2i, refund: bool = true) -> void:
 	sound("clunk", c)
 	if refund:
 		if m is MacroMachine:
-			for im in m.inner.machines.values():
+			for im in m.all_inner():
 				robot.add_item(Portion.new(im.built_from, build_cost(im.kind) * 0.5, planet.ambient_temp))
 		else:
 			robot.add_item(Portion.new(m.built_from, build_cost(m.kind) * 0.5, planet.ambient_temp))
@@ -561,10 +561,7 @@ func _drop_contents(m: Machine) -> void:
 		if m.busy != null: all.append(m.busy)
 		if m.reagent != null: all.append(m.reagent)
 	if m is MacroMachine:
-		for im in m.inner.machines.values():
-			all.append_array(im.items)
-			for e in im.out_queue:
-				all.append(e[0])
+		all.append_array(m.all_contents())
 	drop_portions(m.cell, all)
 
 func _erase(m: Machine) -> void:
@@ -1120,7 +1117,7 @@ func fx_cell(m: Machine) -> Vector2i:
 	if machines.has(m.id) and machines[m.id] == m:
 		return m.cell
 	for b in machines.values():
-		if b is MacroMachine and b.inner.machines.get(m.id) == m:
+		if b is MacroMachine and m in b.all_inner():
 			return b.cell
 	return m.cell
 
@@ -1132,7 +1129,7 @@ func handle_machines(grid, dt: float, event_cell = null) -> void:
 			m.hp = min(m.max_hp(), m.hp + m.stats.self_repair * dt)
 		if m is MacroMachine:
 			# Сигнал блока выставляет сам блок каждый тик — здесь его не сбрасываем.
-			handle_machines(m.inner, dt, m.cell)
+			handle_machines(m.inner, dt, event_cell if event_cell != null else m.cell)
 			continue
 		m.signal_out = false
 		if m.items.is_empty():

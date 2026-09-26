@@ -49,7 +49,8 @@ static func machine_to(m: Machine, gas: GasNet) -> Dictionary:
 		md.extra = m.save_extra()
 	return md
 
-static func machine_restore(w: World, m: Machine, md: Dictionary, gas: GasNet) -> void:
+## grid — сетка, где стоит машина (мир или внутренность блока); нужна вложенным блокам.
+static func machine_restore(w: World, m: Machine, md: Dictionary, gas: GasNet, grid = null) -> void:
 	var sub := w.db.get_sub(md.sub)
 	m.quality = float(md.q)
 	m.stats = ComponentStats.compute(m.kind, sub, m.quality)
@@ -72,7 +73,7 @@ static func machine_restore(w: World, m: Machine, md: Dictionary, gas: GasNet) -
 		m.temp = float(md.get("temp", w.planet.ambient_temp))
 	# Сначала extra: свёрнутый блок заводит в нём свой газовый узел, потом газ.
 	if md.has("extra"):
-		m.load_extra(w, md.extra)
+		m.load_extra(grid if grid != null else w, md.extra)
 	if md.has("gas") and gas.has_node(m.id):
 		gas.nodes[m.id].n = float(md.gas)
 

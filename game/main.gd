@@ -996,6 +996,8 @@ func _uitest_macro(w: World) -> bool:
 	var tag1: String = ifl.config.tag
 	print("[uitest] тег внутреннего фильтра: ", tag0, " → ", tag1)
 	await get_tree().process_frame
+	if not await _uitest_nested(base):
+		return false
 	var unf := _find_button(hud.inspector_buttons, "Развернуть")
 	if unf: unf.pressed.emit()
 	await get_tree().process_frame
@@ -1003,6 +1005,46 @@ func _uitest_macro(w: World) -> bool:
 	var unfolded: bool = back != null and back.kind == "filter" and back.config.tag == tag1
 	print("[uitest] развёрнуто: ", unfolded, " сообщение: ", message)
 	return tag1 != tag0 and unfolded
+
+## Свёрнутый блок в (base) сворачивается вместе с соседом во внешний блок; в инспекторе
+## заходим во вложенный, видим его фильтр, выходим наверх и разворачиваем внешний.
+func _uitest_nested(base: Vector2i) -> bool:
+	world.place("container", base + Vector2i(1, 0), 0, world.starter, true)
+	var res := Macroblocks.collapse_region(world, Rect2i(base, Vector2i(2, 1)), "цех")
+	if res.err != "":
+		print("[uitest] вложенный блок: ", res.err)
+		return false
+	selected_cell = res.macro.cell
+	hud.insp_inner = -1
+	hud._refresh_inspector()
+	await get_tree().process_frame
+	var nb := _find_button(hud.inspector_buttons, " 0,0")
+	if nb: nb.pressed.emit()
+	await get_tree().process_frame
+	await get_tree().process_frame
+	var ob := _find_button(hud.inspector_buttons, "Открыть «")
+	var open_found := ob != null
+	if ob: ob.pressed.emit()
+	await get_tree().process_frame
+	await get_tree().process_frame
+	var inner_filter := _find_button(hud.inspector_buttons, "Фильтр") != null
+	var up := _find_button(hud.inspector_buttons, "← Наверх")
+	var up_found := up != null
+	if up: up.pressed.emit()
+	await get_tree().process_frame
+	await get_tree().process_frame
+	var ub := _find_button(hud.inspector_buttons, "Развернуть")
+	if ub: ub.pressed.emit()
+	await get_tree().process_frame
+	world.remove_at(base + Vector2i(1, 0), false)
+	var nested = world.machine_at(base)
+	selected_cell = base
+	hud.insp_inner = -1
+	hud._refresh_inspector()
+	await get_tree().process_frame
+	print("[uitest] вложенный блок: открыть=", open_found, " фильтр внутри=", inner_filter, " наверх=", up_found,
+		" после разворота снова блок=", nested is MacroMachine)
+	return open_found and inner_filter and up_found and nested is MacroMachine
 
 func _find_button(root: Node, text_part: String) -> Button:
 	for c in root.find_children("*", "Button", true, false):
