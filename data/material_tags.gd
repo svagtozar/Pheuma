@@ -40,6 +40,8 @@ const TAGS := {
 	"toxic":       {"n": "токсичный", "inc": [], "melt": -200, "boil": -700, "dens": 0.0, "hard": -0.5, "w": 0.7, "col": Color(0.55, 0.20, 0.60)},
 	"sticky":      {"n": "липкий", "inc": ["crystalline", "phasing"], "melt": -350, "boil": -700, "dens": 0.0, "hard": -2.0, "w": 0.6, "col": Color(0.55, 0.40, 0.20)},
 	"luminous":    {"n": "светящийся", "inc": [], "melt": 0, "boil": 0, "dens": 0.0, "hard": 0.0, "w": 0.5, "col": Color(1.00, 1.00, 0.70)},
+	"refractory":  {"n": "тугоплавкий", "inc": ["volatile", "organic"], "melt": 900, "boil": 800, "dens": 0.5, "hard": 1.0, "w": 0.4, "col": Color(0.80, 0.45, 0.30)},
+	"cryogenic":   {"n": "криогенный", "inc": ["pyrophoric", "refractory"], "melt": -400, "boil": -600, "dens": 0.0, "hard": -0.5, "w": 0.35, "col": Color(0.70, 0.90, 1.00)},
 	# --- невозможные в реальности ---
 	"antigravitic":     {"n": "антигравитационный", "inc": ["dense"], "melt": 100, "boil": 200, "dens": -6.0, "hard": 0.0, "w": 0.12, "col": Color(0.85, 0.60, 1.00), "exotic": true},
 	"phasing":          {"n": "фазирующий", "inc": ["anchoring", "sticky", "tethered"], "melt": 0, "boil": 0, "dens": -1.0, "hard": -1.0, "w": 0.12, "col": Color(0.60, 0.95, 0.95), "exotic": true},
@@ -53,6 +55,8 @@ const TAGS := {
 	"chrono_lagged":    {"n": "запаздывающий во времени", "inc": [], "melt": 0, "boil": 0, "dens": 0.5, "hard": 0.5, "w": 0.1, "col": Color(0.55, 0.50, 0.40), "exotic": true},
 	"echoing":          {"n": "отзвучный", "inc": ["void"], "melt": 0, "boil": 0, "dens": 0.0, "hard": 0.0, "w": 0.1, "col": Color(0.70, 0.85, 0.70), "exotic": true},
 	"tethered":         {"n": "привязанный", "inc": ["phasing"], "melt": 0, "boil": 0, "dens": 0.0, "hard": 0.0, "w": 0.1, "col": Color(0.95, 0.70, 0.40), "exotic": true},
+	"superfluid":       {"n": "сверхтекучий", "inc": ["sticky", "dense"], "melt": -300, "boil": -200, "dens": -0.5, "hard": -1.5, "w": 0.08, "col": Color(0.55, 0.85, 1.00), "exotic": true},
+	"self_assembling":  {"n": "самосборный", "inc": ["brittle"], "melt": 100, "boil": 200, "dens": 0.0, "hard": 0.5, "w": 0.08, "col": Color(0.90, 0.75, 0.95), "exotic": true},
 }
 
 static func all() -> Array:

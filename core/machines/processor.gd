@@ -131,6 +131,13 @@ static func run(p_pid: String, p: Portion, ctx: Dictionary) -> Dictionary:
 				temp = target
 		"sinter":
 			temp = sub.melt - 30.0
+		"cryo":
+			# Глубокая заморозка: намного холоднее среды и ниже T плавления.
+			var deep: float = min(ctx.ambient - 150.0, sub.melt - 60.0)
+			if sub.has("thermo_inverted"):
+				temp += abs(temp - deep) * 0.5
+			else:
+				temp = deep
 	var phase_out := sub.phase_at(temp)
 	var was_hot := phase_in != Substance.Phase.SOLID and phase_out == Substance.Phase.SOLID
 	var pressure: float = ctx.get("pressure", 0.0) + ctx.get("compress_bonus", 0.0)

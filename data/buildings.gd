@@ -37,6 +37,8 @@ const KINDS := {
 	"electrolyzer": {"n": "Электролизёр", "cat": 2, "cost": 8.0, "hard": 3.0, "any": ["conductive", "metallic"], "cap": 10.0, "gas": 1.0, "process": "electrolyzer", "locked": true},
 	"sinter":     {"n": "Спекатель", "cat": 2, "cost": 8.0, "hard": 4.0, "cap": 10.0, "gas": 1.0, "process": "sinter", "locked": true},
 	"irradiator": {"n": "Облучатель", "cat": 2, "cost": 8.0, "hard": 3.0, "cap": 10.0, "gas": 1.0, "process": "irradiator", "locked": true},
+	"cryochamber": {"n": "Криокамера", "cat": 2, "cost": 10.0, "hard": 3.5, "cap": 10.0, "gas": 2.0, "process": "cryochamber", "locked": true},
+	"resonator":  {"n": "Резонатор", "cat": 2, "cost": 8.0, "hard": 3.0, "cap": 10.0, "gas": 1.0, "process": "resonator", "locked": true},
 	"loom":       {"n": "Ткацкий станок", "cat": 2, "cost": 6.0, "hard": 2.0, "cap": 10.0, "gas": 1.0, "process": "loom", "locked": true},
 	"sensor":     {"n": "Датчик", "cat": 3, "cost": 1.0, "hard": 1.0, "desc": "Смотрит на машину впереди: уровень, тег, давление или температура."},
 	"gate_and":   {"n": "И", "cat": 3, "cost": 1.0, "hard": 1.0, "desc": "Сигнал, если на обоих входах сигнал."},

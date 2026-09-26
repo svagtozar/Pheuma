@@ -14,6 +14,7 @@ const EVENT_CTX := ["launch", "impact"]
 const CORROSION_PROOF := ["insulating", "crystalline", "anchoring"]
 
 ## Можно ли носить и хранить без вреда: не разъедает хранилища и не горит в руках.
+## safe_fire — навык Хранителя огня или холодильный ранец.
 static func safe_to_carry(s: Substance, planet: Planet, safe_fire: bool = false) -> bool:
 	if s.has("acidic"):
 		return false
@@ -44,6 +45,8 @@ static func tick(p: Portion, ctx: String, env: Dictionary, dt: float) -> Diction
 			res.lost += mass0 * 0.5 * dt
 		elif phase == Substance.Phase.LIQUID and ctx == "ground":
 			res.lost += mass0 * 0.05 * dt
+	if ctx == "carried" and env.get("cold_pack", false):
+		p.temp = min(p.temp, planet.ambient_temp)   # холодильный ранец
 	if ctx == "carried" and p.temp > 200.0:
 		res.robot_damage += 0.5 * dt * (1.0 - env.get("shield", {}).get("heat", 0.0))
 
@@ -111,7 +114,7 @@ static func _apply(r: Dictionary, p: Portion, mass0: float, phase: int, ctx: Str
 				lit = true
 			if not r.get("always", false) and env.get("hot_nearby", false):
 				lit = true
-			if ctx == "carried" and env.get("safe_fire", false):
+			if ctx == "carried" and (env.get("safe_fire", false) or env.get("cold_pack", false)):
 				lit = false
 			if lit:
 				res.lost += mass0 * rate * dt
@@ -144,6 +147,20 @@ static func _apply(r: Dictionary, p: Portion, mass0: float, phase: int, ctx: Str
 			res.robot_damage += rate * dt * min(2.0, mass0 / 5.0) * (1.0 - shield.get("radiation", 0.0))
 		"warm":
 			p.temp += rate * dt
+		"chill":
+			var cold: float = planet.ambient_temp - 100.0
+			p.temp = max(cold, p.temp - rate * dt)
+			for n in env.get("neighbors", []):
+				if n != p:
+					n.temp = max(cold, n.temp - rate * dt)
+		"seep":
+			var holds := false
+			if cont != null:
+				holds = cont.has("dense") or cont.has("anchoring")
+			if not holds:
+				res.lost += mass0 * rate * dt
+		"mend":
+			res.container_damage -= rate * dt * min(1.0, mass0 / 5.0)
 		"absorb_water":
 			p.mass += mass0 * rate * dt
 			if rng.chance(rate * 2.0 * dt):

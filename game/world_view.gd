@@ -153,7 +153,7 @@ const SHORT := {"drill": "Бур", "container": "Конт", "tank": "Бак", "r
 	"pump": "Насос", "pipe": "", "valve": "Клап", "cannon": "Пушка", "crusher": "Дроб", "furnace": "Печь",
 	"condenser": "Хол", "treater": "Обр", "compressor": "Компр", "decompressor": "Деко", "distiller": "Дист",
 	"centrifuge": "Центр", "magnet_sep": "Магн", "filter": "Фильтр", "electrolyzer": "Элек", "sinter": "Спек",
-	"irradiator": "Облуч", "loom": "Ткач", "sensor": "Дат", "gate_and": "И", "gate_or": "ИЛИ", "gate_not": "НЕ",
+	"irradiator": "Облуч", "loom": "Ткач", "cryochamber": "Крио", "resonator": "Резон", "sensor": "Дат", "gate_and": "И", "gate_or": "ИЛИ", "gate_not": "НЕ",
 	"launch_silo": "Шахта", "dome": "Купол", "beacon": "Маяк", "warehouse_section": "Склад",
 	"battery_section": "Батар", "catch_net": "", "macro": "МБ"}
 

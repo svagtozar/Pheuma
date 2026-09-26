@@ -196,9 +196,9 @@ func on_processed(m: Machine, input: Portion, res: Dictionary) -> void:
 		discover_tag(t)
 	stats.processed += 1
 	match m.kind:
-		"furnace", "compressor", "decompressor", "sinter":
+		"furnace", "compressor", "decompressor", "sinter", "cryochamber":
 			robot.xp.firekeeper += 1.0
-		"treater", "electrolyzer", "irradiator", "distiller":
+		"treater", "electrolyzer", "irradiator", "distiller", "resonator":
 			robot.xp.shaman += 0.5
 		_:
 			robot.xp.crafter += 0.5
@@ -794,7 +794,7 @@ func handle_machines(grid, dt: float, event_cell = null) -> void:
 		var ec: Vector2i = event_cell if event_cell != null else m.cell
 		for p in m.items:
 			var res := Handling.tick(p, m.handling_ctx(), env, dt)
-			m.hp -= res.container_damage * m.stats.wear
+			m.hp = min(m.max_hp(), m.hp - res.container_damage * m.stats.wear)
 			spawn.append_array(res.spawn)
 			if res.signal:
 				m.signal_out = true
@@ -835,7 +835,8 @@ func _tick_handling(dt: float) -> void:
 				_crawl(c)
 	# Груз робота.
 	var renv := {"planet": planet, "db": db, "rng": rng, "container": null, "neighbors": [],
-		"hot_nearby": false, "shield": robot.shield(), "safe_fire": robot.passive("safe_fire") > 0}
+		"hot_nearby": false, "shield": robot.shield(), "safe_fire": robot.passive("safe_fire") > 0,
+		"cold_pack": robot.has_module("cold_pack")}
 	for id in robot.inventory.keys():
 		var p: Portion = robot.inventory[id]
 		var res := Handling.tick(p, "carried", renv, dt)

@@ -209,12 +209,13 @@ func build_chain(pl: Dictionary, sink) -> Machine:
 		var e: Array = site.cells[i]
 		var fac: int = site.cells[i + 1][1] if st.out == 0 else (site.cells[i + 1][1] + 3) % 4
 		var chk := Callable()
+		var stag: String = Processes.PROCESSES[st.pid].get("source", "") if st.op == "process" else ""
 		if st.has("source"):
 			var src: Substance = st.source
-			# Облучатель лучше строить прямо из радиоактивного материала — тогда источник вечный.
+			# Машину с источником лучше строить прямо из материала-источника — тогда он вечный.
 			if Buildings.check_material(st.kind, src, w.planet.ambient_temp) == "":
 				mine_mass(src, w.build_cost(st.kind) + 1.0)
-				chk = func(s): return s.has("radioactive")
+				chk = func(s): return s.has(stag)
 		var m := build(st.kind, e[0], fac, chk)
 		if m == null and not chk.is_null():
 			m = build(st.kind, e[0], fac)
@@ -222,7 +223,7 @@ func build_chain(pl: Dictionary, sink) -> Machine:
 			return null
 		if st.op == "treat":
 			_feeders.append([st.reagent, m])
-		elif st.has("source") and not m.built_from.has("radioactive"):
+		elif st.has("source") and not m.built_from.has(stag):
 			_feeders.append([st.source, m])
 		var gmin: float = Processes.PROCESSES[st.pid].get("gas_min", 0.0) if st.op == "process" else 0.0
 		if gmin > 0.0:
@@ -272,7 +273,7 @@ func _relocate_exhausted() -> void:
 
 ## Материал не портит хранилища и не горит в руках робота.
 func safe_to_handle(s: Substance) -> bool:
-	return Handling.safe_to_carry(s, w.planet, w.robot.passive("safe_fire") > 0.0)
+	return Handling.safe_to_carry(s, w.planet, w.robot.passive("safe_fire") > 0.0 or w.robot.has_module("cold_pack"))
 
 ## Кислотный груз разъедает хранилище — нужен стойкий материал стенок.
 func sink_check(cargo: Substance) -> Callable:
@@ -507,7 +508,7 @@ func _experiment(max_tries: int = 8) -> bool:
 		_farm.lab = true
 	var pids: Array = []
 	for pid in Processes.PROCESSES:
-		if pid in ["filter", "magnet_sep", "irradiator"]:
+		if pid in ["filter", "magnet_sep", "irradiator", "resonator"]:
 			continue
 		if w.robot.unlocked.has(Planner.kind_of(pid)):
 			pids.append(pid)

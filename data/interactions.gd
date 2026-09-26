@@ -56,6 +56,11 @@ const RULES := [
 	{"a": "volcanic", "b": "organic", "add": ["flammable"], "env": true},
 	{"a": "inverted_thermodynamics", "b": "volatile", "add": ["thermo_inverted"], "env": true},
 	{"a": "temporal_drift", "b": "crystalline", "add": ["chrono_lagged"], "env": true},
+	# холод, тугоплавкость, самосборка
+	{"a": "cryogenic", "b": "volatile", "remove": ["volatile"], "add": ["dense"], "heat": -80.0, "consume": 0.5},
+	{"a": "cryogenic", "b": "flammable", "remove": ["flammable"], "heat": -60.0, "consume": 0.4},
+	{"a": "self_assembling", "b": "brittle", "remove": ["brittle"], "consume": 0.3},
+	{"a": "refractory", "b": "porous", "add": ["refractory"], "heat": 50.0, "consume": 0.6},
 ]
 
 static func key(rule: Dictionary) -> String:

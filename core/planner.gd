@@ -7,7 +7,7 @@ class_name Planner
 ## План: {"mat": исходный материал, "steps": [шаг…], "locked": [закрытые постройки]}
 ## Шаг:  {"op": "process", "pid": id, "kind": постройка, "out": 0|1}
 ##       {"op": "treat", "reagent": Substance, "kind": "treater", "out": 0}
-## Для облучателя в шаге есть "source": радиоактивный материал.
+## У процессов с источником (облучатель, резонатор) в шаге есть "source": материал-источник.
 ##
 ## Побочный эффект: производные вещества создаются в w.db.
 
@@ -37,13 +37,18 @@ static func plan(w, tag: String, mats: Array) -> Dictionary:
 
 static func _search(w, tag: String, mats: Array, allow_locked: bool, max_states: int = MAX_STATES) -> Dictionary:
 	var rgs := reagents(w, mats)
-	var radio: Array = rgs.filter(func(m): return m.has("radioactive"))
+	# Процессы с источником (облучатель, резонатор): источник — местный реагент с нужным тегом.
+	var sources := {}
 	var pids: Array = []
 	for pid in Processes.PROCESSES:
 		if pid in ["filter", "magnet_sep", "treater"]:
 			continue
-		if pid == "irradiator" and radio.is_empty():
-			continue
+		var stag: String = Processes.PROCESSES[pid].get("source", "")
+		if stag != "":
+			var cand: Array = rgs.filter(func(m): return m.has(stag))
+			if cand.is_empty():
+				continue
+			sources[pid] = cand[0]
 		var k := kind_of(pid)
 		if allow_locked or w.robot.unlocked.has(k):
 			pids.append(pid)
@@ -63,7 +68,7 @@ static func _search(w, tag: String, mats: Array, allow_locked: bool, max_states:
 		if s.steps.size() >= MAX_DEPTH:
 			continue
 		for pid in pids:
-			var ctx := ctx_for(w, pid, Portion.new(radio[0], 5.0) if pid == "irradiator" else null)
+			var ctx := ctx_for(w, pid, Portion.new(sources[pid], 5.0) if sources.has(pid) else null)
 			var res := Processor.run(pid, s.p, ctx)
 			if res.get("wait", false):
 				continue
@@ -74,8 +79,8 @@ static func _search(w, tag: String, mats: Array, allow_locked: bool, max_states:
 					continue
 				seen[k] = true
 				var st := {"op": "process", "pid": pid, "kind": kind_of(pid), "out": o[1]}
-				if pid == "irradiator":
-					st.source = radio[0]
+				if sources.has(pid):
+					st.source = sources[pid]
 				queue.append({"mat": s.mat, "p": np, "steps": s.steps + [st]})
 		for rg in rgs:
 			if rg == s.p.substance:

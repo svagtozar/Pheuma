@@ -14,7 +14,7 @@ static func compute(kind: String, sub: Substance, quality: float = 0.0) -> Dicti
 	if sub.has("brittle"): max_p -= 2.0
 	if sub.has("anchoring"): max_p += 2.0
 	s.max_p = max(1.5, max_p * q)
-	s.max_t = 5000.0 if sub.has("thermo_inverted") else sub.melt - 30.0 + 50.0 * quality
+	s.max_t = 5000.0 if sub.has("thermo_inverted") else sub.melt - 30.0 + 50.0 * quality + (300.0 if sub.has("refractory") else 0.0)
 	s.heat_loss = 0.2 if sub.has("insulating") else 1.0
 	s.corrosion_proof = sub.has("insulating") or sub.has("crystalline") or sub.has("anchoring")
 	s.wire_range = 8.0 + (16.0 if sub.has("conductive") else 0.0) + (4.0 if sub.has("metallic") else 0.0)
@@ -29,7 +29,7 @@ static func compute(kind: String, sub: Substance, quality: float = 0.0) -> Dicti
 	s.radiation = 0.3 if sub.has("radioactive") else 0.0
 	s.magnetic = sub.has("magnetic")
 	s.storm_proof = sub.has("anchoring") or sub.has("dense")
-	s.self_repair = 0.5 if sub.has("self_replicating") else 0.0
+	s.self_repair = 0.5 if sub.has("self_replicating") else (0.3 if sub.has("self_assembling") else 0.0)
 	s.wear = 0.2 if sub.has("chrono_lagged") else 1.0
 	s.light = sub.has("luminous")
 	s.leaky = sub.has("phasing")
@@ -51,6 +51,8 @@ static func describe(kind: String, sub: Substance, quality: float = 0.0) -> Arra
 	out.append("предельное давление %.1f атм" % s.max_p)
 	out.append("выдерживает до %.0f °C" % s.max_t)
 	if s.heat_loss < 1.0: out.append("хорошо держит тепло")
+	if sub.has("refractory"): out.append("тугоплавкий: +300 °C к пределу")
+	if sub.has("self_assembling"): out.append("сам себя чинит")
 	if s.corrosion_proof: out.append("не разъедается кислотой")
 	if sub.has("anchoring"): out.append("удерживает фазирующее")
 	if s.leaky: out.append("груз просачивается сквозь стенки!")
