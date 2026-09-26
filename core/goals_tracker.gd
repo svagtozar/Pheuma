@@ -12,6 +12,7 @@ var completed := false
 var choices := {}           # номер этапа (строкой) → выбранный вариант
 var reward_pending: Array = []
 var base_hits := 0
+var base_vented := 0.0      # выпущенный газ на начало этапа (терраформирование)
 var _acc := 0.0
 
 func _init(world) -> void:
@@ -39,6 +40,7 @@ func current() -> Dictionary:
 func choose(idx: int) -> void:
 	choices[str(stage)] = idx
 	base_hits = w.stats.hits
+	base_vented = w.gas.vented_total
 	hold = 0.0
 	w.log_event(w.robot_cell(), "Выбран путь: " + current().desc)
 
@@ -73,6 +75,7 @@ func advance() -> void:
 	hold = 0.0
 	progress = 0.0
 	base_hits = w.stats.hits
+	base_vented = w.gas.vented_total
 	if stage >= goal().stages.size():
 		completed = true
 		stage = goal().stages.size() - 1
@@ -146,6 +149,12 @@ func evaluate(st: Dictionary, dt: float) -> float:
 				if m.is_storage():
 					s += m.total_mass()
 			return s / st.mass
+		"vent_gas":
+			return (w.gas.vented_total - base_vented) / st.amount
+		"launch_variety":
+			return float(w.launched.subs.size()) / st.n
+		"excavate":
+			return w.excavated / st.mass
 		"beacon_hold":
 			var ok := false
 			for m in w.machines_of("beacon"):
@@ -168,6 +177,12 @@ func text() -> String:
 		s = "%s — этап %d/%d: выберите путь (окно выбора)" % [goal().n, stage + 1, goal().stages.size()]
 	if st.type == "deliveries":
 		s += "\n  доставлено: %d/%d" % [w.stats.hits - base_hits, st.n]
+	if st.type == "vent_gas":
+		s += "\n  выпущено: %.0f/%.0f (декомпрессор или насос на откачке)" % [w.gas.vented_total - base_vented, st.amount]
+	if st.type == "launch_variety":
+		s += "\n  разных материалов на орбите: %d/%d" % [w.launched.subs.size(), st.n]
+	if st.type == "excavate":
+		s += "\n  раскопано: %.1f/%.0f кг (E на клетке руин)" % [w.excavated, st.mass]
 	if completed:
 		s = "%s — ВЫПОЛНЕНО. Нажмите N для новой планеты." % goal().n
 	return s

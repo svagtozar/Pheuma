@@ -27,7 +27,10 @@ var revealed := {}              # клетки залежей, найденны�
 var tile_overrides := {}        # Vector2i → {"tile", "t"}
 var ice_stress := {}
 var fires := {}                 # Vector2i → оставшееся время
-var launched := {"mass": 0.0, "tags": {}, "exotic": 0.0}
+var launched := {"mass": 0.0, "tags": {}, "exotic": 0.0, "subs": {}}
+var excavated := 0.0            # кг, раскопанные в руинах
+var ruin_dug := {}              # Vector2i → сколько кг уже вынуто из клетки руин
+var artifacts: Array = []       # вещества, которые находят в руинах
 var built_kinds := {}
 var meta := {}                  # данные интерфейса, которые нужно сохранять (шаг обучения)
 var events: Array = []          # {"cell", "text", "t"} для интерфейса
@@ -57,6 +60,7 @@ func _init(p: Planet) -> void:
 	goals = GoalsTracker.new(self)
 	director = EventDirector.new(self)
 	starter = db.add(starter_substance())
+	_make_artifacts()
 	robot.pos = Vector2(p.spawn) + Vector2(0.5, 0.5)
 	robot.last_safe = p.spawn
 	robot.add_item(Portion.new(starter, 60.0, p.ambient_temp))
@@ -423,6 +427,8 @@ func mine(c: Vector2i, dt: float) -> String:
 	if not near_robot(c, 2.2):
 		return "слишком далеко"
 	var dep = planet.deposits.get(c)
+	if (dep == null or dep.amount <= 0.0) and tile(c) == Planet.Tile.RUIN and machine_at(c) == null:
+		return _excavate(c, dt)
 	if dep == null or dep.amount <= 0.0:
 		return "здесь нет залежи"
 	var sub: Substance = db.get_sub(dep.sub)
@@ -443,6 +449,57 @@ func mine(c: Vector2i, dt: float) -> String:
 			return "это %s — без газозаборника не унести, ставьте бур и бак" % Substance.PHASE_NAMES[p.phase()]
 		robot.add_item(p)
 	return ""
+
+## Раскопки руин: из клетки — до RUIN_KG кг артефактов, потом она становится грунтом.
+const RUIN_KG := 10.0
+
+func _excavate(c: Vector2i, dt: float) -> String:
+	if artifacts.is_empty():
+		return "руины пусты"
+	robot.mine_progress += dt * 0.6 * (1.0 + robot.passive("mine_speed"))
+	if robot.mine_progress < 1.0:
+		return ""
+	robot.mine_progress = 0.0
+	var sub: Substance = artifacts[posmod(c.x * 7 + c.y * 13, artifacts.size())]
+	var p := Portion.new(sub, 1.0, planet.ambient_temp)
+	ruin_dug[c] = ruin_dug.get(c, 0.0) + 1.0
+	excavated += 1.0
+	robot.xp.gatherer += 1.0
+	robot.xp.shaman += 0.5
+	sound("tick", c)
+	if robot.can_carry(p):
+		robot.add_item(p)
+	else:
+		drop_portions(c, [p])
+	if not is_analyzed(sub) and robot.passive("auto_analyze") > 0:
+		analyze(sub)
+	if ruin_dug[c] >= RUIN_KG:
+		planet.set_tile(c, Planet.Tile.GROUND)
+		ruin_dug.erase(c)
+		log_event(c, "Руина выработана")
+	return ""
+
+## Артефакты руин: несколько веществ с обычным и невозможным тегом, по seed планеты.
+func _make_artifacts() -> void:
+	var has_ruins := false
+	for i in planet.tiles.size():
+		if planet.tiles[i] == Planet.Tile.RUIN:
+			has_ruins = true
+			break
+	if not has_ruins:
+		return
+	var r := Rng.new(planet.seed_value).fork("artifacts")
+	var normal: Array = MaterialTags.normal_tags().filter(func(t): return not t in ["volatile", "organic", "acidic", "pyrophoric"])
+	normal.sort()
+	var exotic: Array = MaterialTags.exotic_tags()
+	exotic.sort()
+	for i in 4:
+		var ex: String = r.pick(exotic)
+		var nt: String = r.pick(normal)
+		var tags: Array = [ex] if not MaterialTags.compatible(nt, ex) else [nt, ex]
+		var id := "Артефакт-%d" % (i + 1)
+		var s := Substance.new(id, id, tags, {"hard": -1.0})
+		artifacts.append(db.add(s))
 
 ## Подкачать бортовой баллон: из газовой машины рядом или вручную из атмосферы.
 func refill_robot(dt: float) -> String:
@@ -550,6 +607,7 @@ func launch_orbit(payload: Array, c: Vector2i) -> void:
 			launched.tags[t] = launched.tags.get(t, 0.0) + p.mass
 		if p.substance.is_exotic():
 			launched.exotic += p.mass
+		launched.subs[p.substance.root] = true
 	var from := Vector2(c) + Vector2(0.5, 0.5)
 	projectiles.append({"from": from, "to": from + Vector2(0, -30), "t": 0.0, "dur": 2.0, "payload": [], "orbit": true, "kind": "rocket"})
 	robot.xp.chief += 2.0

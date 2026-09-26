@@ -21,7 +21,7 @@ func tick(w, dt: float) -> void:
 		if w.gas.pressure(id) <= config.target_p:
 			status = "откачано до %.1f атм" % config.target_p
 			return
-		w.gas.take_gas(id, rate * dt)
+		w.gas.vented_total += w.gas.take_gas(id, rate * dt)
 		w.robot.xp.firekeeper += 0.02 * dt
 		return
 	var limit: float = min(config.target_p, stats.max_p * 0.95)

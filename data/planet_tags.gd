@@ -63,7 +63,7 @@ const TAGS := {
 	"temporal_drift": {"n": "временной дрейф", "desc": "Процессы идут то быстрее, то медленнее.",
 		"inc": [], "anomaly": true, "weights": {"chrono_lagged": 12.0}, "goals": {"science": 1.5}},
 	"ancient_ruins": {"n": "древние руины", "desc": "Остатки чужих машин и залежи экзотики.",
-		"inc": [], "anomaly": true, "exotic_mult": 3.0, "goals": {"anomaly": 3.0}},
+		"inc": [], "anomaly": true, "exotic_mult": 3.0, "goals": {"anomaly": 2.0, "archaeology": 4.0}},
 	"singularity": {"n": "сингулярность", "desc": "Рядом крошечная чёрная дыра: тяжело, время петляет, пустотное и сверхтекучее не редкость.",
 		"inc": ["low_gravity"], "anomaly": true, "grav": 1.6, "exotic_mult": 2.0,
 		"weights": {"void": 3.0, "chrono_lagged": 2.0, "superfluid": 2.0}, "goals": {"anomaly": 1.5}},

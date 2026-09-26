@@ -114,12 +114,16 @@ static func to_dict(w: World) -> Dictionary:
 	d.revealed = w.revealed.keys().map(func(c): return [c.x, c.y])
 	d.overrides = w.tile_overrides.keys().map(func(c): return [c.x, c.y, w.tile_overrides[c].tile, w.tile_overrides[c].t])
 	d.launched = w.launched
+	d.excavated = w.excavated
+	d.ruin_dug = w.ruin_dug.keys().map(func(c): return [c.x, c.y, w.ruin_dug[c]])
+	d.vented = w.gas.vented_total
 	d.built_kinds = w.built_kinds.keys()
 	d.events = w.director.to_dict()
 	d.stats = w.stats
 	d.meta = w.meta
 	d.goals = {"stage": w.goals.stage, "hold": w.goals.hold, "completed": w.goals.completed, "progress": w.goals.progress,
-		"choices": w.goals.choices, "reward_pending": w.goals.reward_pending, "base_hits": w.goals.base_hits}
+		"choices": w.goals.choices, "reward_pending": w.goals.reward_pending, "base_hits": w.goals.base_hits,
+		"base_vented": w.goals.base_vented}
 	var r := w.robot
 	d.robot = {"pos": [r.pos.x, r.pos.y], "hp": r.hp, "tank": r.tank, "selected": r.selected,
 		"inventory": r.inventory.values().map(func(p): return p_to(p)),
@@ -166,7 +170,11 @@ static func from_dict(d: Dictionary) -> World:
 		w.revealed[v2i(c)] = true
 	for o in d.overrides:
 		w.tile_overrides[Vector2i(int(o[0]), int(o[1]))] = {"tile": int(o[2]), "t": float(o[3])}
-	w.launched = {"mass": float(d.launched.mass), "tags": d.launched.tags, "exotic": float(d.launched.exotic)}
+	w.launched = {"mass": float(d.launched.mass), "tags": d.launched.tags, "exotic": float(d.launched.exotic), "subs": d.launched.get("subs", {})}
+	w.excavated = float(d.get("excavated", 0.0))
+	for r in d.get("ruin_dug", []):
+		w.ruin_dug[Vector2i(int(r[0]), int(r[1]))] = float(r[2])
+	w.gas.vented_total = float(d.get("vented", 0.0))
 	w.meta = d.get("meta", {})
 	if d.has("stats"):
 		for k in d.stats:
@@ -183,6 +191,7 @@ static func from_dict(d: Dictionary) -> World:
 	w.goals.choices = d.goals.get("choices", {})
 	w.goals.reward_pending = d.goals.get("reward_pending", [])
 	w.goals.base_hits = int(d.goals.get("base_hits", 0))
+	w.goals.base_vented = float(d.goals.get("base_vented", 0.0))
 	var rd: Dictionary = d.robot
 	var r := w.robot
 	r.pos = Vector2(rd.pos[0], rd.pos[1])

@@ -72,6 +72,8 @@ static func _choose_goal(p: Planet, rng: Rng) -> Dictionary:
 		var w: float = Goals.TEMPLATES[id].w
 		if id == "anomaly" and p.has_anomaly():
 			w = 1.0
+		if id == "archaeology" and p.has_tag("ancient_ruins"):
+			w = 1.0
 		for t in p.tags:
 			w *= PlanetTags.TAGS[t].get("goals", {}).get(id, 1.0)
 		weights[id] = w
@@ -172,6 +174,7 @@ const STAGE_KINDS := {
 	"dome_env": ["dome", "furnace", "sensor"], "beacon_hold": ["beacon"],
 	"deliveries": ["cannon", "receiver"], "sensor_network": ["sensor", "valve"],
 	"machines_working": ["furnace"],
+	"vent_gas": ["decompressor", "pump"], "launch_variety": ["launch_silo"],
 }
 const BASE_KINDS := ["drill", "container", "tank", "pump", "pipe"]
 const MAX_BUILDERS := 3

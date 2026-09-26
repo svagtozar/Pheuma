@@ -17,7 +17,7 @@ func _mining(w: World) -> void:
 func test_every_template_has_alternatives_with_known_types():
 	var known := ["stockpile_tags", "dome_env", "launch_mass", "launch_tag", "launch_exotic", "build_count", "discover_tags",
 		"discover_exotic", "discover_interactions", "sensor_network", "phasing_contained", "beacon_hold",
-		"deliveries", "machines_working", "stockpile_mass"]
+		"deliveries", "machines_working", "stockpile_mass", "vent_gas", "launch_variety", "excavate"]
 	for id in Goals.TEMPLATES:
 		var alts := 0
 		for raw in Goals.TEMPLATES[id].stages:

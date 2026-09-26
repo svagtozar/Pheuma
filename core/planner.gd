@@ -29,13 +29,25 @@ static func ctx_for(w, pid: String, reagent = null) -> Dictionary:
 static func reagents(w, mats: Array) -> Array:
 	return mats.filter(func(m): return m.phase_at(w.planet.ambient_temp) == Substance.Phase.SOLID and m.hardness <= w.robot.mining_hardness() + 0.5)
 
+## Сначала — из открытых машин, потом с машинами ранних узлов прокачки, в конце — с любыми:
+## короткий путь через глубокий узел хуже длинного через открытые машины.
 static func plan(w, tag: String, mats: Array) -> Dictionary:
-	var p := _search(w, tag, mats, false)
-	if p.is_empty():
-		p = _search(w, tag, mats, true)
-	return p
+	for tier in [0, 2, 3, ALL_TIERS]:
+		var p := _search(w, tag, mats, tier)
+		if not p.is_empty():
+			return p
+	return {}
 
-static func _search(w, tag: String, mats: Array, allow_locked: bool, max_states: int = MAX_STATES) -> Dictionary:
+const ALL_TIERS := 99
+
+## Ступень постройки: номер узла прокачки в своём классе (0 — открыта с начала).
+static func tier_of(kind: String) -> int:
+	for nd in SkillTree.NODES:
+		if kind in nd.get("unlock", []):
+			return SkillTree.nodes_of(nd.cls).find(nd) + 1
+	return 0
+
+static func _search(w, tag: String, mats: Array, max_tier: int, max_states: int = MAX_STATES) -> Dictionary:
 	var rgs := reagents(w, mats)
 	# Процессы с источником (облучатель, резонатор): источник — местный реагент с нужным тегом.
 	var sources := {}
@@ -50,7 +62,7 @@ static func _search(w, tag: String, mats: Array, allow_locked: bool, max_states:
 				continue
 			sources[pid] = cand[0]
 		var k := kind_of(pid)
-		if allow_locked or w.robot.unlocked.has(k):
+		if w.robot.unlocked.has(k) or tier_of(k) <= max_tier:
 			pids.append(pid)
 	pids.sort()
 	var queue: Array = []
@@ -102,7 +114,7 @@ static func feasible(w, tag: String, mats: Array) -> bool:
 
 ## То же, но возвращает сам план (для проверки, из чего строить его машины).
 static func probe_plan(w, tag: String, mats: Array) -> Dictionary:
-	return _search(w, tag, mats, true, 900)
+	return _search(w, tag, mats, ALL_TIERS, 900)
 
 static func _key(p: Portion) -> String:
 	return ",".join(p.substance.tags) + "|" + str(p.phase())

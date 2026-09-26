@@ -208,3 +208,64 @@ func test_meteor_material_survives_save_load():
 	var w2 := SaveGame.from_dict(JSON.parse_string(JSON.stringify(SaveGame.to_dict(w))))
 	assert_not_null(w2.db.get_sub("Экзит"), "материал метеорита восстановлен")
 	assert_eq(w2.planet.deposits[w.planet.spawn + Vector2i(5, 5)].sub, "Экзит")
+
+# ---------------------------------------------------------------- цели
+
+func _goal_world(gid: String) -> World:
+	var w := H.world()
+	var g: Dictionary = Goals.TEMPLATES[gid].duplicate(true)
+	g.id = gid
+	w.planet.goal = g
+	return w
+
+func test_new_templates_present():
+	for id in ["terraform", "orbital", "archaeology"]:
+		assert_true(Goals.TEMPLATES.has(id))
+
+func test_vent_gas_progress_counts_released_gas():
+	var w := _goal_world("terraform")
+	w.goals.stage = 1
+	w.goals.choose(0)   # vent_gas
+	var dec := w.place("decompressor", Vector2i(10, 10), 0, w.starter, true)
+	var pump := w.place("pump", Vector2i(11, 10), 0, w.starter, true)
+	pump.config.target_p = 5.0
+	H.run(w, 40.0)
+	assert_gt(w.gas.vented_total, 5.0, "декомпрессор сбрасывает газ")
+	assert_gt(w.goals.progress, 0.03)
+	assert_eq(dec.kind, "decompressor")
+
+func test_launch_variety_counts_distinct_materials():
+	var w := _goal_world("orbital")
+	var a := w.db.add(Substance.new("a", "А", ["dense"]))
+	var b := w.db.add(Substance.new("b", "Б", ["brittle"]))
+	w.launch_orbit([Portion.new(a, 1.0), Portion.new(w.db.derive(a, ["dense", "porous"]), 1.0)], Vector2i(5, 5))
+	assert_eq(w.launched.subs.size(), 1, "производное того же корня — тот же материал")
+	w.launch_orbit([Portion.new(b, 1.0)], Vector2i(5, 5))
+	assert_almost_eq(w.goals.evaluate({"type": "launch_variety", "n": 3}, 1.0), 2.0 / 3.0, 0.01)
+
+func test_excavation_yields_artifacts_and_exhausts_ruin():
+	var w := World.create(1, ["ancient_ruins", "seismic", "storms"])
+	assert_false(w.artifacts.is_empty(), "на планете с руинами есть артефакты")
+	assert_true(w.artifacts.all(func(s): return s.is_exotic()), "у артефактов невозможный тег")
+	var ruin := Vector2i(-1, -1)
+	for y in w.planet.height:
+		for x in w.planet.width:
+			var c := Vector2i(x, y)
+			if ruin.x < 0 and w.tile(c) == Planet.Tile.RUIN and not w.planet.deposits.has(c):
+				ruin = c
+	assert_ne(ruin, Vector2i(-1, -1))
+	w.robot.pos = Vector2(ruin) + Vector2(0.5, 1.5)
+	for i in 30:
+		w.mine(ruin, 1.0)
+	assert_gte(w.excavated, World.RUIN_KG)
+	assert_eq(w.tile(ruin), Planet.Tile.GROUND, "руина выработана")
+	var d := SaveGame.to_dict(w)
+	var w2 := SaveGame.from_dict(JSON.parse_string(JSON.stringify(d)))
+	assert_almost_eq(w2.excavated, w.excavated, 0.01)
+	assert_not_null(w2.db.get_sub(w.artifacts[0].id), "артефакты есть после загрузки")
+
+func test_vented_total_saved():
+	var w := H.world()
+	w.gas.vented_total = 77.0
+	var d := SaveGame.to_dict(w)
+	assert_eq(d.vented, 77.0)

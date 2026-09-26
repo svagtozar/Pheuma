@@ -112,6 +112,7 @@ func build(kind: String, c: Vector2i, facing: int, check: Callable = Callable())
 		travel(c)
 		err = w.can_place(kind, c, s)
 		if err == "":
+			_built[c] = {"kind": kind, "facing": facing}
 			return w.place(kind, c, facing, s)
 		if w.robot.mass_of(s.id) >= w.build_cost(kind):
 			break
@@ -271,6 +272,18 @@ func _relocate_exhausted() -> void:
 		build_chain(ch.pl, ch.sink)
 		_chain_gen = 0
 
+## Есть из чего сделать бур под эту руду (материал бура не мягче руды − 0.5).
+func drillable(ore: Substance) -> bool:
+	var ok := func(s: Substance) -> bool:
+		return s.hardness + 0.5 >= ore.hardness and Buildings.check_material("drill", s, w.planet.ambient_temp) == ""
+	for id in w.robot.inventory:
+		if ok.call(w.db.get_sub(id)):
+			return true
+	for s in w.planet.materials:
+		if minable(s) and ok.call(s) and not deposits_of(s).is_empty():
+			return true
+	return false
+
 ## Материал не портит хранилища и не горит в руках робота.
 func safe_to_handle(s: Substance) -> bool:
 	return Handling.safe_to_carry(s, w.planet, w.robot.passive("safe_fire") > 0.0 or w.robot.has_module("cold_pack"))
@@ -287,7 +300,9 @@ func produce(tag: String, sink = "container") -> Machine:
 	learn_what_we_can()
 	# Сначала — из безопасного сырья: кислота разъедает хранилища, а самовозгорающееся
 	# горит в руках. Если так не выходит — из любого.
-	var pl := Planner.plan(w, tag, mats.filter(func(s): return safe_to_handle(s)))
+	var pl := Planner.plan(w, tag, mats.filter(func(s): return safe_to_handle(s) and drillable(s)))
+	if pl.is_empty():
+		pl = Planner.plan(w, tag, mats.filter(func(s): return drillable(s)))
 	if pl.is_empty():
 		pl = Planner.plan(w, tag, mats)
 	if pl.is_empty():
@@ -334,17 +349,22 @@ func maintain() -> void:
 		_rebuilt[oc] = _rebuilt.get(oc, 0) + 1
 		var cargo: Portion = m.out_queue[0][0]
 		var sealed_needed: bool = cargo.has("volatile") or cargo.phase() != Substance.Phase.SOLID
-		var kind := "tank" if sealed_needed else "container"
-		var chk := sink_check(cargo.substance)
-		var rebuilt := build(kind, oc, m.facing, chk)
+		var rec: Dictionary = _built.get(oc, {})
+		var kind: String = rec.get("kind", "tank" if sealed_needed else "container")
+		var fac: int = rec.get("facing", m.facing)
+		var chk := sink_check(cargo.substance) if kind in ["container", "tank"] else Callable()
+		var rebuilt := build(kind, oc, fac, chk)
 		if rebuilt == null and not chk.is_null():
-			rebuilt = build(kind, oc, m.facing)
+			rebuilt = build(kind, oc, fac)
+		if rebuilt != null and rec.has("link"):
+			w.link_cannon(oc, rec.link)
 		if rebuilt != null:
 			note("восстановлен приёмник у «%s»" % m.display_name())
 	_relocate_exhausted()
 	_maintain_feed()
 
 var _rebuilt := {}
+var _built := {}   # клетка → {kind, facing, link} — что бот здесь ставил (для восстановления)
 
 func _maintain_feed() -> void:
 	if not _feed.is_empty() and w.machines.has(_feed[1].id) and _feed[1].items.is_empty():
@@ -615,8 +635,8 @@ func play() -> void:
 	_take_reward()
 
 ## Какие типы этапов бот выбирает охотнее (раньше в списке — лучше).
-const PREFER := ["stockpile_tags", "launch_mass", "launch_tag", "build_count", "discover_tags", "stockpile_mass",
-	"machines_working", "deliveries", "beacon_hold", "discover_exotic", "launch_exotic", "discover_interactions",
+const PREFER := ["stockpile_tags", "excavate", "launch_mass", "launch_variety", "launch_tag", "build_count", "discover_tags",
+	"stockpile_mass", "vent_gas", "machines_working", "deliveries", "beacon_hold", "discover_exotic", "launch_exotic", "discover_interactions",
 	"sensor_network", "dome_env", "phasing_contained"]
 const REWARD_PREFER := ["supply", "slot", "knowledge", "blueprint", "repair", "survey"]
 
@@ -706,6 +726,12 @@ func do_stage(st: Dictionary) -> String:
 			return "" if n >= st.n else "не поставить %d линий обработки" % st.n
 		"deliveries":
 			return _deliveries()
+		"vent_gas":
+			return _vent_gas()
+		"launch_variety":
+			return _launch_variety(st.n)
+		"excavate":
+			return _excavate(st.mass)
 		"dome_env":
 			return _dome(st)
 		"beacon_hold":
@@ -721,6 +747,85 @@ func do_stage(st: Dictionary) -> String:
 			var chk := func(s): return s.has("anchoring")
 			return "" if produce("phasing", ["tank", chk]) != null else "не получить фазирующее или бак из якорного"
 	return "бот не умеет этап «%s»" % st.type
+
+## Насосы гонят газ в декомпрессор, он сбрасывает его в атмосферу.
+func _vent_gas() -> String:
+	if not w.robot.unlocked.has("decompressor"):
+		# Без декомпрессора: пары насосов — один качает, другой на откачке сбрасывает в небо.
+		var n := 0
+		for i in 3:
+			var pc := _free_near(w.planet.spawn)
+			var a := build("pump", pc, 0)
+			var b := build("pump", pc + Vector2i(1, 0), 0)
+			if a == null or b == null:
+				break
+			a.config.target_p = 5.0
+			b.config.reverse = true
+			b.config.target_p = 0.0
+			n += 1
+		if n == 0:
+			return "не поставить насосы для сброса газа"
+		note("сброс газа: пар насосов с откачкой — %d" % n)
+		return ""
+	var c := _free_near(w.planet.spawn)
+	var dec := build("decompressor", c, 0)
+	if dec == null:
+		return "не поставить декомпрессор"
+	if pump_for(dec, 5.0, 3, 5.0) == 0:
+		return "не поставить насосы к декомпрессору"
+	note("сброс газа: декомпрессор %d,%d" % [c.x, c.y])
+	return ""
+
+## Одна шахта, в которую кроме своей линии робот подкладывает другие материалы.
+func _launch_variety(n: int) -> String:
+	var any := _soft_materials().filter(func(s): return safe_to_handle(s))
+	if any.is_empty():
+		any = _soft_materials()
+	if any.is_empty():
+		return "нечего отправлять"
+	var silo := build_chain({"mat": any[0], "steps": [], "locked": []}, "launch_silo")
+	if silo == null:
+		return "не построить шахту"
+	for i in range(1, min(n + 1, any.size())):
+		var s: Substance = any[i]
+		if mine_mass(s, w.robot.mass_of(s.id) + 4.0):
+			travel(silo.cell)
+			w.robot.selected = s.id
+			w.insert_into(silo.cell, false, 4.0)
+			note("в шахту подложено: %s" % s.name)
+	return ""
+
+## Раскопки: ходить по клеткам руин и копать.
+func _excavate(mass: float) -> String:
+	var t0 := w.time
+	while w.excavated < mass and w.time - t0 < STAGE_LIMIT:
+		var best := Vector2i(-1, -1)
+		var bd := INF
+		for y in w.planet.height:
+			for x in w.planet.width:
+				var c := Vector2i(x, y)
+				if w.tile(c) == Planet.Tile.RUIN and not w.grid.has(c) and not w.planet.deposits.has(c):
+					var d := center(c).distance_to(w.robot.pos)
+					if d < bd:
+						bd = d
+						best = c
+		if best.x < 0:
+			return "руин не осталось"
+		travel(best)
+		w.robot.pos = center(best) + Vector2(0, 1)
+		var guard := 0
+		while w.tile(best) == Planet.Tile.RUIN and w.excavated < mass and guard < 60:
+			guard += 1
+			var err := w.mine(best, 1.05)
+			run(1.0)
+			if err != "":
+				note("раскопки: " + err)
+				return err
+		# Артефакты не таскаем бесконечно — лишнее оставляем на месте.
+		for a in w.artifacts:
+			if w.robot.mass_of(a.id) > 6.0:
+				w.drop_portions(w.robot.cell(), [w.robot.take_item(a.id, w.robot.mass_of(a.id) - 6.0)])
+	return "" if w.excavated >= mass else "раскопки не успели"
 
 func _soft_materials() -> Array:
 	return w.planet.materials.filter(func(s): return minable(s) and s.phase_at(w.planet.ambient_temp) == Substance.Phase.SOLID and not deposits_of(s, true).is_empty())
@@ -752,6 +857,7 @@ func _deliveries() -> String:
 				if p != null:
 					p.config.target_p = 5.0
 				w.link_cannon(cannon.cell, recv.cell)
+				_built[cannon.cell]["link"] = recv.cell
 				note("пушечная линия %d,%d → %d,%d" % [cannon.cell.x, cannon.cell.y, recv.cell.x, recv.cell.y])
 				return ""
 	return "нет места под пушечную линию"
