@@ -346,10 +346,14 @@ func mine(c: Vector2i, dt: float) -> String:
 		robot.mine_progress = 0.0
 		var m: float = min(1.0, dep.amount)
 		dep.amount -= m
-		robot.add_item(Portion.new(sub, m, planet.ambient_temp))
+		var p := Portion.new(sub, m, planet.ambient_temp)
 		robot.xp.gatherer += 1.0
 		if robot.passive("auto_analyze") > 0:
 			analyze(sub)
+		if not robot.can_carry(p):
+			drop_portions(c, [p])
+			return "это %s — без газозаборника не унести, ставьте бур и бак" % Substance.PHASE_NAMES[p.phase()]
+		robot.add_item(p)
 	return ""
 
 ## Подкачать бортовой баллон: из газовой машины рядом или вручную из атмосферы.
