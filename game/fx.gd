@@ -10,6 +10,17 @@ const T := 32.0
 var parts: Array = []      # {pos, vel, life, max, col, size, kind, text}
 var _cool := {}            # "вид:клетка" → время до следующего разового эффекта
 
+## Мелкая точка — восьмиугольником: у draw_circle много вершин, а на таком размере разницы не видно.
+const _OCT := [Vector2(1, 0), Vector2(0.707, 0.707), Vector2(0, 1), Vector2(-0.707, 0.707),
+	Vector2(-1, 0), Vector2(-0.707, -0.707), Vector2(0, -1), Vector2(0.707, -0.707)]
+
+static func dot(ci: CanvasItem, pos: Vector2, r: float, col: Color) -> void:
+	var pts := PackedVector2Array()
+	pts.resize(8)
+	for i in 8:
+		pts[i] = pos + _OCT[i] * r
+	ci.draw_colored_polygon(pts, col)
+
 func add(kind: String, pos: Vector2, vel: Vector2, life: float, col: Color, size: float, text: String = "") -> void:
 	if parts.size() >= MAX:
 		parts.remove_at(0)
@@ -51,7 +62,7 @@ func draw(ci: CanvasItem, font: Font) -> void:
 		match p.kind:
 			"smoke", "vapor", "bubble", "dust", "spark", "drip":
 				col.a *= k
-				ci.draw_circle(p.pos, p.size, col)
+				dot(ci, p.pos, p.size, col)
 			"frost":
 				col.a *= k
 				var s: float = p.size

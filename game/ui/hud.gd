@@ -45,6 +45,8 @@ var _placed: Array = []       # [Control, anchor, offset]
 var _inv_sig := ""
 var _insp_sig := ""
 var _t := 0.0
+var _txt_t := 0.0
+var _force_text := true       # первый кадр и после действий — сразу
 
 func _ready() -> void:
 	mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -668,6 +670,16 @@ func refresh() -> void:
 	if world == null:
 		return
 	_t += get_process_delta_time()
+	msg_label.text = main.message if main.message_t > 0.0 else ""
+	msg_label.visible = main.message_t > 0.0
+	_refresh_event()
+	_refresh_goal_windows()
+	# Тексты панелей и раскладка — 10 раз в секунду, а не каждый кадр.
+	_txt_t -= get_process_delta_time()
+	if _txt_t > 0.0 and not _force_text:
+		return
+	_txt_t = 0.1
+	_force_text = false
 	var r := world.robot
 	var p := world.planet
 	info_label.text = "%s  (seed %d)\n%s\n%.0f °C · %.2f атм · %.2f g\nЗнания: %d · Тегов известно: %d · Машин: %d/%d" % [
@@ -701,16 +713,12 @@ func refresh() -> void:
 		mode_text.get(main.mode, "")]
 	if main.sim.paused and not blocks_game():
 		status_label.text += "   ПАУЗА"
-	_refresh_event()
-	_refresh_goal_windows()
 	var t: Tutorial = main.tutorial
 	tut_panel.visible = t != null
 	if t != null:
 		var st: Dictionary = t.current()
 		tut_label.text = "[b]Обучение %d/%d: %s[/b]\n%s\n[color=#9fb0c0][i]%s[/i][/color]" % [t.step + 1, Tutorial.STEPS.size(), st.title, st.text, st.hint]
 		tut_done_btn.visible = st.id == "goal"
-	msg_label.text = main.message if main.message_t > 0.0 else ""
-	msg_label.visible = main.message_t > 0.0
 	_refresh_inventory()
 	_layout()
 	if windows.fabricator.visible:

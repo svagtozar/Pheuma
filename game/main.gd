@@ -37,7 +37,12 @@ var route_tag := ""
 var route_tag_pick := ""
 var tutorial: Tutorial = null
 var _uitest := false
-var _demo := false          # --demo: у робота строится небольшой завод (для скриншотов и замера кадров)
+var _demo := false          # --demo[=N]: у робота строится завод из N машин (для скриншотов и замера кадров)
+var _demo_n := 13
+var _bench := false         # --bench: 5 с кадрового профиля и выход
+var _bench_t := 0.0
+var _bench_frames := 0
+var _bench_us := {"draw": 0, "hud": 0, "sim": 0, "fx": 0}
 var sel_start = null
 var _autosave_t := 0.0
 
@@ -79,7 +84,12 @@ func _ready() -> void:
 			open_window = a.substr(7)
 		elif a == "--menu":
 			want_menu = true
-		elif a == "--demo":
+		elif a == "--demo" or a.begins_with("--demo="):
+			_demo = true
+			if a.begins_with("--demo="):
+				_demo_n = int(a.substr(7))
+		elif a == "--bench":
+			_bench = true
 			_demo = true
 	randomize()
 	view = WorldView.new()
@@ -319,7 +329,9 @@ func _process(dt: float) -> void:
 			var c := mouse_cell()
 			if world.machine_at(c) == null and world.can_place("pipe", c, build_material()) == "":
 				world.place("pipe", c, 0, build_material())
+		var t_sim := Time.get_ticks_usec()
 		sim.advance(dt)
+		_bench_us.sim += Time.get_ticks_usec() - t_sim
 		if tutorial != null:
 			if tutorial.update(world):
 				world.sound("fanfare", world.robot_cell())
@@ -333,7 +345,11 @@ func _process(dt: float) -> void:
 			SaveGame.save_file(world, "auto")
 	if not in_menu:
 		cam.position = cam.position.lerp(world.robot.pos * T, min(1.0, dt * 8.0))
+	var t_hud := Time.get_ticks_usec()
 	hud.refresh()
+	_bench_us.hud += Time.get_ticks_usec() - t_hud
+	if _bench:
+		_bench_step(dt)
 	if screenshot_path != "" and not _uitest:
 		_shot_t += dt
 		if _shot_t > 2.5:
@@ -631,38 +647,33 @@ func _wire_ends(w: Dictionary) -> Array:
 
 # ---------------------------------------------------------------- автотест и скриншот
 
-## Небольшой завод у робота: печь с насосом, дробилка, трубы к баку, летучее в открытом контейнере.
+## Демо-завод у робота (--demo=N): для скриншотов и замеров.
 func _build_demo() -> void:
 	var w := world
-	var o := w.planet.spawn + Vector2i(2, -3)
-	for dy in range(-1, 6):
-		for dx in range(-1, 8):
-			var q := o + Vector2i(dx, dy)
-			w.planet.set_tile(q, Planet.Tile.GROUND)
-			w.planet.deposits.erase(q)
-	var ore := w.db.add(Substance.new("demo_ore", "Демит", ["brittle", "flammable"]))
-	var vol := w.db.add(Substance.new("demo_gas", "Летан", ["volatile", "organic"]))
-	var feed := w.place("container", o, 0, w.starter, true)
-	feed.config.pass_through = true
-	feed.store(Portion.new(ore, 40.0))
-	var fur := w.place("furnace", o + Vector2i(1, 0), 0, w.starter, true)
-	w.place("container", o + Vector2i(2, 0), 0, w.starter, true)
-	var p := w.place("pump", o + Vector2i(1, 1), 0, w.starter, true)
-	p.config.target_p = 6.0
-	for i in 4:
-		w.place("pipe", o + Vector2i(1 + i, 2), 0, w.starter, true)
-	w.place("tank", o + Vector2i(5, 2), 0, w.starter, true)
-	var feed2 := w.place("container", o + Vector2i(4, 0), 0, w.starter, true)
-	feed2.config.pass_through = true
-	feed2.store(Portion.new(ore, 40.0))
-	w.place("crusher", o + Vector2i(5, 0), 0, w.starter, true)
-	w.place("container", o + Vector2i(6, 0), 0, w.starter, true)
-	var open := w.place("container", o + Vector2i(3, 4), 0, w.starter, true)
-	open.store(Portion.new(vol, 20.0))
-	w.robot.pos = Vector2(o) + Vector2(3.5, 3.0)
+	var c := DemoFactory.build(w, w.planet.spawn + Vector2i(2, -3), _demo_n)
+	w.robot.pos = c + Vector2(0.5, 0.5)
 	cam.position = w.robot.pos * T
 	cam.reset_smoothing()
-	assert(fur != null)
+
+## Кадровый профиль: 1 с разогрева, 5 с замера, затем средние мс на кадр по частям.
+func _bench_step(dt: float) -> void:
+	_bench_t += dt
+	if _bench_t < 1.0:
+		for k in _bench_us:
+			_bench_us[k] = 0
+		view.prof_draw_us = 0
+		view.prof_fx_us = 0
+		_bench_frames = 0
+		return
+	_bench_frames += 1
+	if _bench_t < 6.0:
+		return
+	var f := float(max(1, _bench_frames))
+	print("BENCH машин=%d кадров/с=%.1f кадр=%.2f мс | отрисовка %.2f, частицы %.2f, интерфейс %.2f, симуляция %.2f мс" % [
+		world.machines.size(), f / 5.0, 5000.0 / f, view.prof_draw_us / f / 1000.0, view.prof_fx_us / f / 1000.0,
+		_bench_us.hud / f / 1000.0, _bench_us.sim / f / 1000.0])
+	audio.stop_all()
+	get_tree().quit(0)
 
 func _save_screenshot() -> void:
 	print("Кадров в секунду: ", Engine.get_frames_per_second(), ", частиц: ", view.fx.parts.size())

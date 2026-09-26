@@ -8,13 +8,23 @@ var main                       # game/main.gd — состояние инстр�
 var font: Font
 var _t := 0.0
 var fx := FxLayer.new()
+var chunks := {}            # Vector2i (номер чанка) → TileChunk: грунт и залежи в текстурах
+var mchunks := {}           # Vector2i (номер чанка) → MachineChunk: запечённые корпуса машин
+var _mcount := -1
+var _pipe_layer: Node2D
+var _chunk_world: World = null
+var _chunk_t := 0.0
+var prof_draw_us := 0       # замер --bench: время _draw и частиц
+var prof_fx_us := 0
 
 func _ready() -> void:
 	font = ThemeDB.fallback_font
 
 func _process(dt: float) -> void:
 	_t += dt
+	var t0 := Time.get_ticks_usec()
 	if world != null:
+		_update_chunks(dt)
 		for e in world.fx:
 			fx.event(e)
 		world.fx.clear()
@@ -23,6 +33,9 @@ func _process(dt: float) -> void:
 			if vr.has_point(m.cell):
 				fx.machine(m, dt)
 		fx.update(dt)
+		if _pipe_layer != null:
+			_pipe_layer.queue_redraw()
+	prof_fx_us += Time.get_ticks_usec() - t0
 	queue_redraw()
 
 static func cell_center(c: Vector2i) -> Vector2:
@@ -58,15 +71,14 @@ func _visible_rect() -> Rect2i:
 func _draw() -> void:
 	if world == null:
 		return
+	var t0 := Time.get_ticks_usec()
 	var vr := _visible_rect()
-	_draw_tiles(vr)
-	_draw_deposits(vr)
+	_draw_animated(vr)
 	_draw_ground(vr)
-	_draw_pipes()
 	_draw_machines(vr)
 	_draw_structures()
-	_draw_links()
-	_draw_wires()
+	_draw_links(vr)
+	_draw_wires(vr)
 	_draw_event()
 	_draw_drones()
 	_draw_fires()
@@ -75,6 +87,86 @@ func _draw() -> void:
 	_draw_projectiles()
 	_draw_tool_preview()
 	_draw_hover()
+	prof_draw_us += Time.get_ticks_usec() - t0
+
+## Чанки карты: создаются под мир, перезапекаются раз в 0,25 с, если изменились
+## (видимые — сразу, остальные — по одному за проверку).
+func _update_chunks(dt: float) -> void:
+	if _chunk_world != world:
+		for ch in chunks.values():
+			ch.queue_free()
+		for ch in mchunks.values():
+			ch.queue_free()
+		chunks.clear()
+		mchunks.clear()
+		_chunk_world = world
+		_mcount = -1
+		var p := world.planet
+		# Порядок слоёв под видом: чанки грунта → трубы → запечённые корпуса; живое — сверху (сам вид).
+		for cy in range(0, p.height, TileChunk.SIZE):
+			for cx in range(0, p.width, TileChunk.SIZE):
+				var ch := TileChunk.new()
+				ch.view = self
+				ch.origin = Vector2i(cx, cy)
+				add_child(ch)
+				chunks[Vector2i(cx, cy) / TileChunk.SIZE] = ch
+				ch.refresh_if_changed()
+		if _pipe_layer == null:
+			_pipe_layer = Node2D.new()
+			_pipe_layer.show_behind_parent = true
+			_pipe_layer.draw.connect(_draw_pipes_layer)
+			add_child(_pipe_layer)
+		else:
+			move_child(_pipe_layer, -1)
+		for cy in range(0, p.height, MachineChunk.SIZE):
+			for cx in range(0, p.width, MachineChunk.SIZE):
+				var mc := MachineChunk.new()
+				mc.view = self
+				mc.origin = Vector2i(cx, cy)
+				add_child(mc)
+				mchunks[Vector2i(cx, cy) / MachineChunk.SIZE] = mc
+		return
+	# Машин стало больше или меньше — корпуса перепроверить сразу, не ждать.
+	var force := world.machines.size() != _mcount
+	_mcount = world.machines.size()
+	_chunk_t -= dt
+	if _chunk_t > 0.0 and not force:
+		return
+	_chunk_t = 0.25
+	var vr := _visible_rect().grow(TileChunk.SIZE)
+	for ch in chunks.values():
+		var r := Rect2i(ch.origin, Vector2i(TileChunk.SIZE, TileChunk.SIZE))
+		if r.intersects(vr):
+			ch.refresh_if_changed()
+	for mc in mchunks.values():
+		var r2 := Rect2i(mc.origin, Vector2i(MachineChunk.SIZE, MachineChunk.SIZE))
+		if r2.intersects(vr):
+			mc.refresh_if_changed()
+
+## Корпус машины уже запечён в текстуру своего чанка.
+func _baked(m) -> bool:
+	var mc = mchunks.get(Vector2i(m.cell.x / MachineChunk.SIZE, m.cell.y / MachineChunk.SIZE))
+	return mc != null and mc.baked_ids.has(m.id)
+
+## Поверх запечённых чанков: только то, что анимируется (лава, кислота, мерцание экзотики).
+func _draw_animated(vr: Rect2i) -> void:
+	for ch in chunks.values():
+		var r := Rect2i(ch.origin, Vector2i(TileChunk.SIZE, TileChunk.SIZE))
+		if not r.intersects(vr):
+			continue
+		for c in ch.anim_cells:
+			if not vr.has_point(c):
+				continue
+			var rr := Rect2(Vector2(c) * T, Vector2(T, T))
+			if world.tile(c) == Planet.Tile.LAVA:
+				var k := 0.5 + 0.5 * sin(_t * 2.0 + c.x * 0.7 + c.y * 0.5)
+				draw_rect(rr, Color(0.85, 0.25 + 0.2 * k, 0.05))
+			else:
+				var k2 := 0.5 + 0.5 * sin(_t * 1.5 + c.x + c.y)
+				draw_rect(rr, Color(0.35, 0.70 + 0.1 * k2, 0.20))
+		for c in ch.exotic_cells:
+			if vr.has_point(c):
+				draw_arc(cell_center(c), 12.0, 0, TAU, 16, Color(1, 0.6, 1, 0.5 + 0.4 * sin(_t * 3.0)), 1.5)
 
 func _draw_tiles(vr: Rect2i) -> void:
 	var g := ground_color()
@@ -149,11 +241,19 @@ func pressure_color(p: float) -> Color:
 	var k: float = clamp((p - 1.0) / 8.0, 0.0, 1.0)
 	return Color(0.3, 0.5, 0.9).lerp(Color(0.95, 0.25, 0.2), k)
 
-func _draw_pipes() -> void:
+## Трубы — своим слоем под запечёнными корпусами машин (как и раньше: под машинами).
+func _draw_pipes_layer() -> void:
+	if world != null:
+		_draw_pipes(_visible_rect(), _pipe_layer)
+
+func _draw_pipes(vr: Rect2i, ci: CanvasItem) -> void:
+	var vg := vr.grow(1)
 	for e in world.gas.edges.values():
 		var a = world.machines.get(e.a)
 		var b = world.machines.get(e.b)
 		if a == null or b == null:
+			continue
+		if not vg.has_point(a.cell) and not vg.has_point(b.cell):
 			continue
 		var pa: float = world.gas.pressure(e.a)
 		var pb: float = world.gas.pressure(e.b)
@@ -161,8 +261,8 @@ func _draw_pipes() -> void:
 		var col := pressure_color(p) if e.open else Color(0.3, 0.3, 0.3)
 		var ca := cell_center(a.cell)
 		var cb := cell_center(b.cell)
-		draw_line(ca, cb, col.darkened(0.3), 9.0)
-		draw_line(ca, cb, col, 5.0)
+		ci.draw_line(ca, cb, col.darkened(0.3), 9.0)
+		ci.draw_line(ca, cb, col, 5.0)
 		# Газ течёт: бусины бегут от высокого давления к низкому, быстрее при большом перепаде.
 		var dp: float = pa - pb
 		if e.open and absf(dp) > 0.05:
@@ -171,7 +271,7 @@ func _draw_pipes() -> void:
 			var speed: float = clampf(absf(dp) * 1.5, 0.3, 3.0)
 			for i in 3:
 				var f: float = fposmod(_t * speed + i / 3.0, 1.0)
-				draw_circle(from.lerp(to, f), 2.0, col.lightened(0.45))
+				FxLayer.dot(ci, from.lerp(to, f), 2.0, col.lightened(0.45))
 
 const SHORT := {"drill": "Бур", "container": "Конт", "tank": "Бак", "receiver": "Приём", "fabricator": "Фаб",
 	"pump": "Насос", "pipe": "", "valve": "Клап", "cannon": "Пушка", "crusher": "Дроб", "furnace": "Печь",
@@ -187,7 +287,9 @@ func _draw_machines(vr: Rect2i) -> void:
 			continue
 		_draw_machine(m.kind, m.cell, m.facing, m.built_from.color, m)
 
-func _draw_machine(kind: String, c: Vector2i, facing: int, col: Color, m = null, ghost: bool = false) -> void:
+## Неизменная часть машины (корпус, подпись, стрелки выхода): рисуется на любом холсте —
+## в запечённый чанк машин или прямо в вид (призраки и превью).
+func draw_body(ci: CanvasItem, kind: String, c: Vector2i, facing: int, col: Color, ghost: bool = false) -> void:
 	var r := Rect2(Vector2(c) * T, Vector2(T, T))
 	var ctr := cell_center(c)
 	var a := 0.45 if ghost else 1.0
@@ -196,41 +298,48 @@ func _draw_machine(kind: String, c: Vector2i, facing: int, col: Color, m = null,
 	if kind == "catch_net":
 		for i in range(1, 4):
 			var k := T * i / 4.0
-			draw_line(r.position + Vector2(k, 2), r.position + Vector2(k, T - 2), Color(body.lightened(0.3), 0.8 * a), 1.0)
-			draw_line(r.position + Vector2(2, k), r.position + Vector2(T - 2, k), Color(body.lightened(0.3), 0.8 * a), 1.0)
+			ci.draw_line(r.position + Vector2(k, 2), r.position + Vector2(k, T - 2), Color(body.lightened(0.3), 0.8 * a), 1.0)
+			ci.draw_line(r.position + Vector2(2, k), r.position + Vector2(T - 2, k), Color(body.lightened(0.3), 0.8 * a), 1.0)
 	elif kind == "macro":
-		draw_rect(r.grow(-1), body)
-		draw_rect(r.grow(-1), Color(0.5, 0.85, 1.0, a), false, 2.0)
-		draw_rect(r.grow(-5), Color(0.5, 0.85, 1.0, 0.6 * a), false, 1.0)
+		ci.draw_rect(r.grow(-1), body)
+		ci.draw_rect(r.grow(-1), Color(0.5, 0.85, 1.0, a), false, 2.0)
+		ci.draw_rect(r.grow(-5), Color(0.5, 0.85, 1.0, 0.6 * a), false, 1.0)
 	elif kind == "pipe":
-		draw_circle(ctr, 7.0, Color(body, a))
-		draw_arc(ctr, 7.0, 0, TAU, 12, Color(0, 0, 0, 0.5 * a), 1.5)
+		ci.draw_circle(ctr, 7.0, Color(body, a))
+		ci.draw_arc(ctr, 7.0, 0, TAU, 12, Color(0, 0, 0, 0.5 * a), 1.5)
 	elif kind in ["sensor", "gate_and", "gate_or", "gate_not"]:
-		draw_rect(r.grow(-7), body)
-		draw_rect(r.grow(-7), Color(0.9, 0.85, 0.3, a), false, 1.5)
+		ci.draw_rect(r.grow(-7), body)
+		ci.draw_rect(r.grow(-7), Color(0.9, 0.85, 0.3, a), false, 1.5)
 	elif kind == "dome" or kind == "tank":
-		draw_circle(ctr, T * 0.46, body)
-		draw_arc(ctr, T * 0.46, 0, TAU, 20, Color(0.1, 0.1, 0.1, a), 2.0)
+		ci.draw_circle(ctr, T * 0.46, body)
+		ci.draw_arc(ctr, T * 0.46, 0, TAU, 20, Color(0.1, 0.1, 0.1, a), 2.0)
 	else:
-		draw_rect(r.grow(-2), body)
-		draw_rect(r.grow(-2), Color(0.08, 0.08, 0.1, a), false, 2.0)
+		ci.draw_rect(r.grow(-2), body)
+		ci.draw_rect(r.grow(-2), Color(0.08, 0.08, 0.1, a), false, 2.0)
 	if info.get("cat", 0) == 2:
-		draw_rect(Rect2(r.position + Vector2(2, 2), Vector2(T - 4, 5)), Color(0.9, 0.6, 0.2, a))
+		ci.draw_rect(Rect2(r.position + Vector2(2, 2), Vector2(T - 4, 5)), Color(0.9, 0.6, 0.2, a))
 	var label: String = SHORT.get(kind, "")
 	if label != "":
-		_plate(ctr + Vector2(0, T * 0.5 - 2), label, 9, a)
+		_plate_on(ci, ctr + Vector2(0, T * 0.5 - 2), label, 9, a)
 	# Направление выхода.
 	if not kind in ["pipe", "catch_net", "fabricator", "launch_silo", "macro"]:
 		var d := Vector2(Machine.DIRS[facing])
 		var tip := ctr + d * (T * 0.5 - 2.0)
 		var side := Vector2(-d.y, d.x) * 5.0
-		draw_colored_polygon(PackedVector2Array([tip, tip - d * 7.0 + side, tip - d * 7.0 - side]), Color(1, 1, 1, 0.85 * a))
+		ci.draw_colored_polygon(PackedVector2Array([tip, tip - d * 7.0 + side, tip - d * 7.0 - side]), Color(1, 1, 1, 0.85 * a))
 		var info_outs: int = Processes.PROCESSES[info.process].outs if info.has("process") else 1
 		if info_outs == 2:
 			var d2 := Vector2(Machine.DIRS[(facing + 1) % 4])
 			var tip2 := ctr + d2 * (T * 0.5 - 2.0)
 			var s2 := Vector2(-d2.y, d2.x) * 4.0
-			draw_colored_polygon(PackedVector2Array([tip2, tip2 - d2 * 6.0 + s2, tip2 - d2 * 6.0 - s2]), Color(0.7, 0.9, 1.0, 0.85 * a))
+			ci.draw_colored_polygon(PackedVector2Array([tip2, tip2 - d2 * 6.0 + s2, tip2 - d2 * 6.0 - s2]), Color(0.7, 0.9, 1.0, 0.85 * a))
+
+func _draw_machine(kind: String, c: Vector2i, facing: int, col: Color, m = null, ghost: bool = false) -> void:
+	var r := Rect2(Vector2(c) * T, Vector2(T, T))
+	var ctr := cell_center(c)
+	# Корпус настоящей машины уже в запечённом чанке — здесь только живая часть.
+	if m == null or not _baked(m):
+		draw_body(self, kind, c, facing, col, ghost)
 	if m == null:
 		return
 	if m.hot:
@@ -247,13 +356,13 @@ func _draw_machine(kind: String, c: Vector2i, facing: int, col: Color, m = null,
 			var tot: float = maxf(m.total_mass(), 0.001)
 			for i in min(3, its.size()):
 				var rad: float = 2.0 + 3.0 * sqrt(its[i].mass / tot)
-				draw_circle(r.position + Vector2(T - 7, 9 + i * 7), rad, its[i].substance.color)
+				FxLayer.dot(self, r.position + Vector2(T - 7, 9 + i * 7), rad, its[i].substance.color)
 	if m is Processor and m.busy != null:
 		# Порция едет от входа (сзади) к центру по мере работы.
 		var back := -Vector2(Machine.DIRS[m.facing])
 		var k: float = clampf(m.progress / m.proc.dur, 0.0, 1.0)
 		var pos := ctr + back * (T * 0.4) * (1.0 - k)
-		draw_circle(pos, 4.0 + 1.0 * sin(_t * 8.0), m.busy.substance.color)
+		FxLayer.dot(self, pos, 4.0 + 1.0 * sin(_t * 8.0), m.busy.substance.color)
 	if m.hp < m.max_hp() * 0.99:
 		var hf: float = clamp(m.hp / m.max_hp(), 0.0, 1.0)
 		draw_rect(Rect2(r.position + Vector2(3, -4), Vector2((T - 6) * hf, 3)), Color(0.9, 0.3, 0.2))
@@ -285,9 +394,9 @@ func _draw_machine(kind: String, c: Vector2i, facing: int, col: Color, m = null,
 			else:
 				draw_polyline(tri2 + PackedVector2Array([sb]), yl, 1.0)
 	if m.has_gas() and kind != "pipe":
-		draw_arc(ctr, T * 0.3, -PI / 2, -PI / 2 + TAU * clamp(world.gas.pressure(m.id) / 10.0, 0.0, 1.0), 16, pressure_color(world.gas.pressure(m.id)), 2.0)
+		draw_arc(ctr, T * 0.3, -PI / 2, -PI / 2 + TAU * clamp(world.gas.pressure(m.id) / 10.0, 0.0, 1.0), 8, pressure_color(world.gas.pressure(m.id)), 2.0)
 	if world.logic.outputs.get(m.id, false):
-		draw_circle(r.position + Vector2(6, 6), 3.0, Color(1, 0.9, 0.2))
+		FxLayer.dot(self, r.position + Vector2(6, 6), 3.0, Color(1, 0.9, 0.2))
 	if m.stats.get("light", false):
 		draw_circle(ctr, T * 0.8, Color(1, 1, 0.7, 0.07))
 
@@ -304,7 +413,8 @@ func _draw_structures() -> void:
 			draw_circle(r.get_center(), T * 0.45, Color(0.15, 0.15, 0.18))
 			draw_arc(r.get_center(), T * 0.45, 0, TAU, 20, Color(1.0, 0.5, 0.3), 2.0)
 
-func _draw_links() -> void:
+func _draw_links(vr: Rect2i) -> void:
+	var vr_links := vr.grow(1)
 	for m in world.machines.values():
 		if not m is Cannon:
 			continue
@@ -317,6 +427,8 @@ func _draw_links() -> void:
 				links.append([int(r[1]), Color(col, 0.6)])
 		for l in links:
 			var t = world.machines[l[0]]
+			if not (vr_links.has_point(m.cell) or vr_links.has_point(t.cell)):
+				continue
 			var a := cell_center(m.cell)
 			var b := cell_center(t.cell)
 			var n := int(a.distance_to(b) / 12.0)
@@ -334,10 +446,18 @@ func wire_poly(w: Dictionary) -> Array:
 	pts.append(cell_center(b.cell) + Vector2(0, 6 if w.port == 1 else -6))
 	return pts
 
-func _draw_wires() -> void:
+func _draw_wires(vr: Rect2i) -> void:
+	var box := Rect2(Vector2(vr.position) * T, Vector2(vr.size) * T).grow(T)
 	for w in world.logic.wires.values():
 		var poly := wire_poly(w)
 		if poly.is_empty():
+			continue
+		var seen := false
+		for q in poly:
+			if box.has_point(q):
+				seen = true
+				break
+		if not seen:
 			continue
 		var on: bool = world.logic.outputs.get(w.from, false)
 		var col := Color(1.0, 0.85, 0.2) if on else Color(0.55, 0.55, 0.5)
@@ -425,16 +545,25 @@ func _draw_projectiles() -> void:
 
 ## Надпись целиком на тёмной подложке, по центру над точкой (нижний край — в pos).
 func _plate(pos: Vector2, text: String, size: int, alpha: float = 1.0, col: Color = Color.WHITE) -> void:
+	_plate_on(self, pos, text, size, alpha, col)
+
+var _plate_w := {}   # ширина подписи: считать шрифтом каждый кадр дорого
+
+func _plate_on(ci: CanvasItem, pos: Vector2, text: String, size: int, alpha: float = 1.0, col: Color = Color.WHITE) -> void:
 	var lines := text.split("\n")
-	var wmax := 0.0
-	for l in lines:
-		wmax = max(wmax, font.get_string_size(l, HORIZONTAL_ALIGNMENT_LEFT, -1, size).x)
+	var key := "%s|%d" % [text, size]
+	var wmax: float = _plate_w.get(key, -1.0)
+	if wmax < 0.0:
+		wmax = 0.0
+		for l in lines:
+			wmax = max(wmax, font.get_string_size(l, HORIZONTAL_ALIGNMENT_LEFT, -1, size).x)
+		_plate_w[key] = wmax
 	var lh := font.get_height(size)
 	var h := lh * lines.size()
 	var rect := Rect2(pos - Vector2(wmax / 2.0 + 3, h + 1), Vector2(wmax + 6, h + 2))
-	draw_rect(rect, Color(0.04, 0.05, 0.07, 0.72 * alpha))
+	ci.draw_rect(rect, Color(0.04, 0.05, 0.07, 0.72 * alpha))
 	for i in lines.size():
-		draw_string(font, Vector2(rect.position.x + 3, rect.position.y + font.get_ascent(size) + 1 + lh * i), lines[i], HORIZONTAL_ALIGNMENT_LEFT, -1, size, Color(col, 0.95 * alpha))
+		ci.draw_string(font, Vector2(rect.position.x + 3, rect.position.y + font.get_ascent(size) + 1 + lh * i), lines[i], HORIZONTAL_ALIGNMENT_LEFT, -1, size, Color(col, 0.95 * alpha))
 
 func _draw_hover() -> void:
 	if main == null or main.mode != "none":
