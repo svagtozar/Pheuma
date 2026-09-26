@@ -12,7 +12,8 @@ const T := 32.0
 const WorldView := preload("res://game/world_view.gd")
 const Hud := preload("res://game/ui/hud.gd")
 const Audio := preload("res://game/audio.gd")
-const AUTOSAVE_EVERY := 120.0
+const Menus := preload("res://game/ui/menus.gd")
+var autosave_every := 120.0
 const SETTINGS := "user://settings.json"
 
 var world: World
@@ -20,6 +21,10 @@ var sim: Sim
 var view: Node2D
 var cam: Camera2D
 var hud: Control
+var menus: Control
+var ui_layer: CanvasLayer
+var ui_scale := 1.0
+var in_menu := false
 var audio: Node
 var seed_value := 0
 var macro_lib: Array = []
@@ -54,6 +59,7 @@ func _ready() -> void:
 	var args := OS.get_cmdline_user_args() + OS.get_cmdline_args()
 	var s := -1
 	var want_tutorial := false
+	var want_menu := false
 	for a in args:
 		if a.begins_with("--seed="):
 			s = int(a.substr(7))
@@ -68,6 +74,8 @@ func _ready() -> void:
 			screenshot_path = a.substr(13)
 		elif a.begins_with("--open="):
 			open_window = a.substr(7)
+		elif a == "--menu":
+			want_menu = true
 	randomize()
 	view = WorldView.new()
 	view.main = self
@@ -76,24 +84,41 @@ func _ready() -> void:
 	cam.zoom = Vector2(1.5, 1.5)
 	add_child(cam)
 	cam.make_current()
-	var layer := CanvasLayer.new()
-	add_child(layer)
+	ui_layer = CanvasLayer.new()
+	add_child(ui_layer)
 	hud = Hud.new()
 	hud.main = self
-	layer.add_child(hud)
+	ui_layer.add_child(hud)
+	menus = Menus.new()
+	menus.main = self
+	ui_layer.add_child(menus)
 	audio = Audio.new()
 	add_child(audio)
+	apply_settings()
 	macro_lib = Macroblocks.load_library()
-	var first_run: bool = not settings().get("tutorial_done", false) and s < 0 and not autotest and screenshot_path == ""
+	var plain_start: bool = s < 0 and not autotest and screenshot_path == "" and not want_tutorial
+	var first_run: bool = plain_start and not settings().get("tutorial_done", false)
 	if want_tutorial or first_run:
 		start_tutorial()
+	elif want_menu or plain_start:
+		open_main_menu()
 	else:
 		new_world(s if s >= 0 else randi() % 1000000)
 	if _uitest:
 		call_deferred("run_uitest")
 	elif autotest:
 		call_deferred("run_autotest")
-	if open_window == "briefing":
+	if open_window in ["pause", "settings"]:
+		if open_window == "settings":
+			menus.open_settings("pause")
+		else:
+			menus.show_panel("pause")
+	elif open_window == "slots":
+		SaveGame.save_file(world, "slot1")
+		menus.open_slots("load", "pause")
+	elif open_window == "end":
+		menus.show_run_end(world)
+	elif open_window == "briefing":
 		hud.show_briefing()
 	elif open_window != "":
 		hud.toggle(open_window)
@@ -110,6 +135,64 @@ func set_setting(key: String, value) -> void:
 	var f := FileAccess.open(SETTINGS, FileAccess.WRITE)
 	if f != null:
 		f.store_string(JSON.stringify(d))
+
+# ---------------------------------------------------------------- меню
+
+func open_main_menu() -> void:
+	new_world(randi() % 1000000)
+	in_menu = true
+	hud.visible = false
+	hud.close_all()
+	menus.show_main()
+
+func _leave_menu() -> void:
+	in_menu = false
+	hud.visible = true
+	menus.close_all()
+
+func menu_new_game(s: int) -> void:
+	_leave_menu()
+	new_world(s if s >= 0 else randi() % 1000000)
+	hud.show_briefing()
+
+func menu_continue() -> void:
+	var slot := SaveGame.latest_slot()
+	if slot != "":
+		load_from(slot)
+
+func menu_tutorial() -> void:
+	_leave_menu()
+	start_tutorial()
+
+func save_to(slot: String) -> String:
+	var err := SaveGame.save_file(world, slot)
+	return err if err != "" else "Сохранено: %s" % SaveGame.slot_title(slot)
+
+func load_from(slot: String) -> void:
+	var lw := SaveGame.load_file(slot)
+	if lw == null:
+		say("не удалось загрузить «%s»" % SaveGame.slot_title(slot))
+		return
+	_leave_menu()
+	new_world(0, lw)
+	say("Загружено: %s" % SaveGame.slot_title(slot))
+
+func apply_settings() -> void:
+	var st := settings()
+	var vol: float = float(st.get("volume", 0.8))
+	AudioServer.set_bus_volume_db(0, linear_to_db(max(vol, 0.0001)))
+	ui_scale = float(st.get("ui_scale", 1.0))
+	ui_layer.scale = Vector2(ui_scale, ui_scale)
+	autosave_every = float(st.get("autosave", 120.0))
+	if DisplayServer.get_name() != "headless":
+		var full: bool = st.get("fullscreen", false)
+		var cur := DisplayServer.window_get_mode()
+		if full and cur != DisplayServer.WINDOW_MODE_FULLSCREEN:
+			DisplayServer.window_set_mode(DisplayServer.WINDOW_MODE_FULLSCREEN)
+		elif not full and cur == DisplayServer.WINDOW_MODE_FULLSCREEN:
+			DisplayServer.window_set_mode(DisplayServer.WINDOW_MODE_WINDOWED)
+	hud._layout()
+	menus._layout()
 
 func start_tutorial() -> void:
 	var w := World.create(Tutorial.SEED, Tutorial.PLANET_TAGS)
@@ -198,7 +281,12 @@ func _process(dt: float) -> void:
 	if world == null:
 		return
 	message_t -= dt
-	var paused: bool = hud.blocks_game()
+	var paused: bool = hud.blocks_game() or menus.any_open() or in_menu
+	if in_menu:
+		cam.position += Vector2(18, 6) * dt
+	if world.goals.completed and not world.meta.get("end_shown", false) and not autotest and tutorial == null:
+		world.meta.end_shown = true
+		menus.show_run_end(world)
 	sim.paused = paused or manual_pause
 	if not paused:
 		var dir := Vector2.ZERO
@@ -225,10 +313,11 @@ func _process(dt: float) -> void:
 			if tutorial.done:
 				end_tutorial(true)
 		_autosave_t += dt
-		if _autosave_t >= AUTOSAVE_EVERY and not autotest:
+		if autosave_every > 0.0 and _autosave_t >= autosave_every and not autotest and not in_menu:
 			_autosave_t = 0.0
 			SaveGame.save_file(world, "auto")
-	cam.position = cam.position.lerp(world.robot.pos * T, min(1.0, dt * 8.0))
+	if not in_menu:
+		cam.position = cam.position.lerp(world.robot.pos * T, min(1.0, dt * 8.0))
 	hud.refresh()
 	if screenshot_path != "":
 		_shot_t += dt
@@ -253,7 +342,13 @@ func _mine_target() -> Vector2i:
 func _unhandled_input(event: InputEvent) -> void:
 	if world == null:
 		return
+	if (in_menu or menus.any_open()) and not event is InputEventKey:
+		return
 	if event is InputEventKey and event.pressed and not event.echo:
+		if menus.any_open() or in_menu:
+			if event.keycode == KEY_ESCAPE and not in_menu:
+				menus.close_all()
+			return
 		_on_key(event)
 	elif event is InputEventMouseButton:
 		_on_mouse_button(event)
@@ -310,9 +405,15 @@ func _on_key(e: InputEventKey) -> void:
 		KEY_1, KEY_2, KEY_3, KEY_4, KEY_5, KEY_6:
 			use_slot(e.keycode - KEY_1)
 		KEY_ESCAPE:
+			var busy: bool = mode != "none" or selected_cell != null
+			for k in hud.windows:
+				if hud.windows[k].visible:
+					busy = true
 			set_mode("none")
 			selected_cell = null
 			hud.close_all()
+			if not busy:
+				menus.show_panel("pause")
 		KEY_N:
 			if world.goals.completed or shift:
 				new_world(randi() % 1000000)
@@ -637,7 +738,27 @@ func run_uitest() -> void:
 		await get_tree().process_frame
 	var placed = w.machine_at(dep)
 	print("[uitest] бур поставлен: ", placed != null and placed.kind == "drill", " сообщение: ", message)
-	_finish_autotest(w.robot.has_module("hook") and placed != null)
+	# Сохранение в слот через меню паузы и загрузка обратно.
+	var old_dir := SaveGame.DIR
+	SaveGame.DIR = "user://uitest_saves"
+	for sl in SaveGame.all_slots():
+		SaveGame.delete_slot(sl)
+	menus.open_slots("save", "pause")
+	await get_tree().process_frame
+	var save_btn := _find_button(menus.slots_box, "Сохранить")
+	if save_btn: save_btn.pressed.emit()
+	await get_tree().process_frame
+	var n_before := w.machines.size()
+	menus.open_slots("load", "pause")
+	await get_tree().process_frame
+	var load_btn := _find_button(menus.slots_box, "Загрузить")
+	if load_btn: load_btn.pressed.emit()
+	await get_tree().process_frame
+	var loaded_ok: bool = world != w and world.machines.size() == n_before and not menus.any_open()
+	print("[uitest] слот: сохранён=", save_btn != null, " загружен=", loaded_ok, " машин ", world.machines.size(), "/", n_before)
+	SaveGame.delete_slot("slot1")
+	SaveGame.DIR = old_dir
+	_finish_autotest(w.robot.has_module("hook") and placed != null and loaded_ok)
 
 func _find_button(root: Node, text_part: String) -> Button:
 	for c in root.find_children("*", "Button", true, false):

@@ -107,3 +107,20 @@ func test_macroblock_keeps_internal_cannon_target():
 	var c2 = w.machine_at(Vector2i(2, 10))
 	var r2 = w.machine_at(Vector2i(6, 10))
 	assert_eq(c2.config.target, r2.id)
+
+func test_slots_meta_and_latest():
+	var old_dir := SaveGame.DIR
+	SaveGame.DIR = "user://test_saves"
+	var w := World.create(4)
+	for s in SaveGame.all_slots():
+		SaveGame.delete_slot(s)
+	assert_eq(SaveGame.latest_slot(), "")
+	assert_eq(SaveGame.save_file(w, "slot2"), "")
+	var m := SaveGame.slot_meta("slot2")
+	assert_eq(m.planet, w.planet.name)
+	assert_eq(int(m.stage), 1)
+	assert_eq(SaveGame.latest_slot(), "slot2")
+	assert_not_null(SaveGame.load_file("slot2"))
+	SaveGame.delete_slot("slot2")
+	assert_true(SaveGame.slot_meta("slot2").is_empty())
+	SaveGame.DIR = old_dir

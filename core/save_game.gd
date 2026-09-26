@@ -4,7 +4,7 @@ class_name SaveGame
 ## постройки, сети, порции, робот, прогресс цели.
 
 const VERSION := 1
-const DIR := "user://saves"
+static var DIR := "user://saves"   # тесты подменяют на свою папку
 
 static func v2i(a) -> Vector2i:
 	return Vector2i(int(a[0]), int(a[1]))
@@ -194,8 +194,27 @@ static func _as_set(arr: Array) -> Dictionary:
 		out[k] = true
 	return out
 
+const SLOTS := ["slot1", "slot2", "slot3", "slot4", "slot5"]
+const SLOT_NAMES := {"auto": "Автосохранение", "quick": "Быстрое (F5)"}
+
 static func path_for(slot: String) -> String:
 	return "%s/%s.json" % [DIR, slot]
+
+static func meta_path(slot: String) -> String:
+	return "%s/%s.meta.json" % [DIR, slot]
+
+static func slot_title(slot: String) -> String:
+	if SLOT_NAMES.has(slot):
+		return SLOT_NAMES[slot]
+	return "Слот %s" % slot.trim_prefix("slot")
+
+## Короткое описание сохранения для списка слотов.
+static func make_meta(w: World, slot: String) -> Dictionary:
+	return {"slot": slot, "planet": w.planet.name, "seed": w.planet.seed_value,
+		"tags": w.planet.tags.map(func(t): return PlanetTags.display(t)), "goal": w.planet.goal.n,
+		"stage": w.goals.stage + 1, "stages": w.planet.goal.stages.size(), "completed": w.goals.completed,
+		"time": w.time, "date": Time.get_datetime_string_from_system(false, true),
+		"unix": Time.get_unix_time_from_system(), "tutorial": w.meta.has("tutorial_step")}
 
 static func save_file(w: World, slot: String = "quick") -> String:
 	DirAccess.make_dir_recursive_absolute(DIR)
@@ -203,6 +222,10 @@ static func save_file(w: World, slot: String = "quick") -> String:
 	if f == null:
 		return "не удалось записать сохранение"
 	f.store_string(JSON.stringify(to_dict(w)))
+	f.close()
+	var m := FileAccess.open(meta_path(slot), FileAccess.WRITE)
+	if m != null:
+		m.store_string(JSON.stringify(make_meta(w, slot)))
 	return ""
 
 static func load_file(slot: String = "quick") -> World:
@@ -215,3 +238,37 @@ static func load_file(slot: String = "quick") -> World:
 
 static func exists(slot: String = "quick") -> bool:
 	return FileAccess.file_exists(path_for(slot))
+
+static func delete_slot(slot: String) -> void:
+	for p in [path_for(slot), meta_path(slot)]:
+		if FileAccess.file_exists(p):
+			DirAccess.remove_absolute(p)
+
+## Описание слота или {} если он пуст.
+static func slot_meta(slot: String) -> Dictionary:
+	if not exists(slot):
+		return {}
+	if FileAccess.file_exists(meta_path(slot)):
+		var d = JSON.parse_string(FileAccess.get_file_as_string(meta_path(slot)))
+		if typeof(d) == TYPE_DICTIONARY:
+			return d
+	return {"slot": slot, "planet": "?", "goal": "", "stage": 0, "stages": 0, "time": 0.0, "date": "", "unix": 0}
+
+## Все слоты: автосохранение, быстрое, ручные.
+static func all_slots() -> Array:
+	return ["auto", "quick"] + SLOTS
+
+## Самое свежее сохранение ("" — нет ни одного).
+static func latest_slot() -> String:
+	var best := ""
+	var t := -1.0
+	for s in all_slots():
+		var m := slot_meta(s)
+		if not m.is_empty() and float(m.get("unix", 0)) > t:
+			t = float(m.get("unix", 0))
+			best = s
+	return best
+
+static func format_time(sec: float) -> String:
+	var m := int(sec) / 60
+	return "%d ч %02d мин" % [m / 60, m % 60] if m >= 60 else "%d мин" % m
