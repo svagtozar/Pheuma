@@ -99,7 +99,7 @@ func total_mass() -> float:
 	for mod in equipped:
 		m += mod.stats.mass
 	if hull != null:
-		m += hull.stats.mass * 3.0
+		m += hull.stats.mass
 	return max(10.0, m)
 
 func can_carry(p: Portion) -> bool:

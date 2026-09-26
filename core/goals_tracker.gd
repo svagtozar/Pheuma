@@ -2,7 +2,9 @@ class_name GoalsTracker
 extends RefCounted
 ## Прогресс этапов цели планеты.
 
-var w                       # World (без типа, чтобы не было циклической ссылки)
+var w:                      # World; слабая ссылка, чтобы мир не держал сам себя
+	get: return _wr.get_ref()
+var _wr: WeakRef
 var stage := 0
 var hold := 0.0
 var progress := 0.0
@@ -10,7 +12,7 @@ var completed := false
 var _acc := 0.0
 
 func _init(world) -> void:
-	w = world
+	_wr = weakref(world)
 
 func goal() -> Dictionary:
 	return w.planet.goal
