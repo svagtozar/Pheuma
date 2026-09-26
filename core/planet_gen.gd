@@ -33,6 +33,8 @@ static func generate(seed_value: int, width: int = 80, height: int = 60, forced_
 	p.goal = _choose_goal(p, rng.fork("goal"))
 	_ensure_goal_feasible(p, rng.fork("carrier"), exotic_mult)
 	_ensure_buildable(p, rng.fork("builder"), exotic_mult)
+	# Строительные материалы меняют поиск цепочек — цель проверяется ещё раз.
+	_ensure_goal_feasible(p, rng.fork("carrier2"), exotic_mult)
 	for m in p.materials:
 		p.db.add(m)
 	p.db.add(p.atmosphere)
@@ -180,6 +182,17 @@ const STAGE_KINDS := {
 const BASE_KINDS := ["drill", "container", "tank", "pump", "pipe"]
 const MAX_BUILDERS := 3
 
+## Теги этапов «запасти» (все варианты развилок).
+static func _stockpile_tags(goal: Dictionary) -> Array:
+	var out: Array = []
+	for raw in goal.stages:
+		for st in Goals.options(raw):
+			if st.type == "stockpile_tags":
+				for t in st.tags:
+					if not t in out:
+						out.append(t)
+	return out
+
 ## Нужные машины: базовые, машины цепочек тегов цели и машины этапов.
 ## Возвращает {kind: true} и заполняет ores — исходные материалы цепочек (под бур).
 static func _needed_kinds(p: Planet, pr: Probe, ores: Array) -> Dictionary:
@@ -212,10 +225,15 @@ static func _drill_limit() -> float:
 
 ## Есть ли материал планеты для постройки: подходит по свойствам, копается
 ## стартовым буром и безопасен в руках. min_hard — для бура под твёрдую руду.
-static func _buildable_from(p: Planet, kind: String, min_hard: float = 0.0) -> bool:
+## need — особые стенки: "anchoring" (держит фазирующее) или "corrosion" (кислотостойкие).
+static func _buildable_from(p: Planet, kind: String, min_hard: float = 0.0, need: String = "") -> bool:
 	var drill: float = _drill_limit()
 	for s in p.materials:
 		if s.hardness > drill or s.hardness < min_hard:
+			continue
+		if need == "anchoring" and not s.has("anchoring"):
+			continue
+		if need == "corrosion" and not Handling.CORROSION_PROOF.any(func(t): return s.has(t)):
 			continue
 		if Buildings.check_material(kind, s, p.ambient_temp) != "":
 			continue
@@ -241,22 +259,38 @@ static func _ensure_buildable(p: Planet, rng: Rng, exotic_mult: float) -> void:
 	for ore in ores:
 		if ore.hardness - 0.5 > Buildings.KINDS.drill.hard and ore.hardness - 0.5 <= drill_max:
 			needs.append(["drill", ore.hardness - 0.5])
+	# Запасы цели: фазирующее уходит сквозь обычные стенки, кислотное их разъедает.
+	for t in _stockpile_tags(p.goal):
+		var pl := Planner.probe_plan(pr, t, p.materials)
+		if pl.is_empty():
+			continue
+		var fin: Substance = pl.final.substance
+		var store_kind := "tank" if fin.has("volatile") or fin.phase_at(p.ambient_temp) != Substance.Phase.SOLID else "container"
+		if fin.has("phasing"):
+			needs.append([store_kind, 0.0, "anchoring"])
+		if fin.has("acidic"):
+			needs.append([store_kind, 0.0, "corrosion"])
 	var added := 0
 	for nd in needs:
 		var kind: String = nd[0]
 		var min_hard: float = nd[1]
-		if _buildable_from(p, kind, min_hard):
+		var wall: String = nd[2] if nd.size() > 2 else ""
+		if _buildable_from(p, kind, min_hard, wall):
 			continue
 		if added >= MAX_BUILDERS:
 			p.unbuildable.append(kind)
 			continue
 		var d: Dictionary = Buildings.KINDS[kind]
 		var forced: Array = [d.any[0]] if d.has("any") else (["dense"] if d.has("min_p") else ["metallic"])
+		if wall == "anchoring":
+			forced = ["anchoring"]
+		elif wall == "corrosion":
+			forced = ["insulating"]
 		var ok := false
 		for _i in 8:
 			var s := MaterialGen.generate_one(rng, weights, used, forced)
 			p.materials.append(s)
-			if _buildable_from(p, kind, min_hard):
+			if _buildable_from(p, kind, min_hard, wall):
 				ok = true
 				added += 1
 				pr.db.add(s)

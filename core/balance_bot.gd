@@ -84,6 +84,11 @@ func material_for(kind: String, check: Callable = Callable()) -> Substance:
 			for st in Goals.options(raw):
 				if st.type.begins_with("launch") and w.machines_of("launch_silo").is_empty():
 					reserve = w.build_cost("launch_silo") + (0.0 if kind == "pump" else 3.0 * w.build_cost("pump"))
+	# Стартовый сплав — последняя надежда для машин, которые больше не из чего строить
+	# (компрессор, если на планете нет твёрдых материалов по зубам буру).
+	if not _starter_only(kind):
+		for k in _starter_kinds():
+			reserve = max(reserve, 2.0 * w.build_cost(k))
 	for id in w.robot.inventory:
 		var s: Substance = w.db.get_sub(id)
 		var spare: float = w.robot.mass_of(id) - (reserve if s == w.starter else 0.0)
@@ -100,6 +105,23 @@ func material_for(kind: String, check: Callable = Callable()) -> Substance:
 		if mine_mass(s, cost + w.robot.mass_of(s.id)):
 			return s
 	return null
+
+var _starter_cache := {}
+## Машину можно построить только из стартового сплава.
+func _starter_only(kind: String) -> bool:
+	if not _starter_cache.has(kind):
+		var amb: float = w.planet.ambient_temp
+		var other: bool = w.planet.materials.any(func(s): return minable(s) and Buildings.check_material(kind, s, amb) == "")
+		_starter_cache[kind] = not other and Buildings.check_material(kind, w.starter, amb) == ""
+	return _starter_cache[kind]
+
+## Машины обработки, которые понадобятся и строятся только из сплава.
+func _starter_kinds() -> Array:
+	var out: Array = []
+	for k in Buildings.KINDS:
+		if Buildings.KINDS[k].has("process") and w.robot.unlocked.has(k) and _starter_only(k):
+			out.append(k)
+	return out
 
 func build(kind: String, c: Vector2i, facing: int, check: Callable = Callable()) -> Machine:
 	# Вторая попытка — если материал потерялся в пути (летучее испаряется из рук).
@@ -209,7 +231,8 @@ func build_chain(pl: Dictionary, sink) -> Machine:
 		var st: Dictionary = steps[i]
 		var e: Array = site.cells[i]
 		var fac: int = site.cells[i + 1][1] if st.out == 0 else (site.cells[i + 1][1] + 3) % 4
-		var chk := Callable()
+		# Едкий груз на входе разъест машину — стенки из стойкого материала.
+		var chk := sink_check(st.get("in"))
 		var stag: String = Processes.PROCESSES[st.pid].get("source", "") if st.op == "process" else ""
 		if st.has("source"):
 			var src: Substance = st.source
@@ -288,11 +311,16 @@ func drillable(ore: Substance) -> bool:
 func safe_to_handle(s: Substance) -> bool:
 	return Handling.safe_to_carry(s, w.planet, w.robot.passive("safe_fire") > 0.0 or w.robot.has_module("cold_pack"))
 
-## Кислотный груз разъедает хранилище — нужен стойкий материал стенок.
+## Кислотный груз разъедает хранилище — нужен стойкий материал стенок;
+## фазирующий уходит сквозь стенки — нужен якорный.
 func sink_check(cargo: Substance) -> Callable:
-	if cargo == null or not cargo.has("acidic"):
+	if cargo == null:
 		return Callable()
-	return func(s): return Handling.CORROSION_PROOF.any(func(t): return s.has(t))
+	var acid := cargo.has("acidic")
+	var phase := cargo.has("phasing")
+	if not acid and not phase:
+		return Callable()
+	return func(s): return (not acid or Handling.CORROSION_PROOF.any(func(t): return s.has(t))) and (not phase or s.has("anchoring"))
 
 ## Установка, которая производит материал с тегом в конечную постройку.
 func produce(tag: String, sink = "container") -> Machine:
@@ -327,7 +355,7 @@ var _stall := {}    # id машины → [с какого времени не �
 
 func maintain() -> void:
 	for m in w.machines.values():
-		var starving: bool = m.status.begins_with("мало давления") or (m.kind == "launch_silo" and not m.items.is_empty() and w.gas.pressure(m.id) < 6.0)
+		var starving: bool = m.status.begins_with("мало давления") or (m is Cannon and not m.items.is_empty() and w.gas.pressure(m.id) < m.fire_pressure(w))
 		if not starving:
 			_stall.erase(m.id)
 			continue
@@ -337,7 +365,10 @@ func maintain() -> void:
 			e[0] = w.time
 			e[1] += 1
 			var silo: bool = m.kind == "launch_silo"
-			if pump_for(m, 9.5 if silo else 3.0, 1, 6.5 if silo else 2.5) > 0:
+			var np: float = m.need_p if m is Processor else 0.0
+			var gun: bool = m is Cannon and not silo
+			var tp: float = 9.5 if silo or np > 0.0 else (5.0 if gun else 3.0)
+			if pump_for(m, tp, 1, 6.5 if silo else (np + 0.5 if np > 0.0 else (4.0 if gun else 2.5))) > 0:
 				note("добавлен насос к «%s»" % m.display_name())
 	# Приёмник на выходе разрушен (событие, кислота) — ставим новый.
 	for m in w.machines.values():
@@ -352,7 +383,7 @@ func maintain() -> void:
 		var rec: Dictionary = _built.get(oc, {})
 		var kind: String = rec.get("kind", "tank" if sealed_needed else "container")
 		var fac: int = rec.get("facing", m.facing)
-		var chk := sink_check(cargo.substance) if kind in ["container", "tank"] else Callable()
+		var chk := sink_check(cargo.substance)
 		var rebuilt := build(kind, oc, fac, chk)
 		if rebuilt == null and not chk.is_null():
 			rebuilt = build(kind, oc, fac)
@@ -360,6 +391,19 @@ func maintain() -> void:
 			w.link_cannon(oc, rec.link)
 		if rebuilt != null:
 			note("восстановлен приёмник у «%s»" % m.display_name())
+	# Цель пушки разрушена — ставим приёмник (и контейнер за ним) заново и связываем.
+	for m in w.machines.values():
+		if not (m is Cannon) or m.is_silo() or not _built.has(m.cell) or not _built[m.cell].has("link"):
+			continue
+		var lc: Vector2i = _built[m.cell].link
+		if w.machine_at(lc) != null or not w.planet.buildable(lc) or _rebuilt.get(lc, 0) >= 3:
+			continue
+		_rebuilt[lc] = _rebuilt.get(lc, 0) + 1
+		var rr: Dictionary = _built.get(lc, {})
+		var nr := build(rr.get("kind", "receiver"), lc, rr.get("facing", m.facing))
+		if nr != null:
+			w.link_cannon(m.cell, lc)
+			note("восстановлена цель пушки %d,%d" % [m.cell.x, m.cell.y])
 	_relocate_exhausted()
 	_maintain_feed()
 
@@ -854,9 +898,8 @@ func _deliveries() -> String:
 				var box := build("container", dep + d * 6, f)
 				if cannon == null or recv == null or box == null:
 					return "не собрать пушечную линию"
-				var p := build("pump", pc, 0)
-				if p != null:
-					p.config.target_p = 5.0
+				if pump_for(cannon, 5.0, 1, 4.0) == 0:
+					note("нет насоса к пушке")
 				w.link_cannon(cannon.cell, recv.cell)
 				_built[cannon.cell]["link"] = recv.cell
 				note("пушечная линия %d,%d → %d,%d" % [cannon.cell.x, cannon.cell.y, recv.cell.x, recv.cell.y])

@@ -10,6 +10,7 @@ var proc := {}
 var busy: Portion = null
 var reagent: Portion = null
 var progress := 0.0
+var need_p := 0.0     # давление, которого ждёт машина, чтобы обработка что-то изменила
 
 func init_config() -> void:
 	pid = info.process
@@ -84,14 +85,27 @@ func tick(w, dt: float) -> void:
 		_finish(w)
 
 func _finish(w) -> void:
-	var res := run(pid, busy, context(w))
+	var ctx := context(w)
+	var res := run(pid, busy, ctx)
+	need_p = 0.0
+	if not res.get("wait", false) and res.added.is_empty() and res.gas <= 0.0:
+		# При этом давлении ничего не меняется, а при большем — поменялось бы:
+		# ждём давления, а не гоним сырьё насквозь.
+		var np := pressure_needed(pid, busy, ctx, stats.get("max_p", 0.0))
+		if np > 0.0:
+			need_p = np
+			res.wait = true
+			res.note = "мало давления для обработки: нужно %.1f атм" % np
 	if res.get("wait", false):
 		status = res.note
 		progress = proc.dur
 		return
 	if proc.get("gas_use", 0.0) > 0.0:
 		w.gas.take_gas(id, proc.gas_use)
-	if res.gas > 0.0:
+	if res.gas > 0.0 and has_gas():
+		w.gas.add_gas(id, res.gas * GAS_PER_KG)
+		_relieve(w)
+	elif res.gas > 0.0:
 		w.gas.add_gas(id, res.gas * GAS_PER_KG)
 	if reagent != null and res.reagent_used > 0.0:
 		reagent.mass -= res.reagent_used
@@ -103,11 +117,41 @@ func _finish(w) -> void:
 	busy = null
 	progress = 0.0
 
+## Предохранительный клапан: газ, выделенный обработкой, не разрывает машину —
+## всё выше 90% предела материала стравливается наружу.
+func _relieve(w) -> void:
+	var cap: float = stats.get("max_p", 0.0) * 0.9
+	var p: float = w.gas.pressure(id)
+	if cap <= 0.0 or p <= cap:
+		return
+	var excess: float = w.gas.amount(id) * (1.0 - cap / p)
+	w.gas.vented_total += w.gas.take_gas(id, excess)
+	w.add_fx("vapor", cell, Color(0.9, 0.95, 1.0))
+
 func context(w) -> Dictionary:
 	return {"db": w.db, "pressure": w.gas.pressure(id) if has_gas() else 0.0,
 		"compress_bonus": w.robot.passive("compress_bonus") if pid == "compressor" else 0.0,
 		"target_t": target_temp(w), "ambient": w.planet.ambient_temp, "reagent": reagent,
 		"filter_tag": config.get("tag", "")}
+
+## Наименьшее давление правила, при котором обработка изменила бы груз (0 — такого нет
+## или машина его не выдержит). Для машин, чьи правила зависят от давления.
+static func pressure_needed(p_pid: String, p: Portion, ctx: Dictionary, max_p: float) -> float:
+	var levels: Array = []
+	for rule in Processes.PROCESSES[p_pid].get("rules", []):
+		var mp: float = rule.get("min_p", 0.0)
+		if mp > ctx.get("pressure", 0.0) + ctx.get("compress_bonus", 0.0) and not mp in levels:
+			levels.append(mp)
+	levels.sort()
+	for mp in levels:
+		if mp - ctx.get("compress_bonus", 0.0) > max_p:
+			break
+		var c2 := ctx.duplicate()
+		c2.pressure = mp - ctx.get("compress_bonus", 0.0)
+		var r := run(p_pid, p, c2)
+		if not r.added.is_empty() or r.gas > 0.0:
+			return mp - ctx.get("compress_bonus", 0.0)
+	return 0.0
 
 ## Чистая функция обработки — удобно тестировать и показывать предсказание.
 static func run(p_pid: String, p: Portion, ctx: Dictionary) -> Dictionary:

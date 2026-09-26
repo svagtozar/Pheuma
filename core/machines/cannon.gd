@@ -90,6 +90,10 @@ func fire(w, p: float) -> void:
 		if q.mass > 0.001:
 			keep.append(q)
 	items = keep
+	# Шахта отправляет материалы по очереди: остаток первого уходит в конец, иначе
+	# линия бура, которая всё время подкладывает своё, заслоняет остальные грузы.
+	if is_silo() and items.size() > 1 and items[0].substance == payload[0].substance:
+		items.push_back(items.pop_front())
 	var extra: Array = []
 	for q in payload:
 		var s0: Substance = q.substance

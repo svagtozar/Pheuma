@@ -5,8 +5,9 @@ class_name Planner
 ## настоящим Processor.run / Interactions.apply.
 ##
 ## План: {"mat": исходный материал, "steps": [шаг…], "locked": [закрытые постройки]}
-## Шаг:  {"op": "process", "pid": id, "kind": постройка, "out": 0|1}
-##       {"op": "treat", "reagent": Substance, "kind": "treater", "out": 0}
+## Шаг:  {"op": "process", "pid": id, "kind": постройка, "out": 0|1, "in": Substance}
+##       {"op": "treat", "reagent": Substance, "kind": "treater", "out": 0, "in": Substance}
+##       (in — что приходит в машину шага)
 ## У процессов с источником (облучатель, резонатор) в шаге есть "source": материал-источник.
 ##
 ## Побочный эффект: производные вещества создаются в w.db.
@@ -25,9 +26,22 @@ static func ctx_for(w, pid: String, reagent = null) -> Dictionary:
 	return {"db": w.db, "pressure": MAX_P if pid == "compressor" else 3.0, "compress_bonus": 0.0,
 		"target_t": 900.0, "ambient": w.planet.ambient_temp, "reagent": reagent, "filter_tag": ""}
 
-## Реагенты: твёрдые материалы с залежами, которые можно накопать.
+## Реагенты: твёрдые материалы с залежами, которые можно накопать и донести
+## (горючее в окисляющей атмосфере загорается в руках).
 static func reagents(w, mats: Array) -> Array:
-	return mats.filter(func(m): return m.phase_at(w.planet.ambient_temp) == Substance.Phase.SOLID and m.hardness <= w.robot.mining_hardness() + 0.5)
+	return mats.filter(func(m): return m.phase_at(w.planet.ambient_temp) == Substance.Phase.SOLID and m.hardness <= w.robot.mining_hardness() + 0.5 \
+		and not (w.planet.oxidizing() and (m.has("flammable") or m.has("pyrophoric"))))
+
+## Есть из чего построить машину: материал планеты по зубам буру робота или запас в инвентаре.
+static func buildable(w, kind: String, mats: Array) -> bool:
+	var drill: float = w.robot.mining_hardness() + 0.5
+	for m in mats:
+		if m.hardness <= drill and Buildings.check_material(kind, m, w.planet.ambient_temp) == "":
+			return true
+	for id in w.robot.inventory:
+		if Buildings.check_material(kind, w.db.get_sub(id), w.planet.ambient_temp) == "":
+			return true
+	return false
 
 ## Сначала — из открытых машин, потом с машинами ранних узлов прокачки, в конце — с любыми:
 ## короткий путь через глубокий узел хуже длинного через открытые машины.
@@ -48,7 +62,7 @@ static func tier_of(kind: String) -> int:
 	return 0
 
 static func _search(w, tag: String, mats: Array, max_tier: int, max_states: int = MAX_STATES) -> Dictionary:
-	var rgs := reagents(w, mats)
+	var rgs := reagents(w, mats) if buildable(w, "treater", mats) else []
 	# Процессы с источником (облучатель, резонатор): источник — местный реагент с нужным тегом.
 	var sources := {}
 	var pids: Array = []
@@ -62,7 +76,7 @@ static func _search(w, tag: String, mats: Array, max_tier: int, max_states: int 
 				continue
 			sources[pid] = cand[0]
 		var k := kind_of(pid)
-		if w.robot.unlocked.has(k) or tier_of(k) <= max_tier:
+		if (w.robot.unlocked.has(k) or tier_of(k) <= max_tier) and buildable(w, k, mats):
 			pids.append(pid)
 	pids.sort()
 	var queue: Array = []
@@ -90,7 +104,7 @@ static func _search(w, tag: String, mats: Array, max_tier: int, max_states: int 
 				if seen.has(k):
 					continue
 				seen[k] = true
-				var st := {"op": "process", "pid": pid, "kind": kind_of(pid), "out": o[1]}
+				var st := {"op": "process", "pid": pid, "kind": kind_of(pid), "out": o[1], "in": s.p.substance}
 				if sources.has(pid):
 					st.source = sources[pid]
 				queue.append({"mat": s.mat, "p": np, "steps": s.steps + [st]})
@@ -105,7 +119,7 @@ static func _search(w, tag: String, mats: Array, max_tier: int, max_states: int 
 			if seen.has(k):
 				continue
 			seen[k] = true
-			queue.append({"mat": s.mat, "p": np, "steps": s.steps + [{"op": "treat", "reagent": rg, "kind": "treater", "out": 0}]})
+			queue.append({"mat": s.mat, "p": np, "steps": s.steps + [{"op": "treat", "reagent": rg, "kind": "treater", "out": 0, "in": s.p.substance}]})
 	return {}
 
 ## Быстрая проверка при генерации планеты: один проход со всеми постройками.
