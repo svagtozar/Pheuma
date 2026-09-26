@@ -24,6 +24,9 @@ var fab_bp := ""
 var fab_mat: OptionButton
 var codex_label: RichTextLabel
 var briefing_label: RichTextLabel
+var tut_panel: PanelContainer
+var tut_label: RichTextLabel
+var tut_done_btn: Button
 
 var _placed: Array = []       # [Control, anchor, offset]
 var _inv_sig := ""
@@ -49,6 +52,7 @@ func _layout() -> void:
 			Control.PRESET_TOP_RIGHT: c.position = Vector2(vp.x + off.x, off.y)
 			Control.PRESET_BOTTOM_RIGHT: c.position = Vector2(vp.x + off.x, vp.y - sz.y - off.y)
 			Control.PRESET_CENTER_BOTTOM: c.position = Vector2(vp.x / 2.0 + off.x, vp.y - sz.y - off.y)
+			Control.PRESET_CENTER_TOP: c.position = Vector2(vp.x / 2.0 + off.x, off.y)
 			Control.PRESET_CENTER: c.position = (vp - sz) / 2.0
 
 func set_world(w: World) -> void:
@@ -149,6 +153,32 @@ func _build() -> void:
 	msg_label.add_theme_constant_override("outline_size", 4)
 	add_child(msg_label)
 
+	# Обучение.
+	tut_panel = _panel(Vector2(-300, 8), Vector2(600, 0), Control.PRESET_CENTER_TOP)
+	var tv := VBoxContainer.new()
+	tut_panel.add_child(tv)
+	tut_label = RichTextLabel.new()
+	tut_label.bbcode_enabled = true
+	tut_label.fit_content = true
+	tut_label.custom_minimum_size = Vector2(584, 0)
+	tut_label.add_theme_font_size_override("normal_font_size", 13)
+	tv.add_child(tut_label)
+	var th := HBoxContainer.new()
+	tv.add_child(th)
+	tut_done_btn = Button.new()
+	tut_done_btn.text = "Готово"
+	tut_done_btn.pressed.connect(func(): if main.tutorial != null: main.tutorial.acknowledged = true)
+	th.add_child(tut_done_btn)
+	var skip := Button.new()
+	skip.text = "Пропустить шаг"
+	skip.pressed.connect(func(): if main.tutorial != null: main.tutorial.skip(world))
+	th.add_child(skip)
+	var off := Button.new()
+	off.text = "Выключить обучение"
+	off.pressed.connect(func(): main.end_tutorial(false))
+	th.add_child(off)
+	tut_panel.visible = false
+
 	# Палитра построек.
 	var pv := _window("palette", Vector2(820, 600), "Постройки (B)")
 	var mh := HBoxContainer.new()
@@ -195,10 +225,18 @@ func _build() -> void:
 	briefing_label.custom_minimum_size = Vector2(780, 0)
 	briefing_label.add_theme_font_size_override("normal_font_size", 14)
 	brv.add_child(briefing_label)
+	var bh := HBoxContainer.new()
+	brv.add_child(bh)
 	var go := Button.new()
 	go.text = "Начать (Enter)"
 	go.pressed.connect(func(): windows.briefing.visible = false)
-	brv.add_child(go)
+	bh.add_child(go)
+	var tb := Button.new()
+	tb.text = "Пройти обучение"
+	tb.pressed.connect(func():
+		windows.briefing.visible = false
+		main.start_tutorial())
+	bh.add_child(tb)
 
 const HELP := """Движение — WASD / стрелки. Колесо мыши — масштаб.
 E (удерживать) — копать залежь под курсором или рядом.
@@ -566,6 +604,12 @@ func refresh() -> void:
 		mode_text.get(main.mode, "")]
 	if main.sim.paused and not blocks_game():
 		status_label.text += "   ПАУЗА"
+	var t: Tutorial = main.tutorial
+	tut_panel.visible = t != null
+	if t != null:
+		var st: Dictionary = t.current()
+		tut_label.text = "[b]Обучение %d/%d: %s[/b]\n%s\n[color=#9fb0c0][i]%s[/i][/color]" % [t.step + 1, Tutorial.STEPS.size(), st.title, st.text, st.hint]
+		tut_done_btn.visible = st.id == "goal"
 	msg_label.text = main.message if main.message_t > 0.0 else ""
 	msg_label.visible = main.message_t > 0.0
 	_refresh_inventory()

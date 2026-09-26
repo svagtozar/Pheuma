@@ -20,6 +20,7 @@ var tiles := PackedByteArray()
 var deposits := {}                 # Vector2i → {"sub": id, "amount": кг}
 var spawn := Vector2i.ZERO
 var goal := {}                     # экземпляр шаблона из Goals
+var forced := false                # теги заданы вручную (учебная планета)
 
 func has_tag(t: String) -> bool:
 	return t in tags

@@ -4,7 +4,8 @@ class_name PlanetGen
 const PREFIX := ["Кеп", "Ауро", "Тэл", "Ми", "Ксен", "Ор", "Вэй", "Сил", "Нур", "Грэ", "Иль", "Дзе"]
 const SUFFIX := ["ра", "ион", "ус", "эя", "ант", "ида", "ос", "ен"]
 
-static func generate(seed_value: int, width: int = 80, height: int = 60) -> Planet:
+## forced_tags — задать теги планеты вручную (учебная планета).
+static func generate(seed_value: int, width: int = 80, height: int = 60, forced_tags: Array = []) -> Planet:
 	var p := Planet.new()
 	var rng := Rng.new(seed_value)
 	p.seed_value = seed_value
@@ -13,8 +14,13 @@ static func generate(seed_value: int, width: int = 80, height: int = 60) -> Plan
 	var nr := rng.fork("name")
 	p.name = "%s%s-%d" % [nr.pick(PREFIX), nr.pick(SUFFIX), nr.range_i(2, 99)]
 
-	p.tags = TagPool.pick(rng.fork("ptags"), PlanetTags.all(), rng.fork("pcount").range_i(3, 5),
-		PlanetTags.pick_weights(), PlanetTags.compatible)
+	if forced_tags.is_empty():
+		p.tags = TagPool.pick(rng.fork("ptags"), PlanetTags.all(), rng.fork("pcount").range_i(3, 5),
+			PlanetTags.pick_weights(), PlanetTags.compatible)
+	else:
+		p.tags = forced_tags.duplicate()
+		p.tags.sort()
+		p.forced = true
 	_apply_environment(p)
 
 	var exotic_mult := 1.0

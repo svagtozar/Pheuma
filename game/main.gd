@@ -6,12 +6,14 @@ extends Node2D
 ##   --autotest        — собрать цепочку, прогнать симуляцию, проверить и выйти
 ##   --screenshot=путь — сохранить скриншот через пару секунд и выйти
 ##   --open=окно       — открыть окно (palette, skills, fabricator, codex, help, briefing)
+##   --tutorial        — начать обучение (при первом запуске оно включается само)
 
 const T := 32.0
 const WorldView := preload("res://game/world_view.gd")
 const Hud := preload("res://game/ui/hud.gd")
 const Audio := preload("res://game/audio.gd")
 const AUTOSAVE_EVERY := 120.0
+const SETTINGS := "user://settings.json"
 
 var world: World
 var sim: Sim
@@ -26,6 +28,7 @@ var macro_rot := 0
 var macro_collapsed := false
 var route_tag := ""
 var route_tag_pick := ""
+var tutorial: Tutorial = null
 var sel_start = null
 var _autosave_t := 0.0
 
@@ -49,18 +52,19 @@ var _shot_t := 0.0
 func _ready() -> void:
 	var args := OS.get_cmdline_user_args() + OS.get_cmdline_args()
 	var s := -1
+	var want_tutorial := false
 	for a in args:
 		if a.begins_with("--seed="):
 			s = int(a.substr(7))
 		elif a == "--autotest":
 			autotest = true
+		elif a == "--tutorial":
+			want_tutorial = true
 		elif a.begins_with("--screenshot="):
 			screenshot_path = a.substr(13)
 		elif a.begins_with("--open="):
 			open_window = a.substr(7)
-	if s < 0:
-		randomize()
-		s = randi() % 1000000
+	randomize()
 	view = WorldView.new()
 	view.main = self
 	add_child(view)
@@ -76,7 +80,11 @@ func _ready() -> void:
 	audio = Audio.new()
 	add_child(audio)
 	macro_lib = Macroblocks.load_library()
-	new_world(s)
+	var first_run: bool = not settings().get("tutorial_done", false) and s < 0 and not autotest and screenshot_path == ""
+	if want_tutorial or first_run:
+		start_tutorial()
+	else:
+		new_world(s if s >= 0 else randi() % 1000000)
 	if autotest:
 		call_deferred("run_autotest")
 	if open_window == "briefing":
@@ -84,8 +92,39 @@ func _ready() -> void:
 	elif open_window != "":
 		hud.toggle(open_window)
 
+func settings() -> Dictionary:
+	if not FileAccess.file_exists(SETTINGS):
+		return {}
+	var d = JSON.parse_string(FileAccess.get_file_as_string(SETTINGS))
+	return d if typeof(d) == TYPE_DICTIONARY else {}
+
+func set_setting(key: String, value) -> void:
+	var d := settings()
+	d[key] = value
+	var f := FileAccess.open(SETTINGS, FileAccess.WRITE)
+	if f != null:
+		f.store_string(JSON.stringify(d))
+
+func start_tutorial() -> void:
+	var w := World.create(Tutorial.SEED, Tutorial.PLANET_TAGS)
+	Tutorial.setup_world(w)
+	new_world(0, w)
+	tutorial = Tutorial.new(world)
+	say("Обучение: задания — в панели сверху")
+
+func end_tutorial(completed: bool) -> void:
+	tutorial = null
+	world.meta.erase("tutorial_step")
+	set_setting("tutorial_done", true)
+	if completed:
+		say("Обучение пройдено! Shift+N — настоящая планета")
+
 func new_world(s: int, loaded: World = null) -> void:
+	tutorial = null
 	world = loaded if loaded != null else World.create(s)
+	if world.meta.has("tutorial_step"):
+		tutorial = Tutorial.new(world)
+		tutorial.step = int(world.meta.tutorial_step)
 	seed_value = world.planet.seed_value
 	sim = Sim.new(world)
 	audio.set_world(world)
@@ -167,6 +206,13 @@ func _process(dt: float) -> void:
 			if world.machine_at(c) == null and world.can_place("pipe", c, build_material()) == "":
 				world.place("pipe", c, 0, build_material())
 		sim.advance(dt)
+		if tutorial != null:
+			if tutorial.update(world):
+				world.sound("fanfare", world.robot_cell())
+				say("Шаг выполнен: " + Tutorial.STEPS[tutorial.step - 1].title if not tutorial.done else "Обучение пройдено!")
+			world.meta.tutorial_step = tutorial.step
+			if tutorial.done:
+				end_tutorial(true)
 		_autosave_t += dt
 		if _autosave_t >= AUTOSAVE_EVERY and not autotest:
 			_autosave_t = 0.0
@@ -323,6 +369,8 @@ func _finish_macro_select() -> void:
 		say("в выделении нет машин")
 		return
 	macro_lib.append(JSON.parse_string(JSON.stringify(mb)))
+	if tutorial != null:
+		tutorial.macros_made += 1
 	Macroblocks.save_library(macro_lib)
 	say("Сохранён «%s»: %d машин, %s. B — поставить" % [mb.name, mb.parts.size(), Macroblocks.describe_ports(mb)])
 	set_mode("none")

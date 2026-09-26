@@ -76,7 +76,8 @@ static func machine_restore(w: World, m: Machine, md: Dictionary, gas: GasNet) -
 		m.load_extra(w, md.extra)
 
 static func to_dict(w: World) -> Dictionary:
-	var d := {"version": VERSION, "seed": w.planet.seed_value, "time": w.time}
+	var d := {"version": VERSION, "seed": w.planet.seed_value, "time": w.time,
+		"forced": w.planet.tags if w.planet.forced else []}
 	d.tiles = Marshalls.raw_to_base64(w.planet.tiles)
 	var dep := {}
 	for c in w.planet.deposits:
@@ -111,6 +112,7 @@ static func to_dict(w: World) -> Dictionary:
 	d.overrides = w.tile_overrides.keys().map(func(c): return [c.x, c.y, w.tile_overrides[c].tile, w.tile_overrides[c].t])
 	d.launched = w.launched
 	d.built_kinds = w.built_kinds.keys()
+	d.meta = w.meta
 	d.goals = {"stage": w.goals.stage, "hold": w.goals.hold, "completed": w.goals.completed, "progress": w.goals.progress}
 	var r := w.robot
 	d.robot = {"pos": [r.pos.x, r.pos.y], "hp": r.hp, "tank": r.tank, "selected": r.selected,
@@ -123,7 +125,7 @@ static func to_dict(w: World) -> Dictionary:
 	return d
 
 static func from_dict(d: Dictionary) -> World:
-	var w := World.create(int(d.seed))
+	var w := World.create(int(d.seed), d.get("forced", []))
 	w.events.clear()
 	w.time = float(d.time)
 	w.planet.tiles = Marshalls.base64_to_raw(d.tiles)
@@ -149,6 +151,7 @@ static func from_dict(d: Dictionary) -> World:
 	for o in d.overrides:
 		w.tile_overrides[Vector2i(int(o[0]), int(o[1]))] = {"tile": int(o[2]), "t": float(o[3])}
 	w.launched = {"mass": float(d.launched.mass), "tags": d.launched.tags, "exotic": float(d.launched.exotic)}
+	w.meta = d.get("meta", {})
 	w.built_kinds = {}
 	for k in d.built_kinds:
 		w.built_kinds[k] = true

@@ -26,6 +26,7 @@ var ice_stress := {}
 var fires := {}                 # Vector2i → оставшееся время
 var launched := {"mass": 0.0, "tags": {}, "exotic": 0.0}
 var built_kinds := {}
+var meta := {}                  # данные интерфейса, которые нужно сохранять (шаг обучения)
 var events: Array = []          # {"cell", "text", "t"} для интерфейса
 var sfx: Array = []             # {"name", "cell"} — звуки для game/audio.gd
 var time := 0.0
@@ -35,8 +36,8 @@ var _handling_acc := 0.0
 var _hazard_acc := 0.0
 var _assembly_acc := 0.0
 
-static func create(seed_value: int) -> World:
-	return World.new(PlanetGen.generate(seed_value))
+static func create(seed_value: int, forced_tags: Array = []) -> World:
+	return World.new(PlanetGen.generate(seed_value, 80, 60, forced_tags))
 
 func _init(p: Planet) -> void:
 	planet = p
