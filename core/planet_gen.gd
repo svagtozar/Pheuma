@@ -77,10 +77,14 @@ static func _choose_goal(p: Planet, rng: Rng) -> Dictionary:
 	var gid: String = rng.weighted_pick(ids, weights)
 	var goal: Dictionary = Goals.TEMPLATES[gid].duplicate(true)
 	goal.id = gid
-	var rare := _choose_rare_tag(p, rng)
 	var flat: Array = []
 	for raw in goal.stages:
 		flat.append_array(Goals.options(raw))
+	var uses_rare := false
+	for st in flat:
+		if st.get("tag", "") == "{rare}" or st.get("tags", {}).has("{rare}"):
+			uses_rare = true
+	var rare := _choose_rare_tag(p, rng, uses_rare)
 	for st in flat:
 		if st.has("tag") and st.tag == "{rare}":
 			st.tag = rare
@@ -91,8 +95,29 @@ static func _choose_goal(p: Planet, rng: Rng) -> Dictionary:
 	goal.rare = rare
 	return goal
 
+## Проба для планировщика: своя база веществ и робот со стартовыми открытиями.
+## Planner пользуется только полями db, planet и robot.
+class Probe:
+	var db := SubstanceDB.new()
+	var planet: Planet
+	var robot := RobotState.new()
+
+static func _probe(p: Planet) -> Probe:
+	var pr := Probe.new()
+	pr.planet = p
+	for m in p.materials:
+		pr.db.add(m)
+	return pr
+
+## Тег получается настоящей обработкой (с фазами и температурами), а не только по таблице тегов.
+static func _obtainable(pr: Probe, t: String, mats: Array) -> bool:
+	for m in mats:
+		if m.has(t):
+			return true
+	return Planner.feasible(pr, t, mats)
+
 ## Редкий тег: достижим переработкой, но нет ни у одного исходного материала.
-static func _choose_rare_tag(p: Planet, rng: Rng) -> String:
+static func _choose_rare_tag(p: Planet, rng: Rng, check: bool) -> String:
 	var present := p.material_tags_present()
 	var have := Recipes.reachable(present, p.tags)
 	var cands: Array = []
@@ -102,18 +127,36 @@ static func _choose_rare_tag(p: Planet, rng: Rng) -> String:
 	cands.sort()
 	if cands.is_empty():
 		return present[0] if not present.is_empty() else "dense"
-	return rng.pick(cands)
+	var start := rng.range_i(0, cands.size() - 1)
+	if not check:
+		return cands[start]
+	var pr := _probe(p)
+	for i in cands.size():
+		var t: String = cands[(start + i) % cands.size()]
+		if Planner.feasible(pr, t, p.materials):
+			return t
+	return cands[start]
 
-## Если нужный цели тег недостижим — подмешиваем материал-носитель с этим тегом.
+## Если нужный цели тег не получить — подмешиваем материал-носитель с этим тегом:
+## твёрдый при температуре среды и по зубам стартовому буру (если получится).
 static func _ensure_goal_feasible(p: Planet, rng: Rng, exotic_mult: float) -> void:
 	var used := {}
 	for m in p.materials:
 		used[m.root] = true
 	var weights := MaterialGen.tag_weights(p.tags, exotic_mult)
+	var pr := _probe(p)
+	var drill: float = pr.robot.mining_hardness() + 0.5
 	for t in Goals.required_tags(p.goal):
-		var have := Recipes.reachable(p.material_tags_present(), p.tags)
-		if not have.has(t):
-			p.materials.append(MaterialGen.generate_one(rng, weights, used, [t]))
+		if _obtainable(pr, t, p.materials):
+			continue
+		var best: Substance = null
+		for _i in 5:
+			var s := MaterialGen.generate_one(rng, weights, used, [t])
+			best = s
+			if s.phase_at(p.ambient_temp) == Substance.Phase.SOLID and s.hardness <= drill:
+				break
+		p.materials.append(best)
+		pr.db.add(best)
 
 static func _noise(rng: Rng, freq: float, type: int = FastNoiseLite.TYPE_SIMPLEX_SMOOTH) -> FastNoiseLite:
 	var n := FastNoiseLite.new()

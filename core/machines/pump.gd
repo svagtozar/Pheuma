@@ -23,7 +23,7 @@ func tick(w, dt: float) -> void:
 		return
 	var limit: float = min(config.target_p, stats.max_p * 0.95)
 	if w.gas.pressure(id) >= limit:
-		status = "давление набрано"
+		status = "давление набрано" if limit >= config.target_p else "упёрся в предел материала: %.1f атм" % limit
 		return
 	w.gas.add_gas(id, rate * w.planet.atm_pressure * dt)
 	w.robot.xp.firekeeper += 0.02 * dt
@@ -31,4 +31,5 @@ func tick(w, dt: float) -> void:
 func describe(w) -> Array:
 	var l := super.describe(w)
 	l.append("%s: %.1f атм" % ["Откачка до" if config.get("reverse", false) else "Накачка до", config.target_p])
+	l.append("Предел этого насоса: %.1f атм (материал)" % (stats.max_p * 0.95))
 	return l

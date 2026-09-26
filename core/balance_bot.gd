@@ -76,13 +76,14 @@ func material_for(kind: String, check: Callable = Callable()) -> Substance:
 		if Buildings.check_material(kind, s, w.planet.ambient_temp) != "":
 			return false
 		return check.is_null() or check.call(s)
-	# Стартовый сплав держим на пусковую шахту, если цель требует отправки на орбиту.
+	# Стартовый сплав держим на пусковую шахту и её насосы (им нужно держать 6+ атм),
+	# если цель требует отправки на орбиту.
 	var reserve := 0.0
 	if kind != "launch_silo":
 		for raw in w.planet.goal.stages:
 			for st in Goals.options(raw):
 				if st.type.begins_with("launch") and w.machines_of("launch_silo").is_empty():
-					reserve = w.build_cost("launch_silo")
+					reserve = w.build_cost("launch_silo") + (0.0 if kind == "pump" else 3.0 * w.build_cost("pump"))
 	for id in w.robot.inventory:
 		var s: Substance = w.db.get_sub(id)
 		var spare: float = w.robot.mass_of(id) - (reserve if s == w.starter else 0.0)
@@ -96,29 +97,47 @@ func material_for(kind: String, check: Callable = Callable()) -> Substance:
 	return null
 
 func build(kind: String, c: Vector2i, facing: int, check: Callable = Callable()) -> Machine:
-	var s := material_for(kind, check)
-	if s == null:
-		note("нет материала для «%s»" % Buildings.name_of(kind))
-		return null
-	travel(c)
-	var err := w.can_place(kind, c, s)
-	if err != "":
-		note("не поставить «%s»: %s" % [Buildings.name_of(kind), err])
-		return null
-	return w.place(kind, c, facing, s)
-
-func pump_for(m: Machine, target_p: float, count: int = 1) -> int:
-	var n := 0
-	for d in Machine.DIRS:
-		if n >= count:
+	# Вторая попытка — если материал потерялся в пути (летучее испаряется из рук).
+	var err := ""
+	for attempt in 2:
+		var s := material_for(kind, check)
+		if s == null:
+			note("нет материала для «%s»" % Buildings.name_of(kind))
+			return null
+		travel(c)
+		err = w.can_place(kind, c, s)
+		if err == "":
+			return w.place(kind, c, facing, s)
+		if w.robot.mass_of(s.id) >= w.build_cost(kind):
 			break
-		var c: Vector2i = m.cell + d
-		if not is_free(c) or c == m.out_cell(0) or (m.info.has("process") and c == m.out_cell(1)):
-			continue
-		var p := build("pump", c, 0)
-		if p != null:
-			p.config.target_p = target_p
-			n += 1
+	note("не поставить «%s»: %s" % [Buildings.name_of(kind), err])
+	return null
+
+## Насосы к машине. need — какое давление насос должен реально держать
+## (предел материала ×0.95); по умолчанию — целевое, но не выше 9 атм.
+## Сначала свободные клетки рядом, потом клетки залежи без машин.
+func pump_for(m: Machine, target_p: float, count: int = 1, need: float = -1.0) -> int:
+	if need < 0.0:
+		need = min(target_p, 9.0)
+	var strong := func(s): return ComponentStats.compute("pump", s).max_p * 0.95 >= need
+	var n := 0
+	for pass_i in 2:
+		for d in Machine.DIRS:
+			if n >= count:
+				return n
+			var c: Vector2i = m.cell + d
+			var two_outs: bool = m.info.has("process") and Processes.PROCESSES[m.info.process].outs == 2
+			if c == m.out_cell(0) or (two_outs and c == m.out_cell(1)):
+				continue
+			var ok := is_free(c) if pass_i == 0 else (w.planet.buildable(c) and not w.grid.has(c) and not w.tile_overrides.has(c))
+			if not ok:
+				continue
+			var p := build("pump", c, 0, strong)
+			if p == null:
+				p = build("pump", c, 0)
+			if p != null:
+				p.config.target_p = target_p
+				n += 1
 	return n
 
 func learn_what_we_can() -> void:
@@ -218,7 +237,7 @@ func build_chain(pl: Dictionary, sink) -> Machine:
 	if snk == null:
 		return null
 	if sk == "launch_silo":
-		pump_for(snk, 9.5, 3)
+		pump_for(snk, 9.5, 3, 6.5)
 	note("установка: %s → %s" % [Planner.describe(pl), snk.display_name()])
 	return snk
 
@@ -245,7 +264,38 @@ func produce(tag: String, sink = "container") -> Machine:
 var _feeders: Array = []   # [реагент, машина] — подкладывать в боковой вход
 
 ## Подкладывать реагенты в машины и топливо в печь купола, пока идёт ожидание.
+var _stall := {}    # id машины → [с какого времени не хватает давления, сколько насосов добавлено]
+
 func maintain() -> void:
+	for m in w.machines.values():
+		var starving: bool = m.status.begins_with("мало давления") or (m.kind == "launch_silo" and not m.items.is_empty() and w.gas.pressure(m.id) < 6.0)
+		if not starving:
+			_stall.erase(m.id)
+			continue
+		var e: Array = _stall.get(m.id, [w.time, 0])
+		_stall[m.id] = e
+		if w.time - e[0] > 60.0 and e[1] < 3:
+			e[0] = w.time
+			e[1] += 1
+			var silo: bool = m.kind == "launch_silo"
+			if pump_for(m, 9.5 if silo else 3.0, 1, 6.5 if silo else 2.5) > 0:
+				note("добавлен насос к «%s»" % m.display_name())
+	# Приёмник на выходе разрушен (событие, кислота) — ставим новый.
+	for m in w.machines.values():
+		if m.out_queue.is_empty():
+			continue
+		var oc: Vector2i = m.out_cell(int(m.out_queue[0][1]))
+		if w.machine_at(oc) != null or not w.planet.buildable(oc) or _rebuilt.get(oc, 0) >= 2:
+			continue
+		_rebuilt[oc] = _rebuilt.get(oc, 0) + 1
+		var sealed_needed: bool = m.out_queue[0][0].has("volatile") or m.out_queue[0][0].phase() != Substance.Phase.SOLID
+		if build("tank" if sealed_needed else "container", oc, m.facing) != null:
+			note("восстановлен приёмник у «%s»" % m.display_name())
+	_maintain_feed()
+
+var _rebuilt := {}
+
+func _maintain_feed() -> void:
 	if not _feed.is_empty() and w.machines.has(_feed[1].id) and _feed[1].items.is_empty():
 		var fs: Substance = _feed[0]
 		if w.robot.mass_of(fs.id) < 2.0:
@@ -565,13 +615,16 @@ func do_stage(st: Dictionary) -> String:
 		"sensor_network":
 			return _sensors(st.n)
 		"stockpile_mass":
-			var cap := 0.0
+			# Уже лежащее + новые линии «бур → контейнер» с запасом: старые линии
+			# могли остановиться (залежь кончилась), на их свободное место не рассчитываем.
+			var have := 0.0
 			for m in w.machines.values():
 				if m.is_storage():
-					cap += m.capacity()
+					have += m.total_mass()
+			var cap := have
 			var any := _soft_materials()
 			var guard := 0
-			while cap < st.mass * 1.2 and guard < 8 and not any.is_empty():
+			while cap < st.mass * 1.3 and guard < 8 and not any.is_empty():
 				guard += 1
 				var snk := build_chain({"mat": any[guard % any.size()], "steps": [], "locked": []}, "container")
 				if snk == null:
@@ -579,14 +632,26 @@ func do_stage(st: Dictionary) -> String:
 				cap += snk.capacity()
 			return "" if cap >= st.mass else "не хватило места под запас"
 		"machines_working":
+			# Буры новых линий ждут выключенными, пока не готовы все линии, — иначе первые
+			# контейнеры переполнятся раньше, чем заработает последняя печь.
 			var any := _soft_materials()
 			var n := 0
-			for i in st.n + 2:
+			var drills: Array = []
+			for i in st.n + 3:
 				if n >= st.n or any.is_empty():
 					break
+				var before := {}
+				for id in w.machines:
+					before[id] = true
 				var pl := {"mat": any[i % any.size()], "steps": [{"op": "process", "pid": "furnace", "kind": "furnace", "out": 0}], "locked": []}
 				if build_chain(pl, "container") != null:
 					n += 1
+				for m in w.machines.values():
+					if m.kind == "drill" and not before.has(m.id):
+						m.manual_off = true
+						drills.append(m)
+			for d in drills:
+				d.manual_off = false
 			return "" if n >= st.n else "не поставить %d линий обработки" % st.n
 		"deliveries":
 			return _deliveries()

@@ -35,7 +35,7 @@ static func plan(w, tag: String, mats: Array) -> Dictionary:
 		p = _search(w, tag, mats, true)
 	return p
 
-static func _search(w, tag: String, mats: Array, allow_locked: bool) -> Dictionary:
+static func _search(w, tag: String, mats: Array, allow_locked: bool, max_states: int = MAX_STATES) -> Dictionary:
 	var rgs := reagents(w, mats)
 	var radio: Array = rgs.filter(func(m): return m.has("radioactive"))
 	var pids: Array = []
@@ -55,7 +55,7 @@ static func _search(w, tag: String, mats: Array, allow_locked: bool) -> Dictiona
 		queue.append({"mat": m, "p": p, "steps": []})
 		seen[_key(p)] = true
 	var head := 0
-	while head < queue.size() and seen.size() < MAX_STATES:
+	while head < queue.size() and seen.size() < max_states:
 		var s: Dictionary = queue[head]
 		head += 1
 		if s.p.has(tag):
@@ -90,6 +90,10 @@ static func _search(w, tag: String, mats: Array, allow_locked: bool) -> Dictiona
 			seen[k] = true
 			queue.append({"mat": s.mat, "p": np, "steps": s.steps + [{"op": "treat", "reagent": rg, "kind": "treater", "out": 0}]})
 	return {}
+
+## Быстрая проверка при генерации планеты: один проход со всеми постройками.
+static func feasible(w, tag: String, mats: Array) -> bool:
+	return not _search(w, tag, mats, true, 900).is_empty()
 
 static func _key(p: Portion) -> String:
 	return ",".join(p.substance.tags) + "|" + str(p.phase())
