@@ -39,6 +39,12 @@ var _handling_acc := 0.0
 var _hazard_acc := 0.0
 var _assembly_acc := 0.0
 
+## Стартовый сплав капсулы: из него корпус, ручной бур и первые постройки.
+static func starter_substance() -> Substance:
+	var s := Substance.new("pod", "Сплав капсулы", ["metallic", "dense"], {"hard": 0.5, "melt": 100.0})
+	s.name = "Сплав капсулы"
+	return s
+
 static func create(seed_value: int, forced_tags: Array = []) -> World:
 	return World.new(PlanetGen.generate(seed_value, 80, 60, forced_tags))
 
@@ -50,8 +56,7 @@ func _init(p: Planet) -> void:
 	gas.ambient = p.ambient_temp
 	goals = GoalsTracker.new(self)
 	director = EventDirector.new(self)
-	starter = db.add(Substance.new("pod", "Сплав капсулы", ["metallic", "dense"], {"hard": 0.5, "melt": 100.0}))
-	starter.name = "Сплав капсулы"
+	starter = db.add(starter_substance())
 	robot.pos = Vector2(p.spawn) + Vector2(0.5, 0.5)
 	robot.last_safe = p.spawn
 	robot.add_item(Portion.new(starter, 60.0, p.ambient_temp))

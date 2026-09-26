@@ -21,6 +21,27 @@ func test_discover_goal_not_above_planet_tags():
 					assert_lte(st.n, max(14, present), "seed %d: «%s» при %d тегах в сырье" % [s, st.desc, present])
 					assert_true(st.desc.contains(str(st.n)), "описание совпадает с числом")
 
+func test_needed_machines_have_material():
+	var bad := 0
+	for s in range(1, 41):
+		var p := PlanetGen.generate(s)
+		var ores: Array = []
+		var kinds: Dictionary = PlanetGen._needed_kinds(p, PlanetGen._probe(p), ores)
+		for k in kinds:
+			if not PlanetGen._buildable_from(p, k):
+				bad += 1
+				gut.p("seed %d: «%s» не из чего строить" % [s, Buildings.name_of(k)])
+		assert_eq(p.unbuildable.filter(func(k): return k != "drill"), [], "seed %d: машины цели строятся" % s)
+		if not p.unbuildable.is_empty():
+			bad += 1
+	assert_lte(bad, 2, "почти на всех планетах всё нужное строится")
+
+func test_generation_time_reasonable():
+	var t0 := Time.get_ticks_msec()
+	for s in range(100, 110):
+		PlanetGen.generate(s)
+	assert_lt(Time.get_ticks_msec() - t0, 6000, "10 планет быстрее 6 с")
+
 func test_generation_stays_deterministic():
 	var a := PlanetGen.generate(12)
 	var b := PlanetGen.generate(12)

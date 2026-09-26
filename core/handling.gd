@@ -13,6 +13,13 @@ class_name Handling
 const EVENT_CTX := ["launch", "impact"]
 const CORROSION_PROOF := ["insulating", "crystalline", "anchoring"]
 
+## Можно ли носить и хранить без вреда: не разъедает хранилища и не горит в руках.
+static func safe_to_carry(s: Substance, planet: Planet, safe_fire: bool = false) -> bool:
+	if s.has("acidic"):
+		return false
+	var burns: bool = (s.has("pyrophoric") or s.has("flammable")) and planet.oxidizing()
+	return not burns or safe_fire
+
 static func new_result() -> Dictionary:
 	return {"lost": 0.0, "spawn": [], "jammed": null, "robot_damage": 0.0, "container_damage": 0.0,
 		"fire": false, "signal": false, "absorb_gas": 0.0, "crawl": false, "events": [], "discovered": []}

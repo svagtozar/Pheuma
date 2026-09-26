@@ -29,11 +29,12 @@ static func generate(seed_value: int, width: int = 80, height: int = 60, forced_
 	var mr := rng.fork("mats")
 	p.materials = MaterialGen.generate(mr, mr.range_i(8, 12), p.tags, exotic_mult)
 
+	p.atmosphere = _make_atmosphere(p)
 	p.goal = _choose_goal(p, rng.fork("goal"))
 	_ensure_goal_feasible(p, rng.fork("carrier"), exotic_mult)
+	_ensure_buildable(p, rng.fork("builder"), exotic_mult)
 	for m in p.materials:
 		p.db.add(m)
-	p.atmosphere = _make_atmosphere(p)
 	p.db.add(p.atmosphere)
 
 	_generate_map(p, rng.fork("map"))
@@ -111,6 +112,7 @@ class Probe:
 static func _probe(p: Planet) -> Probe:
 	var pr := Probe.new()
 	pr.planet = p
+	pr.robot.drill = pr.robot.new_module("hand_drill", World.starter_substance(), 0.0)
 	for m in p.materials:
 		pr.db.add(m)
 	return pr
@@ -163,6 +165,101 @@ static func _ensure_goal_feasible(p: Planet, rng: Rng, exotic_mult: float) -> vo
 				break
 		p.materials.append(best)
 		pr.db.add(best)
+
+## Машины, которые понадобятся под каждый тип этапа (все варианты развилок).
+const STAGE_KINDS := {
+	"launch_mass": ["launch_silo"], "launch_tag": ["launch_silo"], "launch_exotic": ["launch_silo"],
+	"dome_env": ["dome", "furnace", "sensor"], "beacon_hold": ["beacon"],
+	"deliveries": ["cannon", "receiver"], "sensor_network": ["sensor", "valve"],
+	"machines_working": ["furnace"],
+}
+const BASE_KINDS := ["drill", "container", "tank", "pump", "pipe"]
+const MAX_BUILDERS := 3
+
+## Нужные машины: базовые, машины цепочек тегов цели и машины этапов.
+## Возвращает {kind: true} и заполняет ores — исходные материалы цепочек (под бур).
+static func _needed_kinds(p: Planet, pr: Probe, ores: Array) -> Dictionary:
+	var kinds := {}
+	for k in BASE_KINDS:
+		kinds[k] = true
+	var flat: Array = []
+	for raw in p.goal.stages:
+		flat.append_array(Goals.options(raw))
+	for st in flat:
+		for k in STAGE_KINDS.get(st.type, []):
+			kinds[k] = true
+		if st.type == "build_count":
+			kinds[st.kind] = true
+	for t in Goals.required_tags(p.goal):
+		var pl := Planner.probe_plan(pr, t, p.materials)
+		if pl.is_empty():
+			continue
+		if not pl.mat in ores:
+			ores.append(pl.mat)
+		for step in pl.steps:
+			kinds[step.kind] = true
+	return kinds
+
+## Что берёт стартовый ручной бур робота (твёрдость + 0.5).
+static func _drill_limit() -> float:
+	var r := RobotState.new()
+	r.drill = r.new_module("hand_drill", World.starter_substance(), 0.0)
+	return r.mining_hardness() + 0.5
+
+## Есть ли материал планеты для постройки: подходит по свойствам, копается
+## стартовым буром и безопасен в руках. min_hard — для бура под твёрдую руду.
+static func _buildable_from(p: Planet, kind: String, min_hard: float = 0.0) -> bool:
+	var drill: float = _drill_limit()
+	for s in p.materials:
+		if s.hardness > drill or s.hardness < min_hard:
+			continue
+		if Buildings.check_material(kind, s, p.ambient_temp) != "":
+			continue
+		if Handling.safe_to_carry(s, p):
+			return true
+	return false
+
+## Если нужную машину не из чего построить — добавляем «строительный» материал.
+static func _ensure_buildable(p: Planet, rng: Rng, exotic_mult: float) -> void:
+	var used := {}
+	for m in p.materials:
+		used[m.root] = true
+	var weights := MaterialGen.tag_weights(p.tags, exotic_mult)
+	var pr := _probe(p)
+	var ores: Array = []
+	var kinds: Array = _needed_kinds(p, pr, ores).keys()
+	kinds.sort()
+	# Бур под каждую руду цепочек: не мягче руды − 0.5.
+	var needs: Array = []
+	for k in kinds:
+		needs.append([k, 0.0])
+	var drill_max: float = _drill_limit()
+	for ore in ores:
+		if ore.hardness - 0.5 > Buildings.KINDS.drill.hard and ore.hardness - 0.5 <= drill_max:
+			needs.append(["drill", ore.hardness - 0.5])
+	var added := 0
+	for nd in needs:
+		var kind: String = nd[0]
+		var min_hard: float = nd[1]
+		if _buildable_from(p, kind, min_hard):
+			continue
+		if added >= MAX_BUILDERS:
+			p.unbuildable.append(kind)
+			continue
+		var d: Dictionary = Buildings.KINDS[kind]
+		var forced: Array = [d.any[0]] if d.has("any") else (["dense"] if d.has("min_p") else ["metallic"])
+		var ok := false
+		for _i in 8:
+			var s := MaterialGen.generate_one(rng, weights, used, forced)
+			p.materials.append(s)
+			if _buildable_from(p, kind, min_hard):
+				ok = true
+				added += 1
+				pr.db.add(s)
+				break
+			p.materials.pop_back()
+		if not ok:
+			p.unbuildable.append(kind)
 
 static func _noise(rng: Rng, freq: float, type: int = FastNoiseLite.TYPE_SIMPLEX_SMOOTH) -> FastNoiseLite:
 	var n := FastNoiseLite.new()

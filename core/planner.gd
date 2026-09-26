@@ -93,7 +93,11 @@ static func _search(w, tag: String, mats: Array, allow_locked: bool, max_states:
 
 ## Быстрая проверка при генерации планеты: один проход со всеми постройками.
 static func feasible(w, tag: String, mats: Array) -> bool:
-	return not _search(w, tag, mats, true, 900).is_empty()
+	return not probe_plan(w, tag, mats).is_empty()
+
+## То же, но возвращает сам план (для проверки, из чего строить его машины).
+static func probe_plan(w, tag: String, mats: Array) -> Dictionary:
+	return _search(w, tag, mats, true, 900)
 
 static func _key(p: Portion) -> String:
 	return ",".join(p.substance.tags) + "|" + str(p.phase())

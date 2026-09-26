@@ -272,10 +272,7 @@ func _relocate_exhausted() -> void:
 
 ## Материал не портит хранилища и не горит в руках робота.
 func safe_to_handle(s: Substance) -> bool:
-	if s.has("acidic"):
-		return false
-	var burns: bool = (s.has("pyrophoric") or s.has("flammable")) and w.planet.oxidizing()
-	return not burns or w.robot.passive("safe_fire") > 0.0
+	return Handling.safe_to_carry(s, w.planet, w.robot.passive("safe_fire") > 0.0)
 
 ## Кислотный груз разъедает хранилище — нужен стойкий материал стенок.
 func sink_check(cargo: Substance) -> Callable:
