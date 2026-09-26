@@ -13,6 +13,9 @@ func tick(w, dt: float) -> void:
 	status = ""
 	if not enabled:
 		return
+	if w.event_mods.get("spores", {}).has(id):
+		status = "забит спорами"
+		return
 	var rate: float = 0.8 * (1.0 + w.robot.passive("pump_rate")) * stats.speed
 	if config.get("reverse", false):
 		if w.gas.pressure(id) <= config.target_p:

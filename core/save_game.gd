@@ -84,6 +84,8 @@ static func to_dict(w: World) -> Dictionary:
 	for c in w.planet.deposits:
 		dep["%d,%d" % [c.x, c.y]] = {"sub": w.planet.deposits[c].sub, "amount": w.planet.deposits[c].amount}
 	d.deposits = dep
+	# Материалы планеты: после генерации могут добавиться новые (экзотика метеоритов).
+	d.planet_materials = w.planet.materials.map(func(s): return {"id": s.id, "name": s.name, "tags": s.tags, "noise": s.noise})
 	var derived: Array = []
 	for s in w.db.all():
 		if "#" in s.id:
@@ -133,6 +135,12 @@ static func from_dict(d: Dictionary) -> World:
 	w.events.clear()
 	w.time = float(d.time)
 	w.planet.tiles = Marshalls.base64_to_raw(d.tiles)
+	for md in d.get("planet_materials", []):
+		if w.db.get_sub(md.id) == null:
+			var s := Substance.new(md.id, md.id, md.tags, md.noise)
+			s.name = md.name
+			w.planet.materials.append(s)
+			w.db.add(s)
 	for k in d.deposits:
 		var c := v2i(k.split(","))
 		var v = d.deposits[k]

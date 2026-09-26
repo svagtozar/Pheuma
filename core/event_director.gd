@@ -77,11 +77,15 @@ func _choose_center(id: String) -> Vector2i:
 				if p.buildable(c) and not w.grid.has(c) and not p.deposits.has(c):
 					return c
 			return base
-		"flare":
-			var boxes: Array = ms.filter(func(m): return m.kind == "container" or m.kind == "receiver")
+		"flare", "spore_bloom":
+			var boxes: Array = ms.filter(func(m): return m.kind == "container" or m.kind == "receiver" or m.kind == "pump")
 			if not boxes.is_empty():
 				return rng.pick(boxes).cell
 			return base
+		"ring_debris":
+			if not ms.is_empty() and rng.chance(0.5):
+				return rng.pick(ms).cell + Vector2i(rng.range_i(-3, 3), rng.range_i(-3, 3))
+			return base + Vector2i(rng.range_i(-15, 15), rng.range_i(-12, 12))
 	return base
 
 func _begin() -> void:
@@ -108,6 +112,8 @@ func _begin() -> void:
 			_quake()
 		"geyser":
 			w.tile_overrides.erase(center())
+		"time_loop":
+			w.event_mods.time_boost = 1.5
 
 func _apply_shift(delta: float) -> void:
 	w.planet.ambient_temp += delta
@@ -145,6 +151,41 @@ func _active_tick(dt: float) -> void:
 			if current.acc >= 2.0:
 				current.acc = 0.0
 				_flare()
+		"spore_bloom":
+			# Насосы в зоне забиты спорами — их список проверяет сам насос.
+			var clogged := {}
+			for m in _in_zone():
+				if m.kind == "pump":
+					clogged[m.id] = true
+			w.event_mods.spores = clogged
+			if current.acc >= 3.0:
+				current.acc = 0.0
+				_spores()
+		"ring_debris":
+			if current.acc >= 1.0:
+				current.acc = 0.0
+				var r: int = current.radius
+				var c := center() + Vector2i(rng.range_i(-r, r), rng.range_i(-r, r))
+				var to := Vector2(c) + Vector2(0.5, 0.5)
+				w.projectiles.append({"from": to + Vector2(8, -14), "to": to, "t": 0.0, "dur": 1.0, "payload": [], "orbit": false, "kind": "debris"})
+		"time_loop":
+			w.robot.tank = max(0.0, w.robot.tank - 0.15 * dt)
+
+func _in_zone() -> Array:
+	var c := center()
+	var r: float = current.radius
+	return w.machines.values().filter(func(m): return Vector2(m.cell - c).length() <= r)
+
+## Споры: органика в открытых контейнерах зоны прорастает волокном.
+func _spores() -> void:
+	for m in _in_zone():
+		if m.sealed():
+			continue
+		for i in m.items.size():
+			var p: Portion = m.items[i]
+			if p.has("organic") and not p.has("fibrous"):
+				p.substance = w.db.derive(p.substance, MaterialTags.add_tag(p.substance.tags, "fibrous"))
+				w.log_event(m.cell, "Споры проросли в %s" % p.substance.name)
 
 func finish() -> void:
 	var d: Dictionary = Events.EVENTS[current.id]
@@ -155,6 +196,11 @@ func finish() -> void:
 			w.event_mods.corrosion = 1.0
 		"temp_shift":
 			_apply_shift(-current.shift)
+		"time_loop":
+			w.event_mods.time_boost = 1.0
+		"spore_bloom":
+			w.event_mods.erase("spores")
+			_sprout()
 	w.log_event(center(), "Закончилось: %s" % d.n)
 	current = {}
 	count += 1
@@ -176,6 +222,47 @@ func meteor_hit(c: Vector2i) -> void:
 		w.planet.deposits[c] = {"sub": sub.id, "amount": rng.range_f(30.0, 80.0)}
 		w.revealed[c] = true
 		w.log_event(c, "Метеорит оставил залежь: %s" % w.sub_label(sub))
+
+## После спорового выброса в зоне прорастают залежи органики.
+func _sprout() -> void:
+	var org: Array = w.planet.materials.filter(func(s): return s.has("organic") and s.phase_at(w.planet.ambient_temp) == Substance.Phase.SOLID)
+	if org.is_empty():
+		org = w.planet.materials.filter(func(s): return s.has("fibrous") or s.has("organic"))
+	if org.is_empty():
+		return
+	var sub: Substance = rng.pick(org)
+	var n := 0
+	for _try in 40:
+		if n >= 3:
+			break
+		var c := center() + Vector2i(rng.range_i(-4, 4), rng.range_i(-4, 4))
+		if w.planet.buildable(c) and not w.planet.deposits.has(c) and not w.grid.has(c) and not w.tile_overrides.has(c):
+			w.planet.deposits[c] = {"sub": sub.id, "amount": rng.range_f(40.0, 90.0)}
+			w.revealed[c] = true
+			n += 1
+	if n > 0:
+		w.log_event(center(), "Проросли грибницы: залежи «%s» — %d" % [sub.name, n])
+
+## Удар обломка колец: урон как у метеорита, залежь — металл, кристалл или тугоплавкое.
+func debris_hit(c: Vector2i) -> void:
+	w.sound("boom", c)
+	var m = w.machine_at(c)
+	if m != null:
+		m.hp -= 35.0 * m.stats.wear
+		if m.hp <= 0.0:
+			w.destroy(m, "обломок колец")
+	if w.robot.pos.distance_to(Vector2(c) + Vector2(0.5, 0.5)) < 1.5:
+		w.robot.damage(15.0 * (1.0 - w.robot.shield().heat))
+	if w.machine_at(c) == null and w.planet.buildable(c) and not w.planet.deposits.has(c) and rng.chance(0.5):
+		var pool: Array = w.planet.materials.filter(func(s): return s.has("refractory"))
+		if pool.is_empty():
+			pool = w.planet.materials.filter(func(s): return s.has("metallic") or s.has("crystalline"))
+		if pool.is_empty():
+			pool = w.planet.materials
+		var sub: Substance = rng.pick(pool)
+		w.planet.deposits[c] = {"sub": sub.id, "amount": rng.range_f(40.0, 90.0)}
+		w.revealed[c] = true
+		w.log_event(c, "Обломок оставил залежь: %s" % w.sub_label(sub))
 
 func _meteor_material() -> Substance:
 	if rng.chance(0.25):
@@ -258,6 +345,8 @@ func from_dict(d: Dictionary) -> void:
 			"storm": w.event_mods.scatter = 3.0
 			"acid": w.event_mods.corrosion = 3.0
 			"temp_shift": _apply_shift(current.shift)
+			"time_loop": w.event_mods.time_boost = 1.5
+			# spore_bloom пересчитывает забитые насосы каждый тик сам.
 
 func status_text() -> String:
 	if current.is_empty():

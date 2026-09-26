@@ -89,9 +89,10 @@ func sound(name: String, cell: Vector2i) -> void:
 		sfx.remove_at(0)
 
 func time_factor() -> float:
+	var f: float = event_mods.get("time_boost", 1.0)
 	if planet.has_tag("temporal_drift"):
-		return 1.0 + 0.5 * sin(time * 0.2)
-	return 1.0
+		return f * (1.0 + 0.5 * sin(time * 0.2))
+	return f
 
 func tile(c: Vector2i) -> int:
 	if tile_overrides.has(c):
@@ -561,6 +562,9 @@ func _land(pr: Dictionary) -> void:
 	var c := Vector2i(floori(pr.to.x), floori(pr.to.y))
 	if pr.kind == "meteor":
 		director.meteor_hit(c)
+		return
+	if pr.kind == "debris":
+		director.debris_hit(c)
 		return
 	sound("land", c)
 	var payload: Array = pr.payload

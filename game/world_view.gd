@@ -373,10 +373,11 @@ func _draw_projectiles() -> void:
 		var b: Vector2 = pr.to * T
 		var h := a.distance_to(b) * 0.35
 		var pos := a.lerp(b, k) - Vector2(0, sin(PI * k) * h)
-		if pr.kind == "meteor":
+		if pr.kind == "meteor" or pr.kind == "debris":
 			var mp: Vector2 = a.lerp(b, k)
-			draw_line(mp, mp - (b - a).normalized() * 26.0, Color(1.0, 0.6, 0.2, 0.7), 4.0)
-			draw_circle(mp, 5.0, Color(1.0, 0.8, 0.4))
+			var tail := Color(1.0, 0.6, 0.2, 0.7) if pr.kind == "meteor" else Color(0.75, 0.8, 0.9, 0.7)
+			draw_line(mp, mp - (b - a).normalized() * 26.0, tail, 4.0)
+			draw_circle(mp, 5.0, Color(1.0, 0.8, 0.4) if pr.kind == "meteor" else Color(0.85, 0.85, 0.95))
 			draw_circle(b, 6.0 + 10.0 * k, Color(1.0, 0.3, 0.1, 0.25))
 			continue
 		if pr.kind == "rocket":

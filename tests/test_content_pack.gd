@@ -141,3 +141,70 @@ func test_tuning_fork_analyzes_around():
 	_give(w, "tuning_fork")
 	assert_eq(Abilities.use(w, "tuning_fork", Vector2(c0) + Vector2(0.5, 0.5)), "")
 	assert_true(w.is_analyzed(a) and w.is_analyzed(b))
+
+# ---------------------------------------------------------------- планеты и события
+
+func _director_world(tags: Array) -> World:
+	var w := H.world(tags)
+	w.director.enabled = true
+	return w
+
+func _activate(w: World, id: String, at: Vector2i) -> void:
+	w.director.start(id, at)
+	w.director.current.t = 0.0
+	w.director.tick(0.01)   # предупреждение закончилось — событие началось
+	assert_eq(w.director.active_id(), id)
+
+func test_new_planet_tags_exist_and_generate():
+	for t in ["fungal_biosphere", "ringed", "singularity"]:
+		assert_true(PlanetTags.TAGS.has(t))
+	var p := PlanetGen.generate(7, 80, 60, ["singularity", "dense_atmosphere", "seismic"])
+	assert_gt(p.gravity, 1.5, "сингулярность тяжёлая")
+
+func test_spore_bloom_clogs_pumps_and_sprouts():
+	var w := _director_world(["fungal_biosphere"])
+	var org := w.db.add(Substance.new("fung", "Грибница", ["organic", "dense"]))
+	w.planet.materials = [org]
+	var pump := w.place("pump", Vector2i(12, 12), 0, w.starter, true)
+	var box := w.place("container", Vector2i(13, 12), 0, w.starter, true)
+	box.store(Portion.new(org, 3.0))
+	_activate(w, "spore_bloom", Vector2i(12, 12))
+	H.run(w, 1.0)
+	var p0: float = w.gas.pressure(pump.id)
+	H.run(w, 10.0)
+	assert_eq(pump.status, "забит спорами")
+	assert_almost_eq(w.gas.pressure(pump.id), p0, 0.05, "забитый насос не качает")
+	assert_true(box.items[0].has("fibrous"), "споры проросли в органике")
+	var n0 := w.planet.deposits.size()
+	w.director.finish()
+	assert_gt(w.planet.deposits.size(), n0, "после выброса — новые залежи")
+	H.run(w, 2.0)
+	assert_ne(pump.status, "забит спорами")
+
+func test_ring_debris_hits_and_leaves_deposits():
+	var w := _director_world(["ringed"])
+	w.planet.materials = [w.db.add(Substance.new("rf", "Огнеупор", ["refractory", "metallic"]))]
+	_activate(w, "ring_debris", Vector2i(30, 30))
+	var n0 := w.planet.deposits.size()
+	H.run(w, 30.0)
+	assert_gt(w.planet.deposits.size(), n0, "обломки оставили жилы")
+
+func test_time_loop_speeds_machines_and_drains_tank():
+	var w := _director_world(["singularity"])
+	_activate(w, "time_loop", Vector2i(20, 20))
+	assert_almost_eq(w.time_factor(), 1.5, 0.01)
+	w.robot.tank = 5.0
+	H.run(w, 10.0)
+	assert_lt(w.robot.tank, 4.0, "баллон утекает")
+	w.director.finish()
+	assert_almost_eq(w.time_factor(), 1.0, 0.01)
+
+func test_meteor_material_survives_save_load():
+	var w := World.create(3)
+	var extra := Substance.new("Экзит", "Экзит", ["void", "dense"])
+	w.planet.materials.append(extra)
+	w.db.add(extra)
+	w.planet.deposits[w.planet.spawn + Vector2i(5, 5)] = {"sub": extra.id, "amount": 50.0}
+	var w2 := SaveGame.from_dict(JSON.parse_string(JSON.stringify(SaveGame.to_dict(w))))
+	assert_not_null(w2.db.get_sub("Экзит"), "материал метеорита восстановлен")
+	assert_eq(w2.planet.deposits[w.planet.spawn + Vector2i(5, 5)].sub, "Экзит")

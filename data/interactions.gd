@@ -56,6 +56,8 @@ const RULES := [
 	{"a": "volcanic", "b": "organic", "add": ["flammable"], "env": true},
 	{"a": "inverted_thermodynamics", "b": "volatile", "add": ["thermo_inverted"], "env": true},
 	{"a": "temporal_drift", "b": "crystalline", "add": ["chrono_lagged"], "env": true},
+	{"a": "fungal_biosphere", "b": "organic", "add": ["fibrous"], "env": true},
+	{"a": "singularity", "b": "volatile", "add": ["superfluid"], "env": true},
 	# холод, тугоплавкость, самосборка
 	{"a": "cryogenic", "b": "volatile", "remove": ["volatile"], "add": ["dense"], "heat": -80.0, "consume": 0.5},
 	{"a": "cryogenic", "b": "flammable", "remove": ["flammable"], "heat": -60.0, "consume": 0.4},
