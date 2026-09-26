@@ -152,7 +152,7 @@ static func _apply(r: Dictionary, p: Portion, mass0: float, phase: int, ctx: Str
 			for n in env.get("neighbors", []):
 				if n == p or n.substance == p.substance or n.mass <= 0.0:
 					continue
-				var take := min(n.mass, mass0 * rate * dt)
+				var take := minf(n.mass, mass0 * rate * dt)
 				n.mass -= take
 				p.mass += take
 		"mimic":

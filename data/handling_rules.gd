@@ -23,7 +23,7 @@ const RULES := [
 		"desc": "Воспламеняется сам на воздухе с окислителем; в баке безопасен."},
 	{"tag": "brittle", "ctx": ["launch", "impact"], "effect": "shatter", "rate": 0.25,
 		"desc": "При выстреле и ударе часть превращается в порошок."},
-	{"tag": "acidic", "ctx": ["open", "sealed"], "effect": "corrode", "rate": 0.6,
+	{"tag": "acidic", "ctx": ["open", "sealed"], "effect": "corrode", "rate": 1.0,
 		"desc": "Разъедает контейнеры, если они не из изолирующего, кристаллического или якорного."},
 	{"tag": "phasing", "ctx": ["open", "sealed", "capsule"], "effect": "phase_leak", "rate": 0.06,
 		"desc": "Просачивается сквозь стенки, если они не из якорного материала."},
