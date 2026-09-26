@@ -1,0 +1,108 @@
+name: Build
+
+on:
+  push:
+    branches: ["**"]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  GODOT_VERSION: 4.4.1
+  GODOT_RELEASE: stable
+
+jobs:
+  build:
+    name: Tests and export (Windows, Linux)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache Godot and export templates
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/godot
+            ~/.local/share/godot/export_templates
+          key: godot-${{ env.GODOT_VERSION }}-${{ env.GODOT_RELEASE }}-win-linux
+
+      - name: Download Godot and export templates
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          V="${GODOT_VERSION}-${GODOT_RELEASE}"
+          BASE="https://github.com/godotengine/godot/releases/download/${V}"
+          mkdir -p ~/godot
+          curl -sSL -o /tmp/godot.zip "${BASE}/Godot_v${V}_linux.x86_64.zip"
+          unzip -q /tmp/godot.zip -d /tmp/godot
+          mv /tmp/godot/Godot_v${V}_linux.x86_64 ~/godot/godot
+          chmod +x ~/godot/godot
+          TPL=~/.local/share/godot/export_templates/${GODOT_VERSION}.${GODOT_RELEASE}
+          mkdir -p "$TPL"
+          curl -sSL -o /tmp/templates.tpz "${BASE}/Godot_v${V}_export_templates.tpz"
+          # Берём только нужные шаблоны — архив целиком больше гигабайта.
+          unzip -qoj /tmp/templates.tpz \
+            templates/version.txt \
+            templates/linux_release.x86_64 \
+            templates/windows_release_x86_64.exe \
+            templates/windows_release_x86_64_console.exe \
+            -d "$TPL"
+          rm /tmp/templates.tpz
+
+      - name: Import project
+        run: ~/godot/godot --headless --path . --import || true
+
+      - name: Unit tests (GUT)
+        run: ~/godot/godot --headless --path . -s addons/gut/gut_cmdln.gd -gexit
+
+      - name: Gameplay autotest
+        run: ~/godot/godot --headless --path . -- --autotest --seed=7
+
+      - name: Export
+        run: GODOT=~/godot/godot tools/export.sh
+
+      - name: Smoke-test Linux build
+        run: build/linux/Pneuma.x86_64 --headless -- --autotest --seed=7
+
+      - name: Package
+        run: |
+          set -euo pipefail
+          NAME="${GITHUB_REF_NAME//\//-}"
+          mkdir -p dist
+          (cd build/windows && zip -q -r "../../dist/Pneuma-${NAME}-windows-x86_64.zip" .)
+          tar -C build/linux -czf "dist/Pneuma-${NAME}-linux-x86_64.tar.gz" .
+          ls -la dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Pneuma-windows-x86_64
+          path: build/windows/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Pneuma-linux-x86_64
+          path: build/linux/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  release:
+    name: GitHub Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
