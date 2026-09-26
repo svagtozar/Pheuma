@@ -42,6 +42,14 @@ const MODULES := {
 		"desc": "Включает и выключает машину издалека. Провода дотягиваются вдвое дальше."},
 	"repair":     {"n": "Ремнабор", "cls": "crafter", "slot": "ability", "active": true, "gas": 0.0, "cd": 1.0, "target": "point", "cost": 4.0, "hard": 2.0,
 		"desc": "Чинит машину под курсором или робота (курсор на себе), тратит 1 кг выбранного материала."},
+	"seismic_charge": {"n": "Сейсмозаряд", "cls": "gatherer", "slot": "ability", "active": true, "gas": 3.0, "cd": 90.0, "target": "point", "cost": 6.0, "hard": 3.0,
+		"desc": "Встряхивает грунт у курсора: рядом выходят на поверхность новые залежи. Плотный материал — больше жил."},
+	"field_forge": {"n": "Походная кузня", "cls": "crafter", "slot": "ability", "active": true, "gas": 1.5, "cd": 10.0, "target": "self", "cost": 6.0, "hard": 3.5,
+		"desc": "Спекает 3 кг выбранного материала прямо в руках — как спекатель: порошок становится плотным и кристаллическим."},
+	"cold_pack":  {"n": "Холодильный ранец", "cls": "firekeeper", "slot": "ability", "cost": 5.0, "hard": 2.0,
+		"desc": "Груз в руках не греется и не вспыхивает: можно носить пирофорное и горячее."},
+	"tuning_fork": {"n": "Камертон", "cls": "shaman", "slot": "ability", "active": true, "gas": 0.5, "cd": 20.0, "target": "point", "cost": 4.0, "hard": 2.0,
+		"desc": "Звенит у курсора и раскрывает все вещества в радиусе 4: залежи, грунт, грузы и стенки машин. Кристаллический — радиус 6."},
 }
 
 static func check_material(id: String, sub: Substance, ambient: float) -> String:

@@ -80,3 +80,64 @@ func test_new_buildings_unlock_via_skill_tree():
 			if k in nd.get("unlock", []):
 				found = true
 		assert_true(found, "«%s» открывается прокачкой" % k)
+
+# ---------------------------------------------------------------- модули
+
+func _give(w: World, kind: String, sub: Substance = null) -> Dictionary:
+	var m := w.robot.new_module(kind, sub if sub != null else w.starter, 0.0)
+	w.robot.modules.append(m)
+	w.robot.bonus_slots += 2
+	assert_eq(w.robot.equip(m.uid), "")
+	w.robot.tank = w.robot.tank_cap()
+	return m
+
+func test_seismic_charge_adds_deposits():
+	var w := H.world()
+	w.planet.materials = [w.db.add(Substance.new("ore", "Руда", ["brittle"]))]
+	_give(w, "seismic_charge")
+	var n0 := w.planet.deposits.size()
+	assert_eq(Abilities.use(w, "seismic_charge", w.robot.pos + Vector2(3, 0)), "")
+	assert_gt(w.planet.deposits.size(), n0 + 1, "появились новые залежи")
+	assert_ne(Abilities.use(w, "seismic_charge", w.robot.pos + Vector2(3, 0)), "", "перезарядка")
+
+func test_new_deposits_survive_save_load():
+	var w := H.world()
+	var ore := w.db.add(Substance.new("ore", "Руда", ["brittle"]))
+	w.planet.deposits[Vector2i(3, 3)] = {"sub": ore.id, "amount": 42.0}
+	var d := SaveGame.to_dict(w)
+	assert_eq(d.deposits["3,3"].amount, 42.0)
+	assert_eq(d.deposits["3,3"].sub, ore.id)
+
+func test_field_forge_sinters_in_hands():
+	var w := H.world()
+	_give(w, "field_forge")
+	var powder := w.db.add(Substance.new("pw", "Порошок", ["porous", "metallic"]))
+	w.robot.add_item(Portion.new(powder, 3.0))
+	w.robot.selected = powder.id
+	assert_eq(Abilities.use(w, "field_forge", w.robot.pos), "")
+	var got: Substance = w.db.get_sub(w.robot.selected)
+	assert_true(got.has("dense") and got.has("crystalline"), "порошок спёкся: %s" % [got.tags])
+	assert_almost_eq(w.robot.mass_of(powder.id), 0.0, 0.01)
+
+func test_cold_pack_stops_fire_in_hands():
+	var w := H.world(["oxidizing_atmosphere"])
+	var pyro := w.db.add(Substance.new("py", "Пиро", ["pyrophoric", "dense"]))
+	w.robot.add_item(Portion.new(pyro, 5.0))
+	H.run(w, 4.0)
+	var burnt := 5.0 - w.robot.mass_of(pyro.id)
+	assert_gt(burnt, 0.5, "без ранца горит в руках")
+	_give(w, "cold_pack")
+	var m0 := w.robot.mass_of(pyro.id)
+	H.run(w, 4.0)
+	assert_almost_eq(w.robot.mass_of(pyro.id), m0, 0.01, "с ранцем не горит")
+
+func test_tuning_fork_analyzes_around():
+	var w := H.world()
+	var a := w.db.add(Substance.new("a", "А", ["brittle"]))
+	var b := w.db.add(Substance.new("b", "Б", ["dense"]))
+	var c0 := w.robot.cell() + Vector2i(3, 0)
+	w.planet.deposits[c0] = {"sub": a.id, "amount": 10.0}
+	w.planet.deposits[c0 + Vector2i(2, 1)] = {"sub": b.id, "amount": 10.0}
+	_give(w, "tuning_fork")
+	assert_eq(Abilities.use(w, "tuning_fork", Vector2(c0) + Vector2(0.5, 0.5)), "")
+	assert_true(w.is_analyzed(a) and w.is_analyzed(b))

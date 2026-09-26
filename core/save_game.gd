@@ -82,7 +82,7 @@ static func to_dict(w: World) -> Dictionary:
 	d.tiles = Marshalls.raw_to_base64(w.planet.tiles)
 	var dep := {}
 	for c in w.planet.deposits:
-		dep["%d,%d" % [c.x, c.y]] = w.planet.deposits[c].amount
+		dep["%d,%d" % [c.x, c.y]] = {"sub": w.planet.deposits[c].sub, "amount": w.planet.deposits[c].amount}
 	d.deposits = dep
 	var derived: Array = []
 	for s in w.db.all():
@@ -135,8 +135,12 @@ static func from_dict(d: Dictionary) -> World:
 	w.planet.tiles = Marshalls.base64_to_raw(d.tiles)
 	for k in d.deposits:
 		var c := v2i(k.split(","))
-		if w.planet.deposits.has(c):
-			w.planet.deposits[c].amount = float(d.deposits[k])
+		var v = d.deposits[k]
+		if typeof(v) == TYPE_DICTIONARY:
+			# Новые залежи (метеориты, сейсмозаряд) создаются заново.
+			w.planet.deposits[c] = {"sub": str(v.sub), "amount": float(v.amount)}
+		elif w.planet.deposits.has(c):
+			w.planet.deposits[c].amount = float(v)   # старый формат сохранения
 	for s in d.substances:
 		w.db.restore(s.id, s.root, s.name, s.tags)
 	for md in d.machines:
