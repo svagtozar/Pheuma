@@ -47,7 +47,7 @@ func test_removing_target_drops_link():
 	w.remove_at(d.box.cell, false)
 	assert_eq(d.cr.shot_target(0), -1)
 
-func test_out_of_range_lands_on_ground():
+func test_out_of_range_waits_for_pressure():
 	var w := H.world()
 	var ore := w.db.add(Substance.new("ore", "Руда", ["brittle"]))
 	var cr := w.place("crusher", Vector2i(2, 2), 0, w.starter, true)
@@ -56,8 +56,9 @@ func test_out_of_range_lands_on_ground():
 	cr.store(Portion.new(ore, 2.0))
 	w.link_output(cr.cell, far.cell)
 	H.run(w, 30.0)
-	assert_true(far.items.is_empty(), "до цели не долетело")
-	assert_false(w.ground.is_empty(), "груз упал на землю")
+	assert_true(far.items.is_empty(), "до цели не долетит")
+	assert_true(w.ground.is_empty(), "и не стреляет впустую — ждёт давления")
+	assert_true(cr.status.contains("чтобы долететь"), cr.status)
 
 func test_split_chain_keeps_separate_pressure():
 	var w := H.world()

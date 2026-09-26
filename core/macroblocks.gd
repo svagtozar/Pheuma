@@ -30,6 +30,13 @@ static func capture(w, rect: Rect2i, name: String) -> Dictionary:
 				if ids.has(int(cfg.shot[k])):
 					sh[k] = [ids[int(cfg.shot[k])].x, ids[int(cfg.shot[k])].y]
 			cfg.shot = sh
+		if cfg.has("shot_routes"):
+			var sr := {}
+			for k in cfg.shot_routes:
+				var rr: Array = cfg.shot_routes[k].filter(func(r): return ids.has(int(r[1]))).map(func(r): return [r[0], [ids[int(r[1])].x, ids[int(r[1])].y]])
+				if not rr.is_empty():
+					sr[k] = rr
+			cfg.shot_routes = sr
 		var part := {"kind": m.kind, "off": [off.x, off.y], "facing": m.facing, "config": cfg}
 		if m is MacroMachine:
 			part.mb = m.template()
@@ -68,7 +75,27 @@ static func remap_config(cfg: Dictionary, idmap: Dictionary) -> Dictionary:
 			if idmap.has(int(c.shot[k])):
 				sh[str(k)] = idmap[int(c.shot[k])]
 		c.shot = sh
+	if c.has("shot_routes"):
+		var sr := {}
+		for k in c.shot_routes:
+			var rr: Array = c.shot_routes[k].filter(func(r): return idmap.has(int(r[1]))).map(func(r): return [r[0], idmap[int(r[1])]])
+			if not rr.is_empty():
+				sr[str(k)] = rr
+		c.shot_routes = sr
 	return c
+
+## Маршруты выходов из шаблона (смещения) — в id поставленных машин.
+static func routes_from_offsets(v: Dictionary, by_off: Dictionary) -> Dictionary:
+	var sr := {}
+	for k in v:
+		var rr: Array = []
+		for r in v[k]:
+			var t = by_off.get(Vector2i(int(r[1][0]), int(r[1][1])))
+			if t != null:
+				rr.append([r[0], t.id])
+		if not rr.is_empty():
+			sr[str(k)] = rr
+	return sr
 
 ## Цели выстрелов из шаблона (смещения) — в id поставленных машин.
 static func shot_from_offsets(v: Dictionary, by_off: Dictionary) -> Dictionary:
@@ -271,6 +298,8 @@ static func place(w: World, mb: Dictionary, origin: Vector2i, rot: int, preferre
 				m.config.routes = routes
 			elif k == "shot":
 				m.config.shot = shot_from_offsets(v, by_off)
+			elif k == "shot_routes":
+				m.config.shot_routes = routes_from_offsets(v, by_off)
 			else:
 				m.config[k] = v
 	for wr in mb.wires:

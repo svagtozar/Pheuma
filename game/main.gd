@@ -8,6 +8,7 @@ extends Node2D
 ##   --open=окно       — открыть окно (palette, skills, fabricator, codex, help, briefing,
 ##                       pause, settings, slots, end, event, choice, reward)
 ##   --tutorial        — начать обучение (при первом запуске оно включается само)
+##   --flow            — включить карту потоков (O)
 
 const T := 32.0
 const WorldView := preload("res://game/world_view.gd")
@@ -35,6 +36,7 @@ var macro_collapsed := false
 var pending_macro := {}        # выделенная рамкой схема, ждёт выбора действия
 var route_tag := ""
 var _link_idx := 0             # какой выход машины наводится в режиме L (Shift — второй)
+var flow_view := false         # O — карта потоков груза
 var route_tag_pick := ""
 var tutorial: Tutorial = null
 var _uitest := false
@@ -89,6 +91,8 @@ func _ready() -> void:
 			_demo = true
 			if a.begins_with("--demo="):
 				_demo_n = int(a.substr(7))
+		elif a == "--flow":
+			flow_view = true
 		elif a == "--bench":
 			_bench = true
 			_demo = true
@@ -405,6 +409,9 @@ func _on_key(e: InputEventKey) -> void:
 		KEY_X: set_mode("remove" if mode != "remove" else "none")
 		KEY_V: set_mode("wire" if mode != "wire" else "none")
 		KEY_L: set_mode("link" if mode != "link" else "none")
+		KEY_O:
+			flow_view = not flow_view
+			say("Карта потоков: %s" % ("включена — толщина линий = кг/мин, рамка = состояние машины" if flow_view else "выключена"))
 		KEY_I:
 			hud.toggle_inventory()
 		KEY_M:
@@ -623,9 +630,23 @@ func _click(shift: bool) -> void:
 				else:
 					say("выберите пневмопушку или машину с выходом")
 			elif not world.machine_at(pending_cell) is Cannon:
-				var err := world.link_output(pending_cell, c, _link_idx)
 				var src = world.machine_at(pending_cell)
-				say(err if err != "" else ("выход наведён — груз полетит выстрелом" if src.shot_target(_link_idx) >= 0 else "выстрел снят — выход снова отдаёт соседу"))
+				var dst = world.machine_at(c)
+				var far := ""
+				if src != null and dst != null:
+					var dist: float = Vector2(dst.cell - src.cell).length()
+					var reach: float = Cannon.reach(world, src)
+					if dist > reach:
+						far = " (далеко: %.0f кл., дальность сейчас %.1f — нужно больше давления)" % [dist, reach]
+				var err := world.link_output(pending_cell, c, _link_idx, route_tag)
+				if err != "":
+					say(err)
+				elif route_tag != "":
+					var on: bool = src.shot_routes(_link_idx).any(func(r): return r[0] == route_tag)
+					say(("маршрут «%s» задан" if on else "маршрут «%s» снят") % MaterialTags.display(route_tag) + far)
+				else:
+					say(("выход наведён — груз полетит выстрелом" if src.shot_target(_link_idx) >= 0 else "выстрел снят — выход снова отдаёт соседу") + far)
+				route_tag = ""
 				set_mode("none")
 			else:
 				var err := world.link_cannon(pending_cell, c, route_tag)
@@ -1060,7 +1081,28 @@ func _uitest_shot(base: Vector2i) -> bool:
 		await get_tree().process_frame
 		sim.advance(0.5)
 	print("[uitest] выстрел выхода: кнопка=", found, " наведён=", linked, " груз в контейнере=", not box.items.is_empty(), " сообщение: ", message)
-	return found and linked and not box.items.is_empty()
+	# Маршрут по тегу через инспектор и карта потоков.
+	var box2 := w.place("container", row + Vector2i(4, 1), 0, w.starter, true)
+	selected_cell = cr.cell
+	hud._insp_sig = ""
+	hud._refresh_inspector()
+	await get_tree().process_frame
+	var rb := _find_button(hud.inspector_buttons, "маршрут «")
+	if rb: rb.pressed.emit()
+	await get_tree().process_frame
+	get_viewport().warp_mouse(get_viewport().get_canvas_transform() * ((Vector2(box2.cell) + Vector2(0.5, 0.5)) * T))
+	await get_tree().process_frame
+	_click(false)
+	var routed := not cr.shot_routes(0).is_empty() and int(cr.shot_routes(0)[0][1]) == box2.id
+	var ev := InputEventKey.new()
+	ev.keycode = KEY_O
+	ev.pressed = true
+	_unhandled_input(ev)
+	await get_tree().process_frame
+	await get_tree().process_frame
+	print("[uitest] маршрут по тегу: ", routed, ", карта потоков: ", flow_view, ", поток дробилка → контейнер: ", w.flow.has("%d>%d" % [cr.id, box.id]))
+	flow_view = false
+	return found and linked and not box.items.is_empty() and routed
 
 ## Свёрнутый блок в (base) сворачивается вместе с соседом во внешний блок; в инспекторе
 ## заходим во вложенный, видим его фильтр, выходим наверх и разворачиваем внешний.

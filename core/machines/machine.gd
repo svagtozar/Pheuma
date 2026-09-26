@@ -172,9 +172,20 @@ func outputs() -> int:
 func shot_target(idx: int) -> int:
 	return int(config.get("shot", {}).get(str(idx), -1))
 
+## Маршруты выхода: [[тег, id], …] — груз с тегом летит в свою цель.
+func shot_routes(idx: int) -> Array:
+	return config.get("shot_routes", {}).get(str(idx), [])
+
+## Куда отдать порцию: маршрут по тегу, иначе цель выстрела (-1 — соседу по стрелке).
+func shot_target_for(w, idx: int, p: Portion) -> int:
+	for r in shot_routes(idx):
+		if p.has(r[0]) and w.machines.has(int(r[1])):
+			return int(r[1])
+	return shot_target(idx)
+
 ## Отдать порцию с выхода: выстрелом в цель или соседу по стрелке.
 func emit(w, p: Portion, idx: int) -> bool:
-	var tid := shot_target(idx)
+	var tid := shot_target_for(w, idx, p)
 	if tid >= 0 and w.machines.has(tid):
 		return _shoot(w, p, idx, w.machines[tid])
 	return w.push(self, p, out_cell(idx))
@@ -197,8 +208,9 @@ func _shoot(w, p: Portion, idx: int, target: Machine) -> bool:
 		return false
 	var node := shot_node(w)
 	var pr: float = w.gas.pressure(node) if node >= 0 else 0.0
-	if pr < SHOT_P:
-		status = "выстрел: мало давления (нужно %.1f атм)%s" % [SHOT_P, "" if node >= 0 else " — насос или труба рядом"]
+	var need := shot_pressure(w, p, target)
+	if pr < need:
+		status = "выстрел: мало давления (нужно %.1f атм%s)%s" % [need, ", чтобы долететь" if need > SHOT_P else "", "" if node >= 0 else " — насос или труба рядом"]
 		return false
 	_shot_at[idx] = now
 	w.gas.take_gas(node, SHOT_GAS_PER_KG * p.mass)
@@ -208,8 +220,14 @@ func _shoot(w, p: Portion, idx: int, target: Machine) -> bool:
 	payload.append_array(r.spawn)
 	w.sound("thump", cell)
 	w.stats.shots += 1
-	Cannon.shoot(w, cell, target.cell, payload, pr, SHOT_MULT)
+	Cannon.shoot(w, cell, target.cell, payload, pr, SHOT_MULT, id)
 	return true
+
+## Давление, при котором порция долетит до цели (не меньше SHOT_P).
+func shot_pressure(w, p: Portion, target: Machine) -> float:
+	var dist := Vector2(target.cell - cell).length()
+	var per_atm: float = Cannon.range_for(1.0, w.planet) * SHOT_MULT * Handling.cannon_range_factor(p, w.planet)
+	return max(SHOT_P, dist / per_atm if per_atm > 0.0 else INF)
 
 ## Снять выстрелы выходов, нацеленные на машину id (её снесли).
 static func drop_shot_links(machines: Dictionary, target_id: int) -> void:
@@ -218,6 +236,23 @@ static func drop_shot_links(machines: Dictionary, target_id: int) -> void:
 		for k in s.keys():
 			if int(s[k]) == target_id:
 				s.erase(k)
+		var sr: Dictionary = m.config.get("shot_routes", {})
+		for k in sr.keys():
+			sr[k] = sr[k].filter(func(r): return int(r[1]) != target_id)
+			if sr[k].is_empty():
+				sr.erase(k)
+
+## Состояние для карты потоков: work, idle, starved (давление/реагент), blocked.
+func flow_state() -> String:
+	if not out_queue.is_empty() or status.begins_with("выход занят") or status.begins_with("выдача:"):
+		return "blocked"
+	if is_storage() and capacity() > 0.0 and free_space() < 1.0:
+		return "blocked"
+	if status.begins_with("мало давления") or status.begins_with("нет реагента") or status.begins_with("выстрел: мало") or status.begins_with("нужен"):
+		return "starved"
+	if status.begins_with("работает") or status.begins_with("добывает") or status.begins_with("давление набрано"):
+		return "work"
+	return "idle"
 
 func handling_ctx() -> String:
 	return "sealed" if sealed() else "open"

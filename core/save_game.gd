@@ -34,7 +34,7 @@ static func mod_from(w: World, d: Dictionary):
 
 static func machine_to(m: Machine, gas: GasNet) -> Dictionary:
 	var md := {"id": m.id, "kind": m.kind, "cell": [m.cell.x, m.cell.y], "facing": m.facing, "sub": m.built_from.id,
-		"q": m.quality, "hp": m.hp, "config": m.config, "off": m.manual_off,
+		"q": m.quality, "hp": m.hp, "config": m.config.duplicate(true), "off": m.manual_off,
 		"items": m.items.map(func(p): return p_to(p)),
 		"out": m.out_queue.map(func(e): return [p_to(e[0]), e[1]])}
 	if m.has_gas():
@@ -67,6 +67,11 @@ static func machine_restore(w: World, m: Machine, md: Dictionary, gas: GasNet, g
 			for key in v:
 				sh[str(key)] = int(v[key])
 			v = sh
+		elif k == "shot_routes":
+			var sr := {}
+			for key in v:
+				sr[str(key)] = v[key].map(func(r): return [r[0], int(r[1])])
+			v = sr
 		m.config[k] = v
 	m.items = md.items.map(func(a): return p_from(w, a)).filter(func(p): return p != null)
 	m.out_queue = md.out.map(func(e): return [p_from(w, e[0]), int(e[1])]).filter(func(e): return e[0] != null)

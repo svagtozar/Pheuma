@@ -6,7 +6,7 @@ class_name Advisor
 ## пробой или какой машиной их искать.
 
 ## {"text": String, "cell": Vector2i или null}
-static func advise(w: World) -> Dictionary:
+static func advise(w: World, flow_view: bool = false) -> Dictionary:
 	if w.goals.completed:
 		return _r("Цель выполнена. N — новая планета.")
 	if w.goals.choice_pending():
@@ -18,6 +18,10 @@ static func advise(w: World) -> Dictionary:
 	var d := diagnose(w)
 	if not d.is_empty():
 		return d
+	if flow_view:
+		var b = bottleneck(w)
+		if b != null:
+			return _r("Узкое место — «%s» %d,%d: работает медленнее, чем её кормят. Поставьте вторую такую же и разделите поток маршрутом или выстрелом." % [b.display_name(), b.cell.x, b.cell.y], b.cell)
 	return stage_step(w, w.goals.current())
 
 static func _r(text: String, cell = null) -> Dictionary:
@@ -32,6 +36,8 @@ static func diagnose(w: World) -> Dictionary:
 	for id in ids:
 		var m: Machine = w.machines[id]
 		var name := "«%s» %d,%d" % [m.display_name(), m.cell.x, m.cell.y]
+		if not m.out_queue.is_empty() and m.status.contains("чтобы долететь") and m.shot_node(w) >= 0:
+			return _r("%s: %s — поднимите давление насоса (P+ в инспекторе) или поставьте цель ближе." % [name, m.status.trim_prefix("выстрел: ")], m.cell)
 		if not m.out_queue.is_empty() and m.status.begins_with("выстрел: мало давления"):
 			return _r("%s стреляет выходом, но нет давления — поставьте насос или трубу от насоса вплотную (%.0f атм)." % [name, Machine.SHOT_P], m.cell)
 		if not m.out_queue.is_empty() and m.shot_target(int(m.out_queue[0][1])) < 0:
@@ -60,6 +66,23 @@ static func diagnose(w: World) -> Dictionary:
 		if m.kind == "drill" and m.status == "залежь пуста":
 			return _r("Залежь под буром %d,%d кончилась — снесите бур и поставьте на другую." % [m.cell.x, m.cell.y], m.cell)
 	return {}
+
+## Узкое место: работающая машина с полным входом, в которую упирается поставщик.
+static func bottleneck(w: World):
+	var ids: Array = w.machines.keys()
+	ids.sort()
+	for id in ids:
+		var u: Machine = w.machines[id]
+		if u.out_queue.is_empty():
+			continue
+		var e: Array = u.out_queue[0]
+		var tid: int = u.shot_target_for(w, int(e[1]), e[0])
+		var d = w.machines.get(tid) if tid >= 0 else w.machine_at(u.out_cell(int(e[1])))
+		if d == null or d.is_storage():
+			continue
+		if d.flow_state() == "work" and d.free_space() < e[0].mass:
+			return d
+	return null
 
 ## Машины той же газовой сети.
 static func _net(w: World, m: Machine) -> Array:

@@ -142,7 +142,7 @@ func destroy(m: Machine, reason: String) -> void:
 func launch_orbit(payload: Array, _c: Vector2i) -> void:
 	parent.launch_orbit(payload, host.cell)
 
-func spawn_projectile(from: Vector2, to: Vector2, payload: Array, _orbit: bool = false, _kind: String = "capsule") -> void:
+func spawn_projectile(from: Vector2, to: Vector2, payload: Array, _orbit: bool = false, _kind: String = "capsule", _src: int = -1) -> void:
 	projectiles.append({"to": to, "t": 0.0, "dur": 0.3 + from.distance_to(to) * 0.05, "payload": payload})
 
 ## Выход машины: внутрь блока — соседней машине, наружу — через порт хоста.

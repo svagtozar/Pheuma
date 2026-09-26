@@ -8,6 +8,7 @@ var world: World
 var info_label: Label
 var goal_label: Label
 var advice_label: Label
+var flow_legend: Label
 var advice_on := true
 var advice := {}          # последний совет: {text, cell}
 var _adv_t := 0.0
@@ -147,6 +148,11 @@ func _build() -> void:
 	advice_label.add_theme_color_override("font_color", Color(0.6, 0.95, 0.75))
 	advice_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	advice_label.custom_minimum_size = Vector2(464, 0)
+	flow_legend = _label(trv, 11)
+	flow_legend.text = "Карта потоков (O): линия — кг/мин между машинами. Рамка: зелёная — работает, серая — ждёт груз, жёлтая — не хватает давления или реагента, красная — выход забит."
+	flow_legend.add_theme_color_override("font_color", Color(0.8, 0.85, 0.95))
+	flow_legend.custom_minimum_size = Vector2(464, 0)
+	flow_legend.visible = false
 
 	var invp := _panel(Vector2(8, 190), Vector2(330, 0))
 	var iv := VBoxContainer.new()
@@ -307,6 +313,8 @@ T — забрать груз из машины под курсором.
 L — навести пневмопушку: клик по пушке, затем по приёмнику. Любая машина с выходом тоже стреляет
    грузом: L → клик по машине → по цели (Shift — второй выход). Нужно 2 атм в ней или в трубе рядом.
    Так звенья цепочки можно разнести — у каждого своя газовая сеть и своё давление.
+   Маршруты по тегу есть у любого выхода (инспектор): груз с тегом летит в свою цель.
+O — карта потоков: сколько кг/мин идёт между машинами и какая машина работает, ждёт или забита.
 V — провод: клик по источнику сигнала, затем по приёмнику (Shift — во второй вход гейта).
    Провод делается из выбранного материала; проводящий дотягивается дальше.
    ЛКМ по проводу — добавить путевую точку, тянуть — двигать, ПКМ по точке — удалить.
@@ -704,7 +712,8 @@ func refresh() -> void:
 	_adv_t -= 0.1
 	if _adv_t <= 0.0:
 		_adv_t = 0.5
-		advice = Advisor.advise(world) if advice_on and main.tutorial == null else {}
+		advice = Advisor.advise(world, main.flow_view) if advice_on and main.tutorial == null else {}
+		flow_legend.visible = main.flow_view
 		advice_label.text = ("Совет: " + advice.text) if not advice.is_empty() else ""
 		advice_label.visible = not advice.is_empty()
 	var ev: Array = world.events.slice(max(0, world.events.size() - 9))
@@ -1147,9 +1156,30 @@ func _config_buttons(m: Machine, grid) -> void:
 					m.config.shot = sh)
 			else:
 				_btn("%s: выстрелом в цель (L)" % nm, func():
+					main.route_tag = ""
 					main.set_mode("link")
 					main.pending_cell = m.cell
 					main._link_idx = i)
+			# Маршруты по тегу: груз с тегом летит в свою цель.
+			if inside:
+				continue
+			if main.route_tag_pick == "":
+				main.route_tag_pick = _next_tag("")
+			_btn("Тег маршрута: %s ▶" % MaterialTags.display(main.route_tag_pick), func(): main.route_tag_pick = _next_tag(main.route_tag_pick))
+			_btn("%s: маршрут «%s» → цель (L)" % [nm, MaterialTags.display(main.route_tag_pick)], func():
+				main.route_tag = main.route_tag_pick
+				main.set_mode("link")
+				main.pending_cell = m.cell
+				main._link_idx = i)
+			for r in m.shot_routes(i):
+				var tag: String = r[0]
+				var rt = grid.machines.get(int(r[1]))
+				_btn("✕ «%s» → %s" % [MaterialTags.display(tag), rt.display_name() if rt != null else "?"], func():
+					var sr: Dictionary = m.config.get("shot_routes", {}).duplicate(true)
+					sr[str(i)] = sr.get(str(i), []).filter(func(x): return x[0] != tag)
+					if sr[str(i)].is_empty():
+						sr.erase(str(i))
+					m.config.shot_routes = sr)
 	if m.config.has("target_t"):
 		_btn("T −100", func(): m.config.target_t = max(100.0, m.config.target_t - 100.0))
 		_btn("T +100", func(): m.config.target_t += 100.0)
