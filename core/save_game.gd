@@ -64,16 +64,17 @@ static func machine_restore(w: World, m: Machine, md: Dictionary, gas: GasNet) -
 		m.config[k] = v
 	m.items = md.items.map(func(a): return p_from(w, a)).filter(func(p): return p != null)
 	m.out_queue = md.out.map(func(e): return [p_from(w, e[0]), int(e[1])]).filter(func(e): return e[0] != null)
-	if md.has("gas") and gas.has_node(m.id):
-		gas.nodes[m.id].n = float(md.gas)
 	if m is Processor:
 		m.busy = p_from(w, md.get("busy"))
 		m.reagent = p_from(w, md.get("reagent"))
 		m.progress = float(md.get("progress", 0.0))
 	if m is Dome:
 		m.temp = float(md.get("temp", w.planet.ambient_temp))
+	# Сначала extra: свёрнутый блок заводит в нём свой газовый узел, потом газ.
 	if md.has("extra"):
 		m.load_extra(w, md.extra)
+	if md.has("gas") and gas.has_node(m.id):
+		gas.nodes[m.id].n = float(md.gas)
 
 static func to_dict(w: World) -> Dictionary:
 	var d := {"version": VERSION, "seed": w.planet.seed_value, "time": w.time,

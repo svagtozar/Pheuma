@@ -37,6 +37,8 @@ var event_panel: PanelContainer
 var event_label: Label
 var choice_box: VBoxContainer
 var reward_box: VBoxContainer
+var macro_box: VBoxContainer
+var insp_inner := -1          # id внутренней машины свёрнутого блока, открытой в инспекторе
 const MODAL := ["briefing", "choice", "reward"]
 
 var _placed: Array = []       # [Control, anchor, offset]
@@ -210,6 +212,7 @@ func _build() -> void:
 	# Выбор пути и награда за этап.
 	choice_box = _window("choice", Vector2(800, 250), "Выбор пути")
 	reward_box = _window("reward", Vector2(820, 250), "Этап выполнен — выберите награду")
+	macro_box = _window("macro_actions", Vector2(620, 190), "Выделенная схема")
 
 	# Палитра построек.
 	var pv := _window("palette", Vector2(820, 600), "Постройки (B)")
@@ -286,10 +289,14 @@ V — провод: клик по источнику сигнала, затем 
    Провод делается из выбранного материала; проводящий дотягивается дальше.
    ЛКМ по проводу — добавить путевую точку, тянуть — двигать, ПКМ по точке — удалить.
 
-M — макроблок: выделите прямоугольник с машинами (зажать ЛКМ и протянуть). Сохраняются
-   машины, настройки, провода и входы/выходы; библиотека общая для всех планет.
+M — макроблок: выделите прямоугольник с машинами (зажать ЛКМ и протянуть), затем выберите:
+   «Сохранить в библиотеку», «Свернуть на месте» (работающая схема со всем грузом и газом
+   становится одной клеткой) или оба сразу. Библиотека общая для всех планет.
    Поставить — в палитре (B), раздел «Макроблоки»; R — повернуть, C — свернуть в одну клетку.
-   Свёрнутый блок работает как одна машина: входы/выходы схемы выведены на его стороны.
+   Свёрнутый блок работает как одна машина: входы/выходы груза — на его сторонах,
+   газовые порты (кружок цвета давления) соединяются с соседними трубами, провода через
+   границу схемы становятся сигнальными входом и выходом блока (жёлтые треугольники).
+   Инспектор блока: список машин внутри — у каждой свои настройки; «Развернуть» — обратно в машины.
 Логистика — на пушках: у пушки можно задать маршруты «груз с тегом → своя цель» (инспектор).
    Сборные сооружения: 4 секции пневмобатареи квадратом — тяжёлая пушка (20 кг, ×2.2 дальность);
    ловчие сети у приёмника ловят промахи; 4 секции склада квадратом — склад на 320 кг.
@@ -895,8 +902,16 @@ func _refresh_inspector() -> void:
 			lines.append("  → %s: %s" % ["прямо" if o[1] == 0 else "вправо", world.sub_label(o[0].substance)])
 		if res.note != "":
 			lines.append("  " + res.note)
+	var im = null
+	if m is MacroMachine:
+		im = m.inner.machines.get(insp_inner)
+		if im != null:
+			lines.append("")
+			lines.append("— Внутри: " + ", ".join(PackedStringArray(im.describe(m.inner).map(func(x): return str(x)))))
 	inspector_label.text = "\n".join(lines)
-	var sig := "%d:%s:%s:%s" % [m.id, str(m.config), m.manual_off, main.route_tag_pick]
+	inspector_panel.size = inspector_panel.get_combined_minimum_size()
+	var sig :="%d:%s:%s:%s:%d:%s:%s" % [m.id, str(m.config), m.manual_off, main.route_tag_pick, insp_inner,
+		str(im.config) if im != null else "", im.manual_off if im != null else false]
 	if sig == _insp_sig:
 		return
 	_insp_sig = sig
@@ -909,6 +924,23 @@ func _refresh_inspector() -> void:
 		main.selected_cell = null)
 	if m.kind == "fabricator":
 		_btn("Открыть фабрикатор (F)", func(): if not windows.fabricator.visible: toggle("fabricator"))
+	if m is MacroMachine:
+		_btn("Развернуть", func(): main.unfold_macro(m))
+		var ids: Array = m.inner.machines.keys()
+		ids.sort()
+		for iid in ids:
+			var x: Machine = m.inner.machines[iid]
+			var mark := "▸ " if iid == insp_inner else ""
+			_btn("%s%s %d,%d" % [mark, x.display_name(), x.cell.x, x.cell.y], func(): self.insp_inner = -1 if self.insp_inner == iid else iid)
+		if im != null:
+			_btn("Выключить внутри" if not im.manual_off else "Включить внутри", func(): im.manual_off = not im.manual_off)
+			_config_buttons(im, m.inner)
+		return
+	_config_buttons(m, world)
+
+## Кнопки настроек машины; grid — мир или внутренность свёрнутого блока.
+func _config_buttons(m: Machine, grid) -> void:
+	var inside: bool = grid != world
 	if m.config.has("pass_through"):
 		_btn("Выдача: %s" % ("да" if m.config.pass_through else "нет"), func(): m.config.pass_through = not m.config.pass_through)
 	if m.config.has("tag"):
@@ -924,7 +956,29 @@ func _refresh_inspector() -> void:
 	if m.config.has("fire_p"):
 		_btn("Выстрел −0.5", func(): m.config.fire_p = max(1.2, m.config.fire_p - 0.5))
 		_btn("Выстрел +0.5", func(): m.config.fire_p += 0.5)
-		if not m.is_silo():
+		if inside:
+			if main.route_tag_pick == "":
+				main.route_tag_pick = _next_tag("")
+			var tgt = grid.machines.get(int(m.config.get("target", -1)))
+			_btn("Цель: %s ▶" % (tgt.display_name() if tgt != null else "нет"), func():
+				m.config.target = _next_receiver(m, grid, int(m.config.get("target", -1))))
+			_btn("Тег маршрута: %s ▶" % MaterialTags.display(main.route_tag_pick), func(): main.route_tag_pick = _next_tag(main.route_tag_pick))
+			var cur := -1
+			for r in m.config.get("routes", []):
+				if r[0] == main.route_tag_pick:
+					cur = int(r[1])
+			var rt = grid.machines.get(cur)
+			_btn("Маршрут %s → %s ▶" % [MaterialTags.display(main.route_tag_pick), rt.display_name() if rt != null else "нет"], func():
+				var tag: String = main.route_tag_pick
+				var nxt := _next_receiver(m, grid, cur)
+				var routes: Array = m.config.get("routes", []).filter(func(x): return x[0] != tag)
+				if nxt >= 0:
+					routes.append([tag, nxt])
+				m.config.routes = routes)
+			for r in m.config.get("routes", []):
+				var tag: String = r[0]
+				_btn("✕ %s" % MaterialTags.display(tag), func(): m.config.routes = m.config.routes.filter(func(x): return x[0] != tag))
+		elif not m.is_silo():
 			_btn("Навести (L)", func():
 				main.route_tag = ""
 				main.set_mode("link")
@@ -947,6 +1001,47 @@ func _refresh_inspector() -> void:
 		_btn("Порог −", func(): m.config.threshold -= _step(m.config.mode))
 		_btn("Порог +", func(): m.config.threshold += _step(m.config.mode))
 
+## Следующий приёмник внутри блока для пушки (по кругу, с вариантом «нет» = -1).
+func _next_receiver(cannon: Machine, grid, cur: int) -> int:
+	var ids: Array = grid.machines.keys().filter(func(i): return i != cannon.id and grid.machines[i].capacity() > 0.0)
+	ids.sort()
+	ids.append(-1)
+	return ids[(ids.find(cur) + 1) % ids.size()]
+
+## Окно после выделения схемы рамкой (M).
+func show_macro_actions(mb: Dictionary, collapse_err: String) -> void:
+	for c in macro_box.get_children():
+		if c != macro_box.get_child(0):
+			c.queue_free()
+	var l := _label(macro_box, 14)
+	l.text = "«%s»: %d машин, схема %d×%d\n%s" % [mb.name, mb.parts.size(), int(mb.size[0]), int(mb.size[1]), Macroblocks.describe_ports(mb)]
+	l.custom_minimum_size = Vector2(560, 0)
+	if collapse_err != "":
+		var e := _label(macro_box, 13)
+		e.text = "Свернуть на месте нельзя: " + collapse_err
+		e.add_theme_color_override("font_color", Color(1.0, 0.45, 0.4))
+	var h := HBoxContainer.new()
+	macro_box.add_child(h)
+	var acts := [["Сохранить в библиотеку", true, false], ["Свернуть на месте", false, true], ["Сохранить и свернуть", true, true]]
+	for a in acts:
+		var b := Button.new()
+		b.text = a[0]
+		b.disabled = a[2] and collapse_err != ""
+		var save: bool = a[1]
+		var col: bool = a[2]
+		b.pressed.connect(func():
+			windows.macro_actions.visible = false
+			main.macro_action(save, col))
+		h.add_child(b)
+	var cancel := Button.new()
+	cancel.text = "Отмена"
+	cancel.pressed.connect(func():
+		windows.macro_actions.visible = false
+		main.pending_macro = {})
+	h.add_child(cancel)
+	if not windows.macro_actions.visible:
+		toggle("macro_actions")
+
 func _step(mode: String) -> float:
 	return {"level": 0.1, "tag": 0.0, "pressure": 0.5, "temp": 50.0}[mode]
 
@@ -964,5 +1059,6 @@ func _btn(text: String, f: Callable) -> void:
 	b.add_theme_font_size_override("font_size", 12)
 	b.pressed.connect(func():
 		f.call()
-		_insp_sig = "")
+		_insp_sig = ""
+		_refresh_inspector.call_deferred())
 	inspector_buttons.add_child(b)

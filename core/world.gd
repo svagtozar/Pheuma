@@ -626,13 +626,15 @@ func _tick_logic() -> void:
 	World.eval_logic(self)
 
 ## Логика и включение машин для любой сетки (мира или свёрнутого макроблока).
-static func eval_logic(grid) -> void:
+## external — значения внешних источников (сигнал, пришедший в свёрнутый блок).
+static func eval_logic(grid, external: Dictionary = {}) -> void:
 	var out := {}
 	for m in grid.machines.values():
 		if m is LogicGate:
 			out[m.id] = m.compute(grid)
 		elif m.signal_out:
 			out[m.id] = true
+	out.merge(external, true)
 	grid.logic.outputs = out
 	for m in grid.machines.values():
 		if m is LogicGate:
@@ -773,12 +775,13 @@ func handle_machines(grid, dt: float, event_cell = null) -> void:
 	for m in grid.machines.values().duplicate():
 		if not grid.machines.has(m.id):
 			continue
-		m.signal_out = false
 		if m.stats.self_repair > 0.0:
 			m.hp = min(m.max_hp(), m.hp + m.stats.self_repair * dt)
 		if m is MacroMachine:
+			# Сигнал блока выставляет сам блок каждый тик — здесь его не сбрасываем.
 			handle_machines(m.inner, dt, m.cell)
 			continue
+		m.signal_out = false
 		if m.items.is_empty():
 			continue
 		var env: Dictionary = grid.handling_env(m, m.handling_ctx())

@@ -133,8 +133,11 @@ func push(src: Machine, p: Portion, c: Vector2i) -> bool:
 	return host.push_out(world, src, p, c)
 
 func tick(dt: float) -> void:
-	World.eval_logic(self)
-	if not host.enabled:
+	# Внешний провод в блок: если у схемы есть сигнальные входы — идёт в них,
+	# иначе выключает весь блок целиком.
+	World.eval_logic(self, {MacroMachine.SIG_SOURCE: host.outer_signal})
+	var off: bool = host.manual_off if host.has_sig_in() else not host.enabled
+	if off:
 		for m in machines.values():
 			m.enabled = false
 	World.tick_machines(self, dt)

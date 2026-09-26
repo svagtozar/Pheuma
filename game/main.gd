@@ -32,6 +32,7 @@ var macro_lib: Array = []
 var macro_idx := -1
 var macro_rot := 0
 var macro_collapsed := false
+var pending_macro := {}        # выделенная рамкой схема, ждёт выбора действия
 var route_tag := ""
 var route_tag_pick := ""
 var tutorial: Tutorial = null
@@ -328,7 +329,7 @@ func _process(dt: float) -> void:
 	if not in_menu:
 		cam.position = cam.position.lerp(world.robot.pos * T, min(1.0, dt * 8.0))
 	hud.refresh()
-	if screenshot_path != "":
+	if screenshot_path != "" and not _uitest:
 		_shot_t += dt
 		if _shot_t > 2.5:
 			_save_screenshot()
@@ -491,15 +492,47 @@ func _finish_macro_select() -> void:
 	var r := selection_rect()
 	sel_start = null
 	var mb := Macroblocks.capture(world, r, "Макроблок %d" % (macro_lib.size() + 1))
+	set_mode("none")
 	if mb.is_empty():
 		say("в выделении нет машин")
 		return
-	macro_lib.append(JSON.parse_string(JSON.stringify(mb)))
-	if tutorial != null:
-		tutorial.macros_made += 1
-	Macroblocks.save_library(macro_lib)
-	say("Сохранён «%s»: %d машин, %s. B — поставить" % [mb.name, mb.parts.size(), Macroblocks.describe_ports(mb)])
-	set_mode("none")
+	pending_macro = {"rect": r, "mb": mb}
+	hud.show_macro_actions(mb, MacroMachine.collapse_error(mb))
+
+## Действие над выделенной схемой: сохранить в библиотеку и/или свернуть на месте.
+func macro_action(save: bool, collapse: bool) -> void:
+	if pending_macro.is_empty():
+		return
+	var mb: Dictionary = pending_macro.mb
+	var r: Rect2i = pending_macro.rect
+	pending_macro = {}
+	var msg := ""
+	if save:
+		macro_lib.append(JSON.parse_string(JSON.stringify(mb)))
+		if tutorial != null:
+			tutorial.macros_made += 1
+		Macroblocks.save_library(macro_lib)
+		msg = "Сохранён «%s»: %d машин, %s. B — поставить" % [mb.name, mb.parts.size(), Macroblocks.describe_ports(mb)]
+	if collapse:
+		var res := Macroblocks.collapse_region(world, r, mb.name)
+		if res.err != "":
+			msg = (msg + ". " if msg != "" else "") + "Не свернуть: " + res.err
+		else:
+			if tutorial != null and not save:
+				tutorial.macros_made += 1
+			selected_cell = res.macro.cell
+			hud.insp_inner = -1
+			msg = "«%s» свёрнут на месте (%d машин). Инспектор — настройки внутри, «Развернуть»" % [mb.name, mb.parts.size()]
+	if msg != "":
+		say(msg)
+
+func unfold_macro(m: MacroMachine) -> void:
+	var err := Macroblocks.unfold(world, m)
+	if err != "":
+		say("Не развернуть: " + err)
+		return
+	selected_cell = null
+	say("Макроблок развёрнут")
 
 func start_macro(idx: int, collapsed: bool = false) -> void:
 	set_mode("macro_place")
@@ -528,6 +561,9 @@ func _click(shift: bool) -> void:
 				var sub: Substance = world.db.get_sub(world.robot.selected) if world.robot.selected != "" else null
 				var err := Macroblocks.place_collapsed(world, macro_lib[macro_idx], c, macro_rot, sub) if macro_collapsed else Macroblocks.place(world, macro_lib[macro_idx], c, macro_rot, sub)
 				say(err if err != "" else "Макроблок «%s» построен" % macro_lib[macro_idx].name)
+				if err == "" and macro_collapsed:
+					selected_cell = c
+					hud.insp_inner = -1
 		"build":
 			var sub := build_material()
 			var err := world.can_place(build_kind, c, sub)
@@ -571,6 +607,8 @@ func _click(shift: bool) -> void:
 				var idx := world.logic.insert_waypoint(nw.id, mouse_world(), ends[0] / T, ends[1] / T)
 				_drag = {"wire": nw.id, "idx": idx}
 				return
+			if c != selected_cell:
+				hud.insp_inner = -1
 			selected_cell = c if world.machine_at(c) != null else null
 
 func _wire_ends(w: Dictionary) -> Array:
@@ -768,6 +806,7 @@ func run_uitest() -> void:
 		choice_btn.pressed.emit()
 	var choice_ok: bool = w.goals.choices.has("1") and not w.goals.choice_pending()
 	print("[uitest] награда выбрана: ", reward_ok, ", путь выбран: ", choice_ok)
+	var macro_ok := await _uitest_macro(w)
 	# Сохранение в слот через меню паузы и загрузка обратно.
 	var old_dir := SaveGame.DIR
 	SaveGame.DIR = "user://uitest_saves"
@@ -789,7 +828,77 @@ func run_uitest() -> void:
 	print("[uitest] слот: сохранён=", saved, " загружен=", loaded_ok, " машин ", world.machines.size(), "/", n_before)
 	SaveGame.delete_slot("slot1")
 	SaveGame.DIR = old_dir
-	_finish_autotest(w.robot.has_module("hook") and placed != null and saved and loaded_ok and reward_ok and choice_ok)
+	_finish_autotest(w.robot.has_module("hook") and placed != null and saved and loaded_ok and reward_ok and choice_ok and macro_ok)
+
+## Схема «контейнер → фильтр → контейнер»: выделить рамкой, «Свернуть на месте»,
+## в инспекторе блока сменить тег внутреннего фильтра, «Развернуть».
+func _uitest_macro(w: World) -> bool:
+	var base := Vector2i(-1, -1)
+	var rc := Vector2i(floori(w.robot.pos.x), floori(w.robot.pos.y))
+	for r in range(2, 20):
+		for dy in range(-r, r + 1):
+			for dx in range(-r, r + 1):
+				if base != Vector2i(-1, -1):
+					continue
+				var c := rc + Vector2i(dx, dy)
+				var ok := true
+				for i in 3:
+					var q := c + Vector2i(i, 0)
+					if not w.planet.buildable(q) or w.grid.has(q) or w.tile_overrides.has(q):
+						ok = false
+				if ok:
+					base = c
+	if base == Vector2i(-1, -1):
+		print("[uitest] макроблок: нет места")
+		return false
+	w.place("container", base, 0, w.starter, true)
+	var flt := w.place("filter", base + Vector2i(1, 0), 0, w.starter, true)
+	w.place("container", base + Vector2i(2, 0), 0, w.starter, true)
+	var tag0: String = flt.config.tag
+	for t in ["dense", "brittle", "volatile"]:
+		w.robot.known_tags[t] = true
+	cam.position = (Vector2(base) + Vector2(1.5, 0.5)) * T
+	cam.reset_smoothing()
+	await get_tree().process_frame
+	await get_tree().process_frame
+	set_mode("macro_select")
+	sel_start = base
+	get_viewport().warp_mouse(get_viewport().get_canvas_transform() * ((Vector2(base) + Vector2(2.5, 0.5)) * T))
+	await get_tree().process_frame
+	_finish_macro_select()
+	await get_tree().process_frame
+	var col := _find_button(hud.macro_box, "Свернуть на месте")
+	print("[uitest] окно схемы: ", hud.windows.macro_actions.visible, ", кнопка свёртки: ", col != null)
+	if col: col.pressed.emit()
+	await get_tree().process_frame
+	var macro = world.machine_at(selected_cell) if selected_cell != null else null
+	var collapsed: bool = macro is MacroMachine and macro.inner.machines.size() == 3
+	print("[uitest] свёрнуто: ", collapsed, " сообщение: ", message)
+	if not collapsed:
+		return false
+	hud._refresh_inspector()
+	await get_tree().process_frame
+	var inner_btn := _find_button(hud.inspector_buttons, "Фильтр")
+	if inner_btn: inner_btn.pressed.emit()
+	await get_tree().process_frame
+	await get_tree().process_frame
+	var tag_btn := _find_button(hud.inspector_buttons, "Тег:")
+	if tag_btn: tag_btn.pressed.emit()
+	await get_tree().process_frame
+	var ifl: Machine = macro.inner.machines_of("filter")[0]
+	var tag1: String = ifl.config.tag
+	print("[uitest] тег внутреннего фильтра: ", tag0, " → ", tag1)
+	await get_tree().process_frame
+	if screenshot_path != "":
+		await get_tree().process_frame
+		_save_screenshot()
+	var unf := _find_button(hud.inspector_buttons, "Развернуть")
+	if unf: unf.pressed.emit()
+	await get_tree().process_frame
+	var back = world.machine_at(base + Vector2i(1, 0))
+	var unfolded: bool = back != null and back.kind == "filter" and back.config.tag == tag1
+	print("[uitest] развёрнуто: ", unfolded, " сообщение: ", message)
+	return tag1 != tag0 and unfolded
 
 func _find_button(root: Node, text_part: String) -> Button:
 	for c in root.find_children("*", "Button", true, false):

@@ -227,8 +227,29 @@ func _draw_machine(kind: String, c: Vector2i, facing: int, col: Color, m = null,
 		for p in m.ports:
 			var d := Vector2(Machine.DIRS[m.world_dir(int(p.dir))])
 			var base := ctr + d * (T * 0.5 - 3.0)
+			if p.type == "gas":
+				var gp: float = world.gas.pressure(m.id) if world.gas.has_node(m.id) else 0.0
+				draw_circle(base, 4.0, pressure_color(gp))
+				draw_arc(base, 4.5, 0.0, TAU, 12, Color(0.8, 0.95, 1.0), 1.0)
+				continue
 			var pcol := Color(0.4, 1.0, 0.5) if p.type == "out" else Color(1.0, 0.6, 0.3)
 			draw_circle(base, 3.0, pcol)
+		# Сигнальные порты: треугольник снизу слева — вход, снизу справа — выход.
+		var yl := Color(1, 0.9, 0.2)
+		if m.has_sig_in():
+			var sa := r.position + Vector2(4, T - 4)
+			var tri := PackedVector2Array([sa, sa + Vector2(7, -3.5), sa + Vector2(0, -7)])
+			if m.outer_signal:
+				draw_colored_polygon(tri, yl)
+			else:
+				draw_polyline(tri + PackedVector2Array([sa]), yl, 1.0)
+		if not m.sig_out_ids.is_empty():
+			var sb := r.position + Vector2(T - 11, T - 4)
+			var tri2 := PackedVector2Array([sb, sb + Vector2(7, -3.5), sb + Vector2(0, -7)])
+			if m.signal_out:
+				draw_colored_polygon(tri2, yl)
+			else:
+				draw_polyline(tri2 + PackedVector2Array([sb]), yl, 1.0)
 	if m.has_gas() and kind != "pipe":
 		draw_arc(ctr, T * 0.3, -PI / 2, -PI / 2 + TAU * clamp(world.gas.pressure(m.id) / 10.0, 0.0, 1.0), 16, pressure_color(world.gas.pressure(m.id)), 2.0)
 	if world.logic.outputs.get(m.id, false):
@@ -433,7 +454,10 @@ func _draw_tool_preview() -> void:
 					var c: Vector2i = mc + Macroblocks.rot_off(Vector2i(int(p.off[0]), int(p.off[1])), size, main.macro_rot)
 					var d := Vector2(Machine.DIRS[(int(p.dir) + main.macro_rot) % 4])
 					var base := cell_center(c) + d * T * 0.5
-					var col := Color(0.4, 1.0, 0.5) if p.type == "out" else Color(1.0, 0.6, 0.3)
+					if p.type == "gas":
+						draw_arc(base, 5.0, 0.0, TAU, 12, Color(0.6, 0.9, 1.0), 2.0)
+						continue
+					var col :=Color(0.4, 1.0, 0.5) if p.type == "out" else Color(1.0, 0.6, 0.3)
 					var tip := base + d * (10.0 if p.type == "out" else -10.0)
 					draw_line(base, tip, col, 3.0)
 		"wire", "link":
