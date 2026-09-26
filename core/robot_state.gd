@@ -144,7 +144,7 @@ func damage(amount: float) -> void:
 
 func new_module(kind: String, sub: Substance, quality: float) -> Dictionary:
 	var sk := kind if kind in ["hull", "hand_drill"] else "module"
-	var m := {"uid": _next_module, "kind": kind, "sub": sub, "stats": ComponentStats.compute(sk, sub, quality)}
+	var m := {"uid": _next_module, "kind": kind, "sub": sub, "q": quality, "stats": ComponentStats.compute(sk, sub, quality)}
 	_next_module += 1
 	return m
 

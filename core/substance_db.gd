@@ -32,5 +32,21 @@ func derive(base: Substance, new_tags: Array) -> Substance:
 	s.name = "%s-%d" % [base.root, n]
 	return add(s)
 
+## Восстановить производный материал из сохранения (с тем же id).
+func restore(id: String, root: String, name: String, tags: Array) -> Substance:
+	if by_id.has(id):
+		return by_id[id]
+	var base: Substance = null
+	for s in by_id.values():
+		if s.root == root:
+			base = s
+			break
+	var s := Substance.new(id, root, tags, base.noise if base != null else {})
+	s.name = name
+	var parts := id.split("#")
+	if parts.size() == 2:
+		_variants[root] = max(_variants.get(root, 1), int(parts[1]))
+	return add(s)
+
 func _key(root: String, tags: Array) -> String:
 	return root + "|" + ",".join(tags)

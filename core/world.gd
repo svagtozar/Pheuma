@@ -17,6 +17,7 @@ var machines := {}              # id → Machine
 var grid := {}                  # Vector2i → id
 var ground := {}                # Vector2i → Array[Portion]
 var projectiles: Array = []     # {from, to, t, dur, payload, orbit}
+var tube_capsules: Array = []   # {path, pos, speed, payload, t}
 var drones: Array = []          # {src, dst, pos, cargo, speed, cap}
 var drone_pending := -1
 var revealed := {}              # клетки залежей, найденные сканером
@@ -31,6 +32,7 @@ var starter: Substance
 var _next_id := 1
 var _handling_acc := 0.0
 var _hazard_acc := 0.0
+var _assembly_acc := 0.0
 
 static func create(seed_value: int) -> World:
 	return World.new(PlanetGen.generate(seed_value))
@@ -190,18 +192,23 @@ func can_place(kind: String, c: Vector2i, sub: Substance) -> String:
 		return "нужно %.1f кг материала" % build_cost(kind)
 	return ""
 
-func place(kind: String, c: Vector2i, facing: int, sub: Substance, free: bool = false) -> Machine:
+func place(kind: String, c: Vector2i, facing: int, sub: Substance, free: bool = false, force_id: int = -1) -> Machine:
 	if not free:
 		if can_place(kind, c, sub) != "":
 			return null
 		robot.take_item(sub.id, build_cost(kind))
 	var m := Machine.create(kind)
-	m.id = _next_id
-	_next_id += 1
+	if force_id >= 0:
+		m.id = force_id
+		_next_id = max(_next_id, force_id + 1)
+	else:
+		m.id = _next_id
+		_next_id += 1
 	m.cell = c
 	m.facing = facing
 	m.built_from = sub
-	m.stats = ComponentStats.compute(kind, sub, robot.passive("quality"))
+	m.quality = robot.passive("quality")
+	m.stats = ComponentStats.compute(kind, sub, m.quality)
 	m.hp = m.max_hp()
 	machines[m.id] = m
 	grid[c] = m.id
@@ -505,7 +512,12 @@ func tick(dt: float) -> void:
 		if machines.has(id):
 			destroy(machines[id], "не выдержал давления %.1f атм" % gas.pressure(id))
 	_tick_projectiles(dt)
+	_tick_tubes(dt)
 	_tick_drones(dt)
+	_assembly_acc += dt
+	if _assembly_acc >= 1.0:
+		_assembly_acc = 0.0
+		check_warehouses()
 	_handling_acc += dt
 	if _handling_acc >= 0.5:
 		_tick_handling(_handling_acc)
@@ -537,6 +549,74 @@ func _tick_projectiles(dt: float) -> void:
 		else:
 			keep.append(pr)
 	projectiles = keep
+
+func _tick_tubes(dt: float) -> void:
+	var keep: Array = []
+	for cap in tube_capsules:
+		cap.t += dt
+		var before := int(cap.pos)
+		cap.pos = min(cap.pos + cap.speed * dt, float(cap.path.size() - 1))
+		var broken := -1
+		for i in range(before, int(cap.pos) + 1):
+			var m = machine_at(cap.path[i])
+			if m == null or not m.kind in ["tube", "tube_inlet", "tube_outlet"]:
+				broken = i
+				break
+		if broken >= 0:
+			drop_portions(cap.path[broken], cap.payload)
+			log_event(cap.path[broken], "Пневмопровод разорван — капсула вывалилась")
+			continue
+		if cap.pos >= cap.path.size() - 1:
+			var out = machine_at(cap.path[-1])
+			var rest: Array = []
+			for p in cap.payload:
+				var r := Handling.tick(p, "capsule", handling_env(null, "capsule"), cap.t)
+				_apply_handling_result(r, out.cell)
+				if p.mass > 0.01 and not out.accept(p, out.cell):
+					rest.append(p)
+			if rest.is_empty():
+				continue
+			cap.payload = rest
+		keep.append(cap)
+	tube_capsules = keep
+
+## Четыре свободные секции квадратом 2×2 собираются в склад.
+func check_warehouses() -> void:
+	var secs: Array = machines_of("warehouse_section")
+	for s in secs:
+		if s.master_id >= 0 and not machines.has(s.master_id):
+			s.master_id = -1
+		if s.master_id == s.id:
+			for gid in s.group:
+				if not machines.has(gid):
+					for g2 in s.group:
+						if machines.has(g2):
+							machines[g2].master_id = -1
+					s.group = []
+					log_event(s.cell, "Склад разобран")
+					break
+	for s in secs:
+		if s.master_id >= 0:
+			continue
+		var parts: Array = [s]
+		for d in [Vector2i(1, 0), Vector2i(0, 1), Vector2i(1, 1)]:
+			var n = machine_at(s.cell + d)
+			if n != null and n.kind == "warehouse_section" and n.master_id < 0:
+				parts.append(n)
+		if parts.size() < 4:
+			continue
+		s.group = parts.map(func(x): return x.id)
+		for x in parts:
+			x.master_id = s.id
+			x.master = weakref(s)
+			if x != s:
+				for p in x.items:
+					s.store(p)
+				x.items = []
+		log_event(s.cell, "Склад собран: 4 секции, 320 кг")
+	for s in secs:
+		if s.master_id >= 0 and machines.has(s.master_id):
+			s.master = weakref(machines[s.master_id])
 
 func _tick_drones(dt: float) -> void:
 	for d in drones:

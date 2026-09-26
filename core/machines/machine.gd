@@ -5,7 +5,7 @@ extends RefCounted
 
 const DIRS := [Vector2i(1, 0), Vector2i(0, 1), Vector2i(-1, 0), Vector2i(0, -1)]
 const SIDE_NAMES := {"front": "спереди", "back": "сзади", "left": "слева", "right": "справа"}
-const STORAGE := ["container", "tank", "receiver", "dome"]
+const STORAGE := ["container", "tank", "receiver", "dome", "tube_outlet", "warehouse_section"]
 
 var id := 0
 var kind := ""
@@ -13,6 +13,7 @@ var cell := Vector2i.ZERO
 var facing := 0
 var built_from: Substance
 var stats := {}
+var quality := 0.0
 var hp := 100.0
 var info := {}
 var items: Array = []           # Portion
@@ -38,6 +39,7 @@ static func create(p_kind: String) -> Machine:
 			"cannon", "launch_silo": m = Cannon.new()
 			"sensor", "gate_and", "gate_or", "gate_not": m = LogicGate.new()
 			"dome": m = Dome.new()
+			"tube", "tube_inlet", "tube_outlet", "warehouse_section": m = Structure.new()
 			_: m = Machine.new()
 	m.kind = p_kind
 	m.info = d
