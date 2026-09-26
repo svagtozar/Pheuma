@@ -64,6 +64,13 @@ func _init(p: Planet) -> void:
 # ---------------------------------------------------------------- утилиты
 
 func log_event(cell: Vector2i, text: String) -> void:
+	if not events.is_empty() and events[-1].get("base", events[-1].text) == text:
+		var e: Dictionary = events[-1]
+		e.n = e.get("n", 1) + 1
+		e.base = text
+		e.text = "%s ×%d" % [text, e.n]
+		e.t = time
+		return
 	events.append({"cell": cell, "text": text, "t": time})
 	if events.size() > 200:
 		events.remove_at(0)
@@ -457,6 +464,19 @@ func insert_into(c: Vector2i, as_reagent: bool, amount: float = 1.0) -> String:
 		robot.add_item(p)
 		return "машина не принимает"
 	return ""
+
+## Выбросить материал из инвентаря рядом с роботом (не под ноги — иначе сразу подберётся).
+func drop_from_inventory(id: String, mass: float) -> void:
+	var p := robot.take_item(id, mass)
+	if p == null:
+		return
+	var rc := robot_cell()
+	var target := rc + Vector2i(0, 1)
+	for d in Machine.DIRS:
+		if walkable(rc + d) and not grid.has(rc + d):
+			target = rc + d
+			break
+	drop_portions(target, [p])
 
 func take_from(c: Vector2i) -> String:
 	var m = machine_at(c)

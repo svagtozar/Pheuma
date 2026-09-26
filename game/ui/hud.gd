@@ -10,7 +10,10 @@ var goal_label: Label
 var log_label: Label
 var status_label: Label
 var msg_label: Label
-var inv_list: ItemList
+var inv_box: VBoxContainer
+var inv_title: Label
+var inv_scroll: ScrollContainer
+var inv_collapsed := false
 var inspector_panel: PanelContainer
 var inspector_label: Label
 var inspector_buttons: HFlowContainer
@@ -125,13 +128,16 @@ func _build() -> void:
 	var invp := _panel(Vector2(8, 190), Vector2(330, 0))
 	var iv := VBoxContainer.new()
 	invp.add_child(iv)
-	var it := _label(iv, 13)
-	it.text = "Инвентарь (Tab — выбор, клик — выбрать)"
-	inv_list = ItemList.new()
-	inv_list.custom_minimum_size = Vector2(314, 180)
-	inv_list.add_theme_font_size_override("font_size", 12)
-	inv_list.item_selected.connect(_on_inv_selected)
-	iv.add_child(inv_list)
+	inv_title = _label(iv, 13)
+	inv_title.autowrap_mode = TextServer.AUTOWRAP_OFF
+	inv_scroll = ScrollContainer.new()
+	inv_scroll.custom_minimum_size = Vector2(314, 0)
+	inv_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	iv.add_child(inv_scroll)
+	inv_box = VBoxContainer.new()
+	inv_box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	inv_box.add_theme_constant_override("separation", 2)
+	inv_scroll.add_child(inv_box)
 
 	inspector_panel = _panel(Vector2(-398, 140), Vector2(390, 0), Control.PRESET_TOP_RIGHT)
 	var insp := VBoxContainer.new()
@@ -244,7 +250,8 @@ func _build() -> void:
 const HELP := """Движение — WASD / стрелки. Колесо мыши — масштаб.
 E (удерживать) — копать залежь под курсором или рядом.
 Z — анализ касанием: материал в соседней клетке или выбранный в инвентаре.
-Tab / [ ] — выбрать материал в инвентаре.
+Tab / [ ] — выбрать материал в инвентаре (или клик по строке). I — свернуть инвентарь.
+   У выбранного материала: «Анализ», «Выбросить». Наведите курсор на машину — полное имя и состояние.
 G (удерживать) — подкачать бортовой баллон (от бака/трубы рядом или вручную из атмосферы).
 
 B — постройки. ЛКМ — поставить, R — повернуть, ПКМ/Esc — отмена. Трубы можно тянуть.
@@ -605,8 +612,9 @@ func _rebuild_codex() -> void:
 
 # ---------------------------------------------------------------- обновление
 
-func _on_inv_selected(i: int) -> void:
-	world.robot.selected = inv_list.get_item_metadata(i)
+func toggle_inventory() -> void:
+	inv_collapsed = not inv_collapsed
+	_inv_sig = ""
 
 func refresh() -> void:
 	if world == null:
@@ -664,26 +672,113 @@ func refresh() -> void:
 func _refresh_inventory() -> void:
 	var r := world.robot
 	var keys: Array = r.inventory.keys()
-	keys.sort()
-	var sig := ""
+	keys.sort_custom(func(a, b): return r.inventory[a].mass > r.inventory[b].mass)
+	var sig := "%s|" % inv_collapsed
 	for k in keys:
-		sig += "%s:%.1f:%s;" % [k, r.inventory[k].mass, world.is_analyzed(world.db.get_sub(k))]
+		sig += "%s:%.1f:%s:%d;" % [k, r.inventory[k].mass, world.is_analyzed(world.db.get_sub(k)), r.inventory[k].phase()]
 	sig += r.selected
 	if sig == _inv_sig:
 		return
 	_inv_sig = sig
-	inv_list.clear()
+	for c in inv_box.get_children():
+		c.queue_free()
+	inv_title.text = "Инвентарь — %.1f кг  (I — %s, Tab — выбор)" % [r.carried_mass(), "развернуть" if inv_collapsed else "свернуть"]
+	inv_scroll.visible = not inv_collapsed
+	if inv_collapsed:
+		return
+	if keys.is_empty():
+		var e := _label(inv_box, 12)
+		e.text = "Пусто. Подойдите к залежи и держите E."
 	for k in keys:
-		var pt: Portion = r.inventory[k]
-		var idx := inv_list.add_item("%s — %.1f кг" % [world.sub_label(pt.substance), pt.mass])
-		inv_list.set_item_metadata(idx, k)
-		inv_list.set_item_icon_modulate(idx, pt.substance.color)
-		inv_list.set_item_custom_fg_color(idx, pt.substance.color.lightened(0.4))
-		var tip := "T плавл. %.0f °C, T кип. %.0f °C, плотность %.1f, твёрдость %.1f\nСейчас: %s, %.0f °C" % [
-			pt.substance.melt, pt.substance.boil, pt.substance.density, pt.substance.hardness, Substance.PHASE_NAMES[pt.phase()], pt.temp]
-		inv_list.set_item_tooltip(idx, tip)
-		if k == r.selected:
-			inv_list.select(idx)
+		inv_box.add_child(_inv_row(k, k == r.selected))
+	inv_scroll.custom_minimum_size.y = min(380.0, keys.size() * 46.0 + (40.0 if r.selected != "" else 0.0))
+
+func _inv_row(id: String, selected: bool) -> Control:
+	var r := world.robot
+	var pt: Portion = r.inventory[id]
+	var s: Substance = pt.substance
+	var card := PanelContainer.new()
+	var sb := StyleBoxFlat.new()
+	sb.bg_color = Color(0.2, 0.32, 0.45, 0.9) if selected else Color(0.12, 0.13, 0.16, 0.9)
+	sb.border_color = Color(0.5, 0.8, 1.0) if selected else Color(0, 0, 0, 0)
+	sb.set_border_width_all(1)
+	sb.set_corner_radius_all(3)
+	sb.set_content_margin_all(4)
+	card.add_theme_stylebox_override("panel", sb)
+	card.mouse_filter = Control.MOUSE_FILTER_STOP
+	card.tooltip_text = "T плавл. %.0f °C, T кип. %.0f °C, плотность %.1f, твёрдость %.1f\nСейчас: %s, %.0f °C" % [
+		s.melt, s.boil, s.density, s.hardness, Substance.PHASE_NAMES[pt.phase()], pt.temp]
+	card.gui_input.connect(func(ev):
+		if ev is InputEventMouseButton and ev.pressed and ev.button_index == MOUSE_BUTTON_LEFT:
+			r.selected = id
+			_inv_sig = "")
+	var v := VBoxContainer.new()
+	v.add_theme_constant_override("separation", 0)
+	card.add_child(v)
+	var h := HBoxContainer.new()
+	v.add_child(h)
+	var sw := ColorRect.new()
+	sw.color = s.color
+	sw.custom_minimum_size = Vector2(14, 14)
+	sw.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	sw.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	h.add_child(sw)
+	var name_l := Label.new()
+	name_l.text = s.name + ("" if pt.phase() == Substance.Phase.SOLID else "  (%s)" % Substance.PHASE_NAMES[pt.phase()])
+	name_l.add_theme_font_size_override("font_size", 13)
+	name_l.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	name_l.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	name_l.custom_minimum_size = Vector2(150, 0)
+	name_l.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	h.add_child(name_l)
+	var mass_l := Label.new()
+	mass_l.text = "%.1f кг" % pt.mass
+	mass_l.add_theme_font_size_override("font_size", 13)
+	mass_l.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	h.add_child(mass_l)
+	var tags := Label.new()
+	tags.add_theme_font_size_override("font_size", 11)
+	tags.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	tags.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	if world.is_analyzed(s):
+		tags.text = s.tag_names() + "  · тв. %.1f" % s.hardness
+		tags.add_theme_color_override("font_color", Color(0.7, 0.78, 0.85))
+	else:
+		tags.text = "теги неизвестны — Z или кнопка «Анализ»"
+		tags.add_theme_color_override("font_color", Color(1.0, 0.8, 0.4))
+	v.add_child(tags)
+	if selected:
+		var btns := HBoxContainer.new()
+		v.add_child(btns)
+		if not world.is_analyzed(s):
+			var an := Button.new()
+			an.text = "Анализ"
+			an.add_theme_font_size_override("font_size", 11)
+			an.pressed.connect(func():
+				if r.cooldowns.has("touch"):
+					main.say("анализ касанием перезаряжается")
+				else:
+					world.analyze(s)
+					r.cooldowns["touch"] = 3.0
+				_inv_sig = "")
+			btns.add_child(an)
+		for amt in [1.0, 5.0]:
+			var d := Button.new()
+			d.text = "Выбросить %.0f кг" % amt
+			d.add_theme_font_size_override("font_size", 11)
+			var a: float = amt
+			d.pressed.connect(func():
+				world.drop_from_inventory(id, a)
+				_inv_sig = "")
+			btns.add_child(d)
+		var all := Button.new()
+		all.text = "Всё"
+		all.add_theme_font_size_override("font_size", 11)
+		all.pressed.connect(func():
+			world.drop_from_inventory(id, pt.mass)
+			_inv_sig = "")
+		btns.add_child(all)
+	return card
 
 func _refresh_inspector() -> void:
 	var c = main.selected_cell

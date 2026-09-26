@@ -276,6 +276,8 @@ func _on_key(e: InputEventKey) -> void:
 		KEY_X: set_mode("remove" if mode != "remove" else "none")
 		KEY_V: set_mode("wire" if mode != "wire" else "none")
 		KEY_L: set_mode("link" if mode != "link" else "none")
+		KEY_I:
+			hud.toggle_inventory()
 		KEY_M:
 			set_mode("macro_select" if mode != "macro_select" else "none")
 		KEY_F5:

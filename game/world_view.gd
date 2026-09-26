@@ -62,6 +62,7 @@ func _draw() -> void:
 	_draw_robot()
 	_draw_projectiles()
 	_draw_tool_preview()
+	_draw_hover()
 
 func _draw_tiles(vr: Rect2i) -> void:
 	var g := ground_color()
@@ -192,7 +193,7 @@ func _draw_machine(kind: String, c: Vector2i, facing: int, col: Color, m = null,
 		draw_rect(Rect2(r.position + Vector2(2, 2), Vector2(T - 4, 5)), Color(0.9, 0.6, 0.2, a))
 	var label: String = SHORT.get(kind, "")
 	if label != "":
-		draw_string(font, r.position + Vector2(1, T * 0.6), label, HORIZONTAL_ALIGNMENT_CENTER, T - 2, 8, Color(1, 1, 1, 0.9 * a))
+		_plate(ctr + Vector2(0, T * 0.5 - 2), label, 9, a)
 	# Направление выхода.
 	if not kind in ["pipe", "catch_net", "fabricator", "launch_silo", "macro"]:
 		var d := Vector2(Machine.DIRS[facing])
@@ -334,6 +335,30 @@ func _draw_projectiles() -> void:
 			col = pr.payload[0].substance.color
 		draw_circle(pos + Vector2(0, sin(PI * k) * h * 0.0), 6.0, Color(0.15, 0.15, 0.18))
 		draw_circle(pos, 4.0, col)
+
+## Надпись целиком на тёмной подложке, по центру над точкой (нижний край — в pos).
+func _plate(pos: Vector2, text: String, size: int, alpha: float = 1.0, col: Color = Color.WHITE) -> void:
+	var lines := text.split("\n")
+	var wmax := 0.0
+	for l in lines:
+		wmax = max(wmax, font.get_string_size(l, HORIZONTAL_ALIGNMENT_LEFT, -1, size).x)
+	var lh := font.get_height(size)
+	var h := lh * lines.size()
+	var rect := Rect2(pos - Vector2(wmax / 2.0 + 3, h + 1), Vector2(wmax + 6, h + 2))
+	draw_rect(rect, Color(0.04, 0.05, 0.07, 0.72 * alpha))
+	for i in lines.size():
+		draw_string(font, Vector2(rect.position.x + 3, rect.position.y + font.get_ascent(size) + 1 + lh * i), lines[i], HORIZONTAL_ALIGNMENT_LEFT, -1, size, Color(col, 0.95 * alpha))
+
+func _draw_hover() -> void:
+	if main == null or main.mode != "none":
+		return
+	var m = world.machine_at(main.mouse_cell())
+	if m == null:
+		return
+	var text: String = m.display_name()
+	if m.status != "":
+		text += "\n" + m.status
+	_plate(cell_center(m.cell) + Vector2(0, -T * 0.5 - 16), text, 12)
 
 func _draw_tool_preview() -> void:
 	if main == null:
