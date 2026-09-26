@@ -37,6 +37,7 @@ func advance() -> void:
 	w.log_event(w.planet.spawn, "Этап выполнен: " + current().desc)
 	w.robot.knowledge += 3
 	w.robot.xp.chief += 20
+	w.sound("fanfare", w.robot_cell())
 	stage += 1
 	hold = 0.0
 	progress = 0.0

@@ -21,6 +21,8 @@ static func capture(w: World, rect: Rect2i, name: String) -> Dictionary:
 		var cfg: Dictionary = m.config.duplicate(true)
 		if cfg.has("target"):
 			cfg.target = [ids[cfg.target].x, ids[cfg.target].y] if ids.has(cfg.target) else null
+		if cfg.has("routes"):
+			cfg.routes = cfg.routes.filter(func(r): return ids.has(int(r[1]))).map(func(r): return [r[0], [ids[int(r[1])].x, ids[int(r[1])].y]])
 		parts.append({"kind": m.kind, "off": [off.x, off.y], "facing": m.facing, "config": cfg})
 	var wires: Array = []
 	for wr in w.logic.wires.values():
@@ -43,7 +45,7 @@ static func compute_ports(mb: Dictionary) -> Array:
 		var outs := 0
 		if info.has("process"):
 			outs = Processes.PROCESSES[info.process].outs
-		elif p.kind in ["drill", "container", "tank", "receiver", "tube_outlet", "warehouse_section"]:
+		elif p.kind in ["drill", "container", "tank", "receiver", "warehouse_section"]:
 			outs = 1
 		for i in outs:
 			var c: Vector2i = off + Machine.DIRS[(f + i) % 4]
@@ -156,6 +158,13 @@ static func place(w: World, mb: Dictionary, origin: Vector2i, rot: int, preferre
 			if k == "target":
 				var t = by_off.get(Vector2i(int(v[0]), int(v[1]))) if v != null else null
 				m.config.target = t.id if t != null else -1
+			elif k == "routes":
+				var routes: Array = []
+				for r in v:
+					var t = by_off.get(Vector2i(int(r[1][0]), int(r[1][1])))
+					if t != null:
+						routes.append([r[0], t.id])
+				m.config.routes = routes
 			else:
 				m.config[k] = v
 	for wr in mb.wires:
@@ -166,6 +175,40 @@ static func place(w: World, mb: Dictionary, origin: Vector2i, rot: int, preferre
 		var pts: Array = wr.points.map(func(p): return Vector2(origin) + rot_point(Vector2(p[0], p[1]), size, rot))
 		w.logic.add_wire(a.id, b.id, int(wr.port), pts, a.built_from.id)
 	w.robot.xp.chief += 3.0
+	return ""
+
+## Поставить макроблок свёрнутым в одну клетку. Материалы тратятся как на все части.
+static func can_place_collapsed(w: World, mb: Dictionary, c: Vector2i, preferred: Substance) -> String:
+	var err := MacroMachine.collapse_error(mb)
+	if err != "":
+		return err
+	if not w.planet.buildable(c) or w.grid.has(c) or w.tile_overrides.has(c):
+		return "здесь нельзя строить"
+	if w.machines.size() >= w.machine_limit():
+		return "лимит машин"
+	var reserved := {}
+	for p in mb.parts:
+		if not w.robot.unlocked.has(p.kind):
+			return "не изучено: " + Buildings.name_of(p.kind)
+		var s := material_for(w, p.kind, preferred, reserved)
+		if s == null:
+			return "не хватает подходящего материала для «%s»" % Buildings.name_of(p.kind)
+		reserved[s.id] = reserved.get(s.id, 0.0) + w.build_cost(p.kind)
+	return ""
+
+static func place_collapsed(w: World, mb: Dictionary, c: Vector2i, rot: int, preferred: Substance) -> String:
+	var err := can_place_collapsed(w, mb, c, preferred)
+	if err != "":
+		return err
+	var subs: Array = []
+	for p in mb.parts:
+		var s := material_for(w, p.kind, preferred, {})
+		w.robot.take_item(s.id, w.build_cost(p.kind))
+		subs.append(s)
+	var housing: Substance = preferred if preferred != null else subs[0]
+	var m: MacroMachine = w.place("macro", c, rot, housing, true)
+	m.setup(w, mb, rot, subs)
+	w.robot.xp.chief += 5.0
 	return ""
 
 # ---------------------------------------------------------------- библиотека

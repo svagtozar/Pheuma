@@ -32,8 +32,52 @@ static func mod_from(w: World, d: Dictionary):
 	var sk: String = d.kind if d.kind in ["hull", "hand_drill"] else "module"
 	return {"uid": int(d.uid), "kind": d.kind, "sub": sub, "q": float(d.q), "stats": ComponentStats.compute(sk, sub, float(d.q))}
 
+static func machine_to(m: Machine, gas: GasNet) -> Dictionary:
+	var md := {"id": m.id, "kind": m.kind, "cell": [m.cell.x, m.cell.y], "facing": m.facing, "sub": m.built_from.id,
+		"q": m.quality, "hp": m.hp, "config": m.config, "off": m.manual_off,
+		"items": m.items.map(func(p): return p_to(p)),
+		"out": m.out_queue.map(func(e): return [p_to(e[0]), e[1]])}
+	if m.has_gas():
+		md.gas = gas.amount(m.id)
+	if m is Processor:
+		md.busy = p_to(m.busy) if m.busy != null else null
+		md.reagent = p_to(m.reagent) if m.reagent != null else null
+		md.progress = m.progress
+	if m is Dome:
+		md.temp = m.temp
+	if m.master_id >= 0 or m is MacroMachine:
+		md.extra = m.save_extra()
+	return md
+
+static func machine_restore(w: World, m: Machine, md: Dictionary, gas: GasNet) -> void:
+	var sub := w.db.get_sub(md.sub)
+	m.quality = float(md.q)
+	m.stats = ComponentStats.compute(m.kind, sub, m.quality)
+	m.hp = float(md.hp)
+	m.manual_off = md.off
+	for k in md.config:
+		var v = md.config[k]
+		if k == "target":
+			v = int(v)
+		elif k == "routes":
+			v = v.map(func(r): return [r[0], int(r[1])])
+		m.config[k] = v
+	m.items = md.items.map(func(a): return p_from(w, a)).filter(func(p): return p != null)
+	m.out_queue = md.out.map(func(e): return [p_from(w, e[0]), int(e[1])]).filter(func(e): return e[0] != null)
+	if md.has("gas") and gas.has_node(m.id):
+		gas.nodes[m.id].n = float(md.gas)
+	if m is Processor:
+		m.busy = p_from(w, md.get("busy"))
+		m.reagent = p_from(w, md.get("reagent"))
+		m.progress = float(md.get("progress", 0.0))
+	if m is Dome:
+		m.temp = float(md.get("temp", w.planet.ambient_temp))
+	if md.has("extra"):
+		m.load_extra(w, md.extra)
+
 static func to_dict(w: World) -> Dictionary:
-	var d := {"version": VERSION, "seed": w.planet.seed_value, "time": w.time}
+	var d := {"version": VERSION, "seed": w.planet.seed_value, "time": w.time,
+		"forced": w.planet.tags if w.planet.forced else []}
 	d.tiles = Marshalls.raw_to_base64(w.planet.tiles)
 	var dep := {}
 	for c in w.planet.deposits:
@@ -46,21 +90,7 @@ static func to_dict(w: World) -> Dictionary:
 	d.substances = derived
 	var ms: Array = []
 	for m in w.machines.values():
-		var md := {"id": m.id, "kind": m.kind, "cell": [m.cell.x, m.cell.y], "facing": m.facing, "sub": m.built_from.id,
-			"q": m.quality, "hp": m.hp, "config": m.config, "off": m.manual_off,
-			"items": m.items.map(func(p): return p_to(p)),
-			"out": m.out_queue.map(func(e): return [p_to(e[0]), e[1]])}
-		if m.has_gas():
-			md.gas = w.gas.amount(m.id)
-		if m is Processor:
-			md.busy = p_to(m.busy) if m.busy != null else null
-			md.reagent = p_to(m.reagent) if m.reagent != null else null
-			md.progress = m.progress
-		if m is Dome:
-			md.temp = m.temp
-		if m is Structure:
-			md.extra = m.save_extra()
-		ms.append(md)
+		ms.append(machine_to(m, w.gas))
 	d.machines = ms
 	d.wires = w.logic.wires.values().map(func(x): return {"from": x.from, "to": x.to, "port": x.port,
 		"points": x.points.map(func(p): return [p.x, p.y]), "material": x.material})
@@ -82,6 +112,7 @@ static func to_dict(w: World) -> Dictionary:
 	d.overrides = w.tile_overrides.keys().map(func(c): return [c.x, c.y, w.tile_overrides[c].tile, w.tile_overrides[c].t])
 	d.launched = w.launched
 	d.built_kinds = w.built_kinds.keys()
+	d.meta = w.meta
 	d.goals = {"stage": w.goals.stage, "hold": w.goals.hold, "completed": w.goals.completed, "progress": w.goals.progress}
 	var r := w.robot
 	d.robot = {"pos": [r.pos.x, r.pos.y], "hp": r.hp, "tank": r.tank, "selected": r.selected,
@@ -94,7 +125,7 @@ static func to_dict(w: World) -> Dictionary:
 	return d
 
 static func from_dict(d: Dictionary) -> World:
-	var w := World.create(int(d.seed))
+	var w := World.create(int(d.seed), d.get("forced", []))
 	w.events.clear()
 	w.time = float(d.time)
 	w.planet.tiles = Marshalls.base64_to_raw(d.tiles)
@@ -107,25 +138,7 @@ static func from_dict(d: Dictionary) -> World:
 	for md in d.machines:
 		var sub := w.db.get_sub(md.sub)
 		var m := w.place(md.kind, v2i(md.cell), int(md.facing), sub, true, int(md.id))
-		m.quality = float(md.q)
-		m.stats = ComponentStats.compute(m.kind, sub, m.quality)
-		m.hp = float(md.hp)
-		m.manual_off = md.off
-		for k in md.config:
-			var v = md.config[k]
-			m.config[k] = int(v) if k == "target" else v
-		m.items = md.items.map(func(a): return p_from(w, a)).filter(func(p): return p != null)
-		m.out_queue = md.out.map(func(e): return [p_from(w, e[0]), int(e[1])]).filter(func(e): return e[0] != null)
-		if md.has("gas") and w.gas.has_node(m.id):
-			w.gas.nodes[m.id].n = float(md.gas)
-		if m is Processor:
-			m.busy = p_from(w, md.get("busy"))
-			m.reagent = p_from(w, md.get("reagent"))
-			m.progress = float(md.get("progress", 0.0))
-		if m is Dome:
-			m.temp = float(md.get("temp", w.planet.ambient_temp))
-		if m is Structure and md.has("extra"):
-			m.load_extra(w, md.extra)
+		machine_restore(w, m, md, w.gas)
 	for x in d.wires:
 		w.logic.add_wire(int(x.from), int(x.to), int(x.port), x.points.map(func(p): return Vector2(p[0], p[1])), x.material)
 	for k in d.ground:
@@ -138,6 +151,7 @@ static func from_dict(d: Dictionary) -> World:
 	for o in d.overrides:
 		w.tile_overrides[Vector2i(int(o[0]), int(o[1]))] = {"tile": int(o[2]), "t": float(o[3])}
 	w.launched = {"mass": float(d.launched.mass), "tags": d.launched.tags, "exotic": float(d.launched.exotic)}
+	w.meta = d.get("meta", {})
 	w.built_kinds = {}
 	for k in d.built_kinds:
 		w.built_kinds[k] = true

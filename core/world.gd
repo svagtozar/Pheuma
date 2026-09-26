@@ -17,7 +17,7 @@ var machines := {}              # id → Machine
 var grid := {}                  # Vector2i → id
 var ground := {}                # Vector2i → Array[Portion]
 var projectiles: Array = []     # {from, to, t, dur, payload, orbit}
-var tube_capsules: Array = []   # {path, pos, speed, payload, t}
+var stats := {"shots": 0, "hits": 0, "processed": 0, "orbit": 0}
 var drones: Array = []          # {src, dst, pos, cargo, speed, cap}
 var drone_pending := -1
 var revealed := {}              # клетки залежей, найденные сканером
@@ -26,7 +26,9 @@ var ice_stress := {}
 var fires := {}                 # Vector2i → оставшееся время
 var launched := {"mass": 0.0, "tags": {}, "exotic": 0.0}
 var built_kinds := {}
+var meta := {}                  # данные интерфейса, которые нужно сохранять (шаг обучения)
 var events: Array = []          # {"cell", "text", "t"} для интерфейса
+var sfx: Array = []             # {"name", "cell"} — звуки для game/audio.gd
 var time := 0.0
 var starter: Substance
 var _next_id := 1
@@ -34,8 +36,8 @@ var _handling_acc := 0.0
 var _hazard_acc := 0.0
 var _assembly_acc := 0.0
 
-static func create(seed_value: int) -> World:
-	return World.new(PlanetGen.generate(seed_value))
+static func create(seed_value: int, forced_tags: Array = []) -> World:
+	return World.new(PlanetGen.generate(seed_value, 80, 60, forced_tags))
 
 func _init(p: Planet) -> void:
 	planet = p
@@ -64,6 +66,11 @@ func log_event(cell: Vector2i, text: String) -> void:
 	events.append({"cell": cell, "text": text, "t": time})
 	if events.size() > 200:
 		events.remove_at(0)
+
+func sound(name: String, cell: Vector2i) -> void:
+	sfx.append({"name": name, "cell": cell})
+	if sfx.size() > 32:
+		sfx.remove_at(0)
 
 func time_factor() -> float:
 	if planet.has_tag("temporal_drift"):
@@ -98,12 +105,22 @@ func is_analyzed(s: Substance) -> bool:
 
 func stored_with_tag(tag: String) -> float:
 	var s := 0.0
-	for m in machines.values():
+	for m in all_machines():
 		if m.is_storage() or m is Cannon:
 			for p in m.items:
 				if p.has(tag):
 					s += p.mass
 	return s
+
+## Все машины, включая спрятанные в свёрнутых макроблоках.
+func all_machines() -> Array:
+	var out: Array = []
+	for m in machines.values():
+		if m is MacroMachine:
+			out.append_array(m.inner.machines.values())
+		else:
+			out.append(m)
+	return out
 
 func machine_limit() -> int:
 	return MACHINE_LIMIT + int(robot.passive("machine_limit"))
@@ -125,6 +142,7 @@ func discover_tag(t: String) -> void:
 		k = 3 * (2 if robot.passive("exotic_insight") > 0 else 1)
 	robot.knowledge += k
 	robot.xp.shaman += 5
+	sound("chime", robot_cell())
 	log_event(robot_cell(), "Новый тег: «%s» (+%d знаний)" % [MaterialTags.display(t), k])
 
 func discover_interaction(key: String) -> void:
@@ -133,6 +151,7 @@ func discover_interaction(key: String) -> void:
 	robot.known_interactions[key] = true
 	robot.knowledge += 1
 	robot.xp.shaman += 4
+	sound("chime", robot_cell())
 	var parts := key.split(">")
 	var a := PlanetTags.display(parts[0]) if PlanetTags.TAGS.has(parts[0]) else MaterialTags.display(parts[0])
 	log_event(robot_cell(), "Открыто взаимодействие: «%s» → «%s»" % [a, MaterialTags.display(parts[1])])
@@ -159,6 +178,7 @@ func on_processed(m: Machine, input: Portion, res: Dictionary) -> void:
 				robot.analyzed[s.id] = true
 	for t in res.added:
 		discover_tag(t)
+	stats.processed += 1
 	match m.kind:
 		"furnace", "compressor", "decompressor", "sinter":
 			robot.xp.firekeeper += 1.0
@@ -222,6 +242,7 @@ func place(kind: String, c: Vector2i, facing: int, sub: Substance, free: bool = 
 			gas.set_vent(m.id, true)
 	if m is Dome:
 		m.temp = planet.ambient_temp
+	sound("click", c)
 	robot.xp.crafter += 1.0
 	if kind in ["sensor", "gate_and", "gate_or", "gate_not"]:
 		robot.xp.chief += 2.0
@@ -234,8 +255,13 @@ func remove_at(c: Vector2i, refund: bool = true) -> void:
 	var m = machine_at(c)
 	if m == null:
 		return
+	sound("clunk", c)
 	if refund:
-		robot.add_item(Portion.new(m.built_from, build_cost(m.kind) * 0.5, planet.ambient_temp))
+		if m is MacroMachine:
+			for im in m.inner.machines.values():
+				robot.add_item(Portion.new(im.built_from, build_cost(im.kind) * 0.5, planet.ambient_temp))
+		else:
+			robot.add_item(Portion.new(m.built_from, build_cost(m.kind) * 0.5, planet.ambient_temp))
 	_drop_contents(m)
 	_erase(m)
 
@@ -243,6 +269,7 @@ func destroy(m: Machine, reason: String) -> void:
 	if not machines.has(m.id):
 		return
 	log_event(m.cell, "%s разрушен: %s" % [m.display_name(), reason])
+	sound("boom", m.cell)
 	_drop_contents(m)
 	_erase(m)
 
@@ -253,6 +280,11 @@ func _drop_contents(m: Machine) -> void:
 	if m is Processor:
 		if m.busy != null: all.append(m.busy)
 		if m.reagent != null: all.append(m.reagent)
+	if m is MacroMachine:
+		for im in m.inner.machines.values():
+			all.append_array(im.items)
+			for e in im.out_queue:
+				all.append(e[0])
 	drop_portions(m.cell, all)
 
 func _erase(m: Machine) -> void:
@@ -263,6 +295,8 @@ func _erase(m: Machine) -> void:
 	for c in machines.values():
 		if c is Cannon and c.config.target == m.id:
 			c.config.target = -1
+		if c is Cannon and c.config.has("routes"):
+			c.config.routes = c.config.routes.filter(func(r): return int(r[1]) != m.id)
 	drones = drones.filter(func(d): return d.src != m.id and d.dst != m.id)
 
 func rotate_at(c: Vector2i) -> void:
@@ -291,14 +325,22 @@ func drop_portions(c: Vector2i, arr: Array) -> void:
 			if not merged:
 				ground[c].append(p)
 
-func link_cannon(cannon_cell: Vector2i, target_cell: Vector2i) -> String:
+## Навести пушку. С тегом — добавить маршрут «груз с тегом → цель».
+func link_cannon(cannon_cell: Vector2i, target_cell: Vector2i, tag: String = "") -> String:
 	var c = machine_at(cannon_cell)
 	var t = machine_at(target_cell)
+	if c != null and c.master_id >= 0 and c.master != null and c.master.get_ref() != null:
+		c = c.master.get_ref()
+	if t != null and t.master_id >= 0 and t.master != null and t.master.get_ref() != null:
+		t = t.master.get_ref()
 	if c == null or not c is Cannon or c.is_silo():
 		return "это не пневмопушка"
 	if t == null or t.capacity() <= 0.0 or t == c:
 		return "цель должна принимать груз (приёмник, контейнер, бак…)"
-	c.config.target = t.id
+	if tag != "":
+		c.add_route(tag, t.id)
+	else:
+		c.config.target = t.id
 	return ""
 
 ## Провод от выхода одной машины ко входу другой.
@@ -355,6 +397,7 @@ func mine(c: Vector2i, dt: float) -> String:
 		dep.amount -= m
 		var p := Portion.new(sub, m, planet.ambient_temp)
 		robot.xp.gatherer += 1.0
+		sound("tick", c)
 		if robot.passive("auto_analyze") > 0:
 			analyze(sub)
 		if not robot.can_carry(p):
@@ -451,6 +494,7 @@ func launch_orbit(payload: Array, c: Vector2i) -> void:
 	for p in payload:
 		total += p.mass
 		launched.mass += p.mass
+		stats.orbit += 1
 		for t in p.substance.tags:
 			launched.tags[t] = launched.tags.get(t, 0.0) + p.mass
 		if p.substance.is_exotic():
@@ -458,12 +502,14 @@ func launch_orbit(payload: Array, c: Vector2i) -> void:
 	var from := Vector2(c) + Vector2(0.5, 0.5)
 	projectiles.append({"from": from, "to": from + Vector2(0, -30), "t": 0.0, "dur": 2.0, "payload": [], "orbit": true, "kind": "rocket"})
 	robot.xp.chief += 2.0
+	sound("rocket", c)
 	log_event(c, "На орбиту отправлено %.1f кг" % total)
 
 func _land(pr: Dictionary) -> void:
 	if pr.orbit:
 		return
 	var c := Vector2i(floori(pr.to.x), floori(pr.to.y))
+	sound("land", c)
 	var payload: Array = pr.payload
 	if robot.has_module("magnet") and robot.pos.distance_to(pr.to) < 3.0:
 		for p in payload:
@@ -489,6 +535,15 @@ func _land(pr: Dictionary) -> void:
 		extra.append_array(r.spawn)
 	payload.append_array(extra)
 	var m = machine_at(c)
+	if m != null and m.kind == "catch_net":
+		var r = net_receiver(c)
+		if r != null:
+			m = r
+			log_event(c, "Сеть поймала капсулу")
+	if m != null and m.master_id >= 0 and m.master != null and m.master.get_ref() != null:
+		m = m.master.get_ref()
+	if m != null and m.capacity() > 0.0:
+		stats.hits += 1
 	var rest: Array = []
 	for p in payload:
 		if m == null or not m.accept(p, m.cell + Machine.DIRS[(m.facing + 2) % 4]):
@@ -503,21 +558,13 @@ func _land(pr: Dictionary) -> void:
 func tick(dt: float) -> void:
 	time += dt
 	_tick_logic()
-	for m in machines.values().duplicate():
-		if machines.has(m.id):
-			m.tick(self, dt)
-			if machines.has(m.id):
-				m.flush_outputs(self)
-	for id in gas.step(dt):
-		if machines.has(id):
-			destroy(machines[id], "не выдержал давления %.1f атм" % gas.pressure(id))
+	World.tick_machines(self, dt)
 	_tick_projectiles(dt)
-	_tick_tubes(dt)
 	_tick_drones(dt)
 	_assembly_acc += dt
 	if _assembly_acc >= 1.0:
 		_assembly_acc = 0.0
-		check_warehouses()
+		check_groups()
 	_handling_acc += dt
 	if _handling_acc >= 0.5:
 		_tick_handling(_handling_acc)
@@ -527,18 +574,33 @@ func tick(dt: float) -> void:
 	goals.tick(dt)
 
 func _tick_logic() -> void:
+	World.eval_logic(self)
+
+## Логика и включение машин для любой сетки (мира или свёрнутого макроблока).
+static func eval_logic(grid) -> void:
 	var out := {}
-	for m in machines.values():
+	for m in grid.machines.values():
 		if m is LogicGate:
-			out[m.id] = m.compute(self)
+			out[m.id] = m.compute(grid)
 		elif m.signal_out:
 			out[m.id] = true
-	logic.outputs = out
-	for m in machines.values():
+	grid.logic.outputs = out
+	for m in grid.machines.values():
 		if m is LogicGate:
 			continue
-		var wired := logic.has_input(m.id, 0)
-		m.enabled = (logic.input(m.id, 0) if wired else true) and not m.manual_off
+		var wired: bool = grid.logic.has_input(m.id, 0)
+		m.enabled = (grid.logic.input(m.id, 0) if wired else true) and not m.manual_off
+
+## Тик машин сетки: работа, выдача, давление.
+static func tick_machines(grid, dt: float) -> void:
+	for m in grid.machines.values().duplicate():
+		if grid.machines.has(m.id):
+			m.tick(grid, dt)
+			if grid.machines.has(m.id):
+				m.flush_outputs(grid)
+	for id in grid.gas.step(dt):
+		if grid.machines.has(id):
+			grid.destroy(grid.machines[id], "не выдержал давления %.1f атм" % grid.gas.pressure(id))
 
 func _tick_projectiles(dt: float) -> void:
 	var keep: Array = []
@@ -550,73 +612,70 @@ func _tick_projectiles(dt: float) -> void:
 			keep.append(pr)
 	projectiles = keep
 
-func _tick_tubes(dt: float) -> void:
-	var keep: Array = []
-	for cap in tube_capsules:
-		cap.t += dt
-		var before := int(cap.pos)
-		cap.pos = min(cap.pos + cap.speed * dt, float(cap.path.size() - 1))
-		var broken := -1
-		for i in range(before, int(cap.pos) + 1):
-			var m = machine_at(cap.path[i])
-			if m == null or not m.kind in ["tube", "tube_inlet", "tube_outlet"]:
-				broken = i
-				break
-		if broken >= 0:
-			drop_portions(cap.path[broken], cap.payload)
-			log_event(cap.path[broken], "Пневмопровод разорван — капсула вывалилась")
-			continue
-		if cap.pos >= cap.path.size() - 1:
-			var out = machine_at(cap.path[-1])
-			var rest: Array = []
-			for p in cap.payload:
-				var r := Handling.tick(p, "capsule", handling_env(null, "capsule"), cap.t)
-				_apply_handling_result(r, out.cell)
-				if p.mass > 0.01 and not out.accept(p, out.cell):
-					rest.append(p)
-			if rest.is_empty():
+## Четыре свободные секции квадратом 2×2 собираются в одно сооружение
+## (склад, пневмобатарея). Главная — левая верхняя.
+func check_groups() -> void:
+	for kind in ["warehouse_section", "battery_section"]:
+		var secs: Array = machines_of(kind)
+		for s in secs:
+			if s.master_id >= 0 and not machines.has(s.master_id):
+				s.master_id = -1
+			if s.master_id == s.id:
+				for gid in s.group:
+					if not machines.has(gid):
+						for g2 in s.group:
+							if machines.has(g2):
+								machines[g2].master_id = -1
+						s.group = []
+						log_event(s.cell, "%s разобран" % ("Склад" if kind == "warehouse_section" else "Пневмобатарея"))
+						break
+		for s in secs:
+			if s.master_id >= 0:
 				continue
-			cap.payload = rest
-		keep.append(cap)
-	tube_capsules = keep
+			var parts: Array = [s]
+			for d in [Vector2i(1, 0), Vector2i(0, 1), Vector2i(1, 1)]:
+				var n = machine_at(s.cell + d)
+				if n != null and n.kind == kind and n.master_id < 0:
+					parts.append(n)
+			if parts.size() < 4:
+				continue
+			s.group = parts.map(func(x): return x.id)
+			for x in parts:
+				x.master_id = s.id
+				x.master = weakref(s)
+				if x != s:
+					for p in x.items:
+						s.store(p)
+					x.items = []
+			sound("fanfare", s.cell)
+			log_event(s.cell, "Склад собран: 4 секции, 320 кг" if kind == "warehouse_section" else "Пневмобатарея собрана: 20 кг за выстрел")
+		for s in secs:
+			if s.master_id >= 0 and machines.has(s.master_id):
+				s.master = weakref(machines[s.master_id])
 
-## Четыре свободные секции квадратом 2×2 собираются в склад.
-func check_warehouses() -> void:
-	var secs: Array = machines_of("warehouse_section")
-	for s in secs:
-		if s.master_id >= 0 and not machines.has(s.master_id):
-			s.master_id = -1
-		if s.master_id == s.id:
-			for gid in s.group:
-				if not machines.has(gid):
-					for g2 in s.group:
-						if machines.has(g2):
-							machines[g2].master_id = -1
-					s.group = []
-					log_event(s.cell, "Склад разобран")
-					break
-	for s in secs:
-		if s.master_id >= 0:
-			continue
-		var parts: Array = [s]
-		for d in [Vector2i(1, 0), Vector2i(0, 1), Vector2i(1, 1)]:
-			var n = machine_at(s.cell + d)
-			if n != null and n.kind == "warehouse_section" and n.master_id < 0:
-				parts.append(n)
-		if parts.size() < 4:
-			continue
-		s.group = parts.map(func(x): return x.id)
-		for x in parts:
-			x.master_id = s.id
-			x.master = weakref(s)
-			if x != s:
-				for p in x.items:
-					s.store(p)
-				x.items = []
-		log_event(s.cell, "Склад собран: 4 секции, 320 кг")
-	for s in secs:
-		if s.master_id >= 0 and machines.has(s.master_id):
-			s.master = weakref(machines[s.master_id])
+## Приёмник, в который скатывается капсула с сети в клетке c.
+func net_receiver(c: Vector2i):
+	var start = machine_at(c)
+	if start == null or start.kind != "catch_net":
+		return null
+	var reach: int = start.net_reach()
+	var seen := {c: 0}
+	var queue: Array = [c]
+	while not queue.is_empty():
+		var cur: Vector2i = queue.pop_front()
+		for d in Machine.DIRS:
+			var n: Vector2i = cur + d
+			if seen.has(n):
+				continue
+			var m = machine_at(n)
+			if m == null:
+				continue
+			if m.kind == "receiver":
+				return m
+			if m.kind == "catch_net" and seen[cur] + 1 < reach:
+				seen[n] = seen[cur] + 1
+				queue.append(n)
+	return null
 
 func _tick_drones(dt: float) -> void:
 	for d in drones:
@@ -660,17 +719,22 @@ func _apply_handling_result(res: Dictionary, c: Vector2i) -> void:
 	for e in res.events:
 		log_event(c, e)
 
-func _tick_handling(dt: float) -> void:
-	for m in machines.values().duplicate():
-		if not machines.has(m.id):
+## Правила обращения для груза машин сетки (мира или свёрнутого макроблока).
+func handle_machines(grid, dt: float, event_cell = null) -> void:
+	for m in grid.machines.values().duplicate():
+		if not grid.machines.has(m.id):
 			continue
 		m.signal_out = false
 		if m.stats.self_repair > 0.0:
 			m.hp = min(m.max_hp(), m.hp + m.stats.self_repair * dt)
+		if m is MacroMachine:
+			handle_machines(m.inner, dt, m.cell)
+			continue
 		if m.items.is_empty():
 			continue
-		var env := handling_env(m, m.handling_ctx())
+		var env: Dictionary = grid.handling_env(m, m.handling_ctx())
 		var spawn: Array = []
+		var ec: Vector2i = event_cell if event_cell != null else m.cell
 		for p in m.items:
 			var res := Handling.tick(p, m.handling_ctx(), env, dt)
 			m.hp -= res.container_damage * m.stats.wear
@@ -678,16 +742,19 @@ func _tick_handling(dt: float) -> void:
 			if res.signal:
 				m.signal_out = true
 			if res.absorb_gas > 0.0 and m.has_gas():
-				gas.take_gas(m.id, res.absorb_gas)
+				grid.gas.take_gas(m.id, res.absorb_gas)
 			if m.stats.leaky:
 				p.mass *= 1.0 - min(1.0, 0.05 * dt)
-			_apply_handling_result(res, m.cell)
+			_apply_handling_result(res, ec)
 		m.items = m.items.filter(func(p): return p.mass > 0.01)
 		for p in spawn:
 			if not m.accept(p, m.cell):
-				drop_portions(m.cell, [p])
+				grid.drop_portions(m.cell, [p])
 		if m.hp <= 0.0:
-			destroy(m, "разъеден грузом")
+			grid.destroy(m, "разъеден грузом")
+
+func _tick_handling(dt: float) -> void:
+	handle_machines(self, dt)
 	# Порции на земле.
 	for c in ground.keys():
 		var arr: Array = ground[c]

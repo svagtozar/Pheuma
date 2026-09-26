@@ -20,6 +20,7 @@ static func use(w: World, kind: String, target: Vector2) -> String:
 		return err
 	r.tank -= cost
 	r.cooldowns[kind] = d.get("cd", 0.5)
+	w.sound("whoosh", r.cell())
 	return ""
 
 static func _dispatch(kind: String, w: World, m: Dictionary, target: Vector2) -> String:

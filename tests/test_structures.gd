@@ -1,58 +1,87 @@
 extends GutTest
+## Сборные сооружения и пушечная логистика.
 
 var H := TestHelpers
 
-func _tube_line(w: World, y: int, length: int) -> Array:
-	var inlet := w.place("tube_inlet", Vector2i(2, y), 0, w.starter, true)
-	for x in range(3, 3 + length):
-		w.place("tube", Vector2i(x, y), 0, w.starter, true)
-	var outlet := w.place("tube_outlet", Vector2i(3 + length, y), 0, w.starter, true)
-	var box := w.place("container", Vector2i(4 + length, y), 0, w.starter, true)
-	return [inlet, outlet, box]
+func _sub(w: World, tags: Array) -> Substance:
+	var n := "S" + str(w.db.by_id.size())
+	return w.db.add(Substance.new(n, n, tags))
 
-func test_tube_needs_assembly_and_pressure():
+func test_cannon_routes_by_tag():
 	var w := H.world()
-	var inlet := w.place("tube_inlet", Vector2i(2, 2), 0, w.starter, true)
-	inlet.store(Portion.new(w.starter, 3.0))
-	H.run(w, 2.0)
-	assert_string_contains(inlet.status, "не собрано")
-	for x in range(3, 8):
-		w.place("tube", Vector2i(x, 2), 0, w.starter, true)
-	w.place("tube_outlet", Vector2i(8, 2), 0, w.starter, true)
-	H.run(w, 2.0)
-	assert_string_contains(inlet.status, "давления")
+	var dense := _sub(w, ["dense", "metallic"])
+	var light := _sub(w, ["porous", "crystalline"])
+	var cannon := w.place("cannon", Vector2i(5, 10), 0, w.starter, true)
+	w.place("pump", Vector2i(5, 11), 0, w.starter, true)
+	var r_def := w.place("receiver", Vector2i(10, 10), 0, w.starter, true)
+	var r_dense := w.place("receiver", Vector2i(5, 5), 0, w.starter, true)
+	assert_eq(w.link_cannon(cannon.cell, r_def.cell), "")
+	assert_eq(w.link_cannon(cannon.cell, r_dense.cell, "dense"), "")
+	cannon.store(Portion.new(dense, 3.0))
+	cannon.store(Portion.new(light, 3.0))
+	H.run(w, 30.0)
+	var got_dense := 0.0
+	var got_light := 0.0
+	for p in r_dense.items:
+		got_dense += p.mass if p.has("dense") else 0.0
+	for p in r_def.items:
+		got_light += p.mass if p.has("porous") else 0.0
+	assert_gt(got_dense, 2.0, "плотное улетело по маршруту")
+	assert_gt(got_light, 2.0, "остальное — в цель по умолчанию")
 
-func test_tube_delivers_capsules():
+func test_route_removed_with_target():
 	var w := H.world()
-	var parts := _tube_line(w, 3, 8)
-	var inlet: Machine = parts[0]
-	var box: Machine = parts[2]
-	w.place("pump", Vector2i(2, 4), 0, w.starter, true)
-	inlet.store(Portion.new(w.starter, 6.0))
+	var cannon := w.place("cannon", Vector2i(5, 10), 0, w.starter, true)
+	var r := w.place("receiver", Vector2i(9, 10), 0, w.starter, true)
+	w.link_cannon(cannon.cell, r.cell, "dense")
+	assert_eq(cannon.config.routes.size(), 1)
+	w.remove_at(r.cell)
+	assert_eq(cannon.config.routes.size(), 0)
+
+func _battery(w: World, o: Vector2i) -> Machine:
+	var a := w.place("battery_section", o, 0, w.starter, true)
+	w.place("battery_section", o + Vector2i(1, 0), 0, w.starter, true)
+	w.place("battery_section", o + Vector2i(0, 1), 0, w.starter, true)
+	w.place("battery_section", o + Vector2i(1, 1), 0, w.starter, true)
+	return a
+
+func test_battery_needs_assembly_and_fires_heavy_and_far():
+	var w := H.world()
+	var lone := w.place("battery_section", Vector2i(2, 30), 0, w.starter, true)
+	assert_false(lone.accept(Portion.new(w.starter, 1.0), Vector2i(1, 30)), "одиночная секция не стреляет")
+	var a := _battery(w, Vector2i(2, 5))
+	w.place("pump", Vector2i(2, 7), 0, w.starter, true)
+	w.place("pump", Vector2i(3, 7), 0, w.starter, true)
+	w.place("pump", Vector2i(4, 6), 0, w.starter, true)
+	var far := w.place("receiver", Vector2i(25, 5), 0, w.starter, true)
+	H.run(w, 1.5)
+	assert_eq(a.master_id, a.id)
+	assert_eq(w.link_cannon(Vector2i(3, 6), far.cell), "", "наводится с любой секции")
+	var cargo := _sub(w, ["crystalline", "conductive"])
+	assert_true(a.accept(Portion.new(cargo, 20.0), Vector2i(1, 5)))
+	for m in w.machines.values():
+		if m.kind == "pump":
+			m.config.target_p = 5.0
 	H.run(w, 40.0)
-	assert_almost_eq(box.total_mass(), 6.0, 0.1)
+	assert_gt(far.total_mass(), 15.0, "20 кг долетели на 22 клетки")
 
-func test_capsules_are_visible_in_transit():
+func test_catch_net_funnels_capsule_to_receiver():
 	var w := H.world()
-	var parts := _tube_line(w, 3, 12)
-	w.gas.add_gas(parts[0].id, 6.0)
-	parts[0].store(Portion.new(w.starter, 3.0))
-	H.run(w, 0.8)
-	assert_gt(w.tube_capsules.size(), 0)
+	var r := w.place("receiver", Vector2i(10, 10), 0, w.starter, true)
+	w.place("catch_net", Vector2i(11, 10), 0, w.starter, true)
+	w.place("catch_net", Vector2i(12, 10), 0, w.starter, true)
+	assert_eq(w.net_receiver(Vector2i(12, 10)), r)
+	w.spawn_projectile(Vector2(3.5, 10.5), Vector2(12.5, 10.5), [Portion.new(w.starter, 2.0)])
+	H.run(w, 3.0)
+	assert_almost_eq(r.total_mass(), 2.0, 0.01)
 
-func test_broken_tube_drops_capsule():
+func test_net_reach_depends_on_material():
 	var w := H.world()
-	var parts := _tube_line(w, 3, 14)
-	w.gas.add_gas(parts[0].id, 6.0)
-	parts[0].store(Portion.new(w.starter, 3.0))
-	H.run(w, 1.3)
-	w.remove_at(Vector2i(14, 3), false)
-	H.run(w, 5.0)
-	var dropped := 0.0
-	for c in w.ground:
-		for p in w.ground[c]:
-			dropped += p.mass
-	assert_gt(dropped, 0.5)
+	var el := _sub(w, ["elastic", "fibrous"])
+	var plain := _sub(w, ["dense", "metallic"])
+	var a := w.place("catch_net", Vector2i(1, 1), 0, el, true)
+	var b := w.place("catch_net", Vector2i(3, 3), 0, plain, true)
+	assert_gt(a.net_reach(), b.net_reach())
 
 func test_warehouse_assembles_from_four_sections():
 	var w := H.world()
@@ -64,8 +93,8 @@ func test_warehouse_assembles_from_four_sections():
 	H.run(w, 1.5)
 	assert_eq(a.master_id, a.id)
 	assert_eq(a.capacity(), 320.0)
-	assert_true(d.accept(Portion.new(w.starter, 100.0), Vector2i(6, 7)), "любая секция принимает в общий склад")
+	assert_true(d.accept(Portion.new(w.starter, 100.0), Vector2i(6, 7)))
 	assert_almost_eq(a.total_mass(), 100.0, 0.01)
 	w.remove_at(d.cell)
 	H.run(w, 1.5)
-	assert_eq(a.master_id, -1, "склад разобран")
+	assert_eq(a.master_id, -1)

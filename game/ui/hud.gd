@@ -24,6 +24,9 @@ var fab_bp := ""
 var fab_mat: OptionButton
 var codex_label: RichTextLabel
 var briefing_label: RichTextLabel
+var tut_panel: PanelContainer
+var tut_label: RichTextLabel
+var tut_done_btn: Button
 
 var _placed: Array = []       # [Control, anchor, offset]
 var _inv_sig := ""
@@ -49,6 +52,7 @@ func _layout() -> void:
 			Control.PRESET_TOP_RIGHT: c.position = Vector2(vp.x + off.x, off.y)
 			Control.PRESET_BOTTOM_RIGHT: c.position = Vector2(vp.x + off.x, vp.y - sz.y - off.y)
 			Control.PRESET_CENTER_BOTTOM: c.position = Vector2(vp.x / 2.0 + off.x, vp.y - sz.y - off.y)
+			Control.PRESET_CENTER_TOP: c.position = Vector2(vp.x / 2.0 + off.x, off.y)
 			Control.PRESET_CENTER: c.position = (vp - sz) / 2.0
 
 func set_world(w: World) -> void:
@@ -149,6 +153,32 @@ func _build() -> void:
 	msg_label.add_theme_constant_override("outline_size", 4)
 	add_child(msg_label)
 
+	# Обучение.
+	tut_panel = _panel(Vector2(-300, 8), Vector2(600, 0), Control.PRESET_CENTER_TOP)
+	var tv := VBoxContainer.new()
+	tut_panel.add_child(tv)
+	tut_label = RichTextLabel.new()
+	tut_label.bbcode_enabled = true
+	tut_label.fit_content = true
+	tut_label.custom_minimum_size = Vector2(584, 0)
+	tut_label.add_theme_font_size_override("normal_font_size", 13)
+	tv.add_child(tut_label)
+	var th := HBoxContainer.new()
+	tv.add_child(th)
+	tut_done_btn = Button.new()
+	tut_done_btn.text = "Готово"
+	tut_done_btn.pressed.connect(func(): if main.tutorial != null: main.tutorial.acknowledged = true)
+	th.add_child(tut_done_btn)
+	var skip := Button.new()
+	skip.text = "Пропустить шаг"
+	skip.pressed.connect(func(): if main.tutorial != null: main.tutorial.skip(world))
+	th.add_child(skip)
+	var off := Button.new()
+	off.text = "Выключить обучение"
+	off.pressed.connect(func(): main.end_tutorial(false))
+	th.add_child(off)
+	tut_panel.visible = false
+
 	# Палитра построек.
 	var pv := _window("palette", Vector2(820, 600), "Постройки (B)")
 	var mh := HBoxContainer.new()
@@ -195,10 +225,18 @@ func _build() -> void:
 	briefing_label.custom_minimum_size = Vector2(780, 0)
 	briefing_label.add_theme_font_size_override("normal_font_size", 14)
 	brv.add_child(briefing_label)
+	var bh := HBoxContainer.new()
+	brv.add_child(bh)
 	var go := Button.new()
 	go.text = "Начать (Enter)"
 	go.pressed.connect(func(): windows.briefing.visible = false)
-	brv.add_child(go)
+	bh.add_child(go)
+	var tb := Button.new()
+	tb.text = "Пройти обучение"
+	tb.pressed.connect(func():
+		windows.briefing.visible = false
+		main.start_tutorial())
+	bh.add_child(tb)
 
 const HELP := """Движение — WASD / стрелки. Колесо мыши — масштаб.
 E (удерживать) — копать залежь под курсором или рядом.
@@ -214,6 +252,15 @@ L — навести пневмопушку: клик по пушке, зате�
 V — провод: клик по источнику сигнала, затем по приёмнику (Shift — во второй вход гейта).
    Провод делается из выбранного материала; проводящий дотягивается дальше.
    ЛКМ по проводу — добавить путевую точку, тянуть — двигать, ПКМ по точке — удалить.
+
+M — макроблок: выделите прямоугольник с машинами (зажать ЛКМ и протянуть). Сохраняются
+   машины, настройки, провода и входы/выходы; библиотека общая для всех планет.
+   Поставить — в палитре (B), раздел «Макроблоки»; R — повернуть, C — свернуть в одну клетку.
+   Свёрнутый блок работает как одна машина: входы/выходы схемы выведены на его стороны.
+Логистика — на пушках: у пушки можно задать маршруты «груз с тегом → своя цель» (инспектор).
+   Сборные сооружения: 4 секции пневмобатареи квадратом — тяжёлая пушка (20 кг, ×2.2 дальность);
+   ловчие сети у приёмника ловят промахи; 4 секции склада квадратом — склад на 320 кг.
+F5 — сохранить, F9 — загрузить (автосохранение каждые 2 минуты).
 
 1–6 — абилки установленных модулей (цель — курсор).
 F — фабрикатор (рядом с ним): модули и детали робота из любого подходящего материала.
@@ -279,6 +326,8 @@ func show_briefing() -> void:
 	if p.goal.has("rare") and p.goal.id == "mining":
 		s += "  Редкий тег: [color=#ffd479]%s[/color]\n" % MaterialTags.display(p.goal.rare)
 	s += "\nУ вас 60 кг сплава посадочной капсулы. Для начала: фабрикатор (B), бур на залежь, контейнер.\nH — управление."
+	if SaveGame.exists("quick") or SaveGame.exists("auto"):
+		s += "\n[color=#ffd479]Есть сохранённая игра — F9, чтобы продолжить.[/color]"
 	briefing_label.text = s
 	windows.briefing.visible = true
 	_layout()
@@ -343,6 +392,39 @@ func _rebuild_palette() -> void:
 				main.start_build(k, sub_id)
 				windows.palette.visible = false)
 			flow.add_child(b)
+	var ml := _label(palette_box, 14)
+	ml.text = "Макроблоки (M — создать из выделения; общие для всех планет)"
+	if main.macro_lib.is_empty():
+		var e := _label(palette_box, 12)
+		e.text = "Пока нет. Постройте цепочку, нажмите M и протяните рамку по машинам."
+	for i in main.macro_lib.size():
+		var mb: Dictionary = main.macro_lib[i]
+		var row := HBoxContainer.new()
+		palette_box.add_child(row)
+		var b := Button.new()
+		b.text = "%s — %d×%d, машин %d, %s, ~%.0f кг" % [mb.name, int(mb.size[0]), int(mb.size[1]), mb.parts.size(), Macroblocks.describe_ports(mb), Macroblocks.cost(world, mb)]
+		b.tooltip_text = "Поставить развёрнутым"
+		b.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		var idx: int = i
+		b.pressed.connect(func():
+			main.start_macro(idx)
+			windows.palette.visible = false)
+		row.add_child(b)
+		var cb := Button.new()
+		cb.text = "Свёрнутым"
+		var cerr := MacroMachine.collapse_error(mb)
+		cb.disabled = cerr != ""
+		cb.tooltip_text = cerr if cerr != "" else "Вся схема в одной клетке"
+		cb.pressed.connect(func():
+			main.start_macro(idx, true)
+			windows.palette.visible = false)
+		row.add_child(cb)
+		var del := Button.new()
+		del.text = "Удалить"
+		del.pressed.connect(func():
+			main.delete_macro(idx)
+			_rebuild_palette())
+		row.add_child(del)
 
 func _rebuild_skills() -> void:
 	for c in skills_box.get_children():
@@ -512,6 +594,7 @@ func refresh() -> void:
 		else:
 			abil.append("(%s)" % d.n)
 	var mode_text := {"none": "", "build": "Строительство: %s — ЛКМ поставить, R повернуть, ПКМ отмена" % (Buildings.name_of(main.build_kind) if main.build_kind != "" else ""),
+		"macro_select": "Макроблок: протяните ЛКМ по машинам", "macro_place": "Макроблок%s: ЛКМ поставить, R повернуть, C свернуть/развернуть, ПКМ отмена" % (" (свёрнутый)" if main.macro_collapsed else ""),
 		"remove": "Снос — ЛКМ по машине", "wire": "Провод — источник, затем приёмник (Shift — вход 2)", "link": "Наведение пушки — пушка, затем приёмник"}
 	var sel := world.db.get_sub(r.selected) if r.selected != "" else null
 	status_label.text = "Корпус %.0f/%.0f   Баллон %.1f/%.1f   Масса %.0f   Бур тв. %.1f   Выбрано: %s\n%s\n%s" % [
@@ -521,6 +604,12 @@ func refresh() -> void:
 		mode_text.get(main.mode, "")]
 	if main.sim.paused and not blocks_game():
 		status_label.text += "   ПАУЗА"
+	var t: Tutorial = main.tutorial
+	tut_panel.visible = t != null
+	if t != null:
+		var st: Dictionary = t.current()
+		tut_label.text = "[b]Обучение %d/%d: %s[/b]\n%s\n[color=#9fb0c0][i]%s[/i][/color]" % [t.step + 1, Tutorial.STEPS.size(), st.title, st.text, st.hint]
+		tut_done_btn.visible = st.id == "goal"
 	msg_label.text = main.message if main.message_t > 0.0 else ""
 	msg_label.visible = main.message_t > 0.0
 	_refresh_inventory()
@@ -569,7 +658,7 @@ func _refresh_inspector() -> void:
 		if res.note != "":
 			lines.append("  " + res.note)
 	inspector_label.text = "\n".join(lines)
-	var sig := "%d:%s:%s" % [m.id, str(m.config), m.manual_off]
+	var sig := "%d:%s:%s:%s" % [m.id, str(m.config), m.manual_off, main.route_tag_pick]
 	if sig == _insp_sig:
 		return
 	_insp_sig = sig
@@ -595,8 +684,19 @@ func _refresh_inspector() -> void:
 		_btn("Выстрел +0.5", func(): m.config.fire_p += 0.5)
 		if not m.is_silo():
 			_btn("Навести (L)", func():
+				main.route_tag = ""
 				main.set_mode("link")
 				main.pending_cell = m.cell)
+			if main.route_tag_pick == "":
+				main.route_tag_pick = _next_tag("")
+			_btn("Тег маршрута: %s ▶" % MaterialTags.display(main.route_tag_pick), func(): main.route_tag_pick = _next_tag(main.route_tag_pick))
+			_btn("Маршрут → выбрать цель", func():
+				main.set_mode("link")
+				main.pending_cell = m.cell
+				main.route_tag = main.route_tag_pick)
+			for r in m.config.get("routes", []):
+				var tag: String = r[0]
+				_btn("✕ %s" % MaterialTags.display(tag), func(): m.config.routes = m.config.routes.filter(func(x): return x[0] != tag))
 	if m.config.has("mode"):
 		_btn("Режим ▶", func():
 			var i := LogicGate.MODES.find(m.config.mode)
