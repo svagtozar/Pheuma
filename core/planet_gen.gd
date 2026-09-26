@@ -29,11 +29,12 @@ static func generate(seed_value: int, width: int = 80, height: int = 60, forced_
 	var mr := rng.fork("mats")
 	p.materials = MaterialGen.generate(mr, mr.range_i(8, 12), p.tags, exotic_mult)
 
+	p.atmosphere = _make_atmosphere(p)
 	p.goal = _choose_goal(p, rng.fork("goal"))
 	_ensure_goal_feasible(p, rng.fork("carrier"), exotic_mult)
+	_ensure_buildable(p, rng.fork("builder"), exotic_mult)
 	for m in p.materials:
 		p.db.add(m)
-	p.atmosphere = _make_atmosphere(p)
 	p.db.add(p.atmosphere)
 
 	_generate_map(p, rng.fork("map"))
@@ -71,14 +72,30 @@ static func _choose_goal(p: Planet, rng: Rng) -> Dictionary:
 		var w: float = Goals.TEMPLATES[id].w
 		if id == "anomaly" and p.has_anomaly():
 			w = 1.0
+		if id == "archaeology" and p.has_tag("ancient_ruins"):
+			w = 1.0
 		for t in p.tags:
 			w *= PlanetTags.TAGS[t].get("goals", {}).get(id, 1.0)
 		weights[id] = w
 	var gid: String = rng.weighted_pick(ids, weights)
 	var goal: Dictionary = Goals.TEMPLATES[gid].duplicate(true)
 	goal.id = gid
-	var rare := _choose_rare_tag(p, rng)
-	for st in goal.stages:
+	var flat: Array = []
+	for raw in goal.stages:
+		flat.append_array(Goals.options(raw))
+	# «Узнать N тегов» — не больше, чем тегов в местном сырье: на бедной планете планка ниже.
+	# Считаются только теги, которые можно распознать касанием или пробой (не только наблюдением).
+	var present_n: int = p.material_tags_present().filter(func(t): return t in Probes.VISIBLE or Probes.probe_of(t) != "").size()
+	for st in flat:
+		if st.type == "discover_tags" and st.n > present_n:
+			st.n = max(12, present_n)
+			st.desc = "Узнать %d тегов" % st.n
+	var uses_rare := false
+	for st in flat:
+		if st.get("tag", "") == "{rare}" or st.get("tags", {}).has("{rare}"):
+			uses_rare = true
+	var rare := _choose_rare_tag(p, rng, uses_rare)
+	for st in flat:
 		if st.has("tag") and st.tag == "{rare}":
 			st.tag = rare
 		if st.has("tags") and st.tags.has("{rare}"):
@@ -88,8 +105,30 @@ static func _choose_goal(p: Planet, rng: Rng) -> Dictionary:
 	goal.rare = rare
 	return goal
 
+## Проба для планировщика: своя база веществ и робот со стартовыми открытиями.
+## Planner пользуется только полями db, planet и robot.
+class Probe:
+	var db := SubstanceDB.new()
+	var planet: Planet
+	var robot := RobotState.new()
+
+static func _probe(p: Planet) -> Probe:
+	var pr := Probe.new()
+	pr.planet = p
+	pr.robot.drill = pr.robot.new_module("hand_drill", World.starter_substance(), 0.0)
+	for m in p.materials:
+		pr.db.add(m)
+	return pr
+
+## Тег получается настоящей обработкой (с фазами и температурами), а не только по таблице тегов.
+static func _obtainable(pr: Probe, t: String, mats: Array) -> bool:
+	for m in mats:
+		if m.has(t):
+			return true
+	return Planner.feasible(pr, t, mats)
+
 ## Редкий тег: достижим переработкой, но нет ни у одного исходного материала.
-static func _choose_rare_tag(p: Planet, rng: Rng) -> String:
+static func _choose_rare_tag(p: Planet, rng: Rng, check: bool) -> String:
 	var present := p.material_tags_present()
 	var have := Recipes.reachable(present, p.tags)
 	var cands: Array = []
@@ -99,18 +138,132 @@ static func _choose_rare_tag(p: Planet, rng: Rng) -> String:
 	cands.sort()
 	if cands.is_empty():
 		return present[0] if not present.is_empty() else "dense"
-	return rng.pick(cands)
+	var start := rng.range_i(0, cands.size() - 1)
+	if not check:
+		return cands[start]
+	var pr := _probe(p)
+	for i in cands.size():
+		var t: String = cands[(start + i) % cands.size()]
+		if Planner.feasible(pr, t, p.materials):
+			return t
+	return cands[start]
 
-## Если нужный цели тег недостижим — подмешиваем материал-носитель с этим тегом.
+## Если нужный цели тег не получить — подмешиваем материал-носитель с этим тегом:
+## твёрдый при температуре среды и по зубам стартовому буру (если получится).
 static func _ensure_goal_feasible(p: Planet, rng: Rng, exotic_mult: float) -> void:
 	var used := {}
 	for m in p.materials:
 		used[m.root] = true
 	var weights := MaterialGen.tag_weights(p.tags, exotic_mult)
+	var pr := _probe(p)
+	var drill: float = pr.robot.mining_hardness() + 0.5
 	for t in Goals.required_tags(p.goal):
-		var have := Recipes.reachable(p.material_tags_present(), p.tags)
-		if not have.has(t):
-			p.materials.append(MaterialGen.generate_one(rng, weights, used, [t]))
+		if _obtainable(pr, t, p.materials):
+			continue
+		var best: Substance = null
+		for _i in 5:
+			var s := MaterialGen.generate_one(rng, weights, used, [t])
+			best = s
+			if s.phase_at(p.ambient_temp) == Substance.Phase.SOLID and s.hardness <= drill:
+				break
+		p.materials.append(best)
+		pr.db.add(best)
+
+## Машины, которые понадобятся под каждый тип этапа (все варианты развилок).
+const STAGE_KINDS := {
+	"launch_mass": ["launch_silo"], "launch_tag": ["launch_silo"], "launch_exotic": ["launch_silo"],
+	"dome_env": ["dome", "furnace", "sensor"], "beacon_hold": ["beacon"],
+	"deliveries": ["cannon", "receiver"], "sensor_network": ["sensor", "valve"],
+	"machines_working": ["furnace"],
+	"vent_gas": ["decompressor", "pump"], "launch_variety": ["launch_silo"],
+}
+const BASE_KINDS := ["drill", "container", "tank", "pump", "pipe"]
+const MAX_BUILDERS := 3
+
+## Нужные машины: базовые, машины цепочек тегов цели и машины этапов.
+## Возвращает {kind: true} и заполняет ores — исходные материалы цепочек (под бур).
+static func _needed_kinds(p: Planet, pr: Probe, ores: Array) -> Dictionary:
+	var kinds := {}
+	for k in BASE_KINDS:
+		kinds[k] = true
+	var flat: Array = []
+	for raw in p.goal.stages:
+		flat.append_array(Goals.options(raw))
+	for st in flat:
+		for k in STAGE_KINDS.get(st.type, []):
+			kinds[k] = true
+		if st.type == "build_count":
+			kinds[st.kind] = true
+	for t in Goals.required_tags(p.goal):
+		var pl := Planner.probe_plan(pr, t, p.materials)
+		if pl.is_empty():
+			continue
+		if not pl.mat in ores:
+			ores.append(pl.mat)
+		for step in pl.steps:
+			kinds[step.kind] = true
+	return kinds
+
+## Что берёт стартовый ручной бур робота (твёрдость + 0.5).
+static func _drill_limit() -> float:
+	var r := RobotState.new()
+	r.drill = r.new_module("hand_drill", World.starter_substance(), 0.0)
+	return r.mining_hardness() + 0.5
+
+## Есть ли материал планеты для постройки: подходит по свойствам, копается
+## стартовым буром и безопасен в руках. min_hard — для бура под твёрдую руду.
+static func _buildable_from(p: Planet, kind: String, min_hard: float = 0.0) -> bool:
+	var drill: float = _drill_limit()
+	for s in p.materials:
+		if s.hardness > drill or s.hardness < min_hard:
+			continue
+		if Buildings.check_material(kind, s, p.ambient_temp) != "":
+			continue
+		if Handling.safe_to_carry(s, p):
+			return true
+	return false
+
+## Если нужную машину не из чего построить — добавляем «строительный» материал.
+static func _ensure_buildable(p: Planet, rng: Rng, exotic_mult: float) -> void:
+	var used := {}
+	for m in p.materials:
+		used[m.root] = true
+	var weights := MaterialGen.tag_weights(p.tags, exotic_mult)
+	var pr := _probe(p)
+	var ores: Array = []
+	var kinds: Array = _needed_kinds(p, pr, ores).keys()
+	kinds.sort()
+	# Бур под каждую руду цепочек: не мягче руды − 0.5.
+	var needs: Array = []
+	for k in kinds:
+		needs.append([k, 0.0])
+	var drill_max: float = _drill_limit()
+	for ore in ores:
+		if ore.hardness - 0.5 > Buildings.KINDS.drill.hard and ore.hardness - 0.5 <= drill_max:
+			needs.append(["drill", ore.hardness - 0.5])
+	var added := 0
+	for nd in needs:
+		var kind: String = nd[0]
+		var min_hard: float = nd[1]
+		if _buildable_from(p, kind, min_hard):
+			continue
+		if added >= MAX_BUILDERS:
+			p.unbuildable.append(kind)
+			continue
+		var d: Dictionary = Buildings.KINDS[kind]
+		var forced: Array = [d.any[0]] if d.has("any") else (["dense"] if d.has("min_p") else ["metallic"])
+		var ok := false
+		for _i in 8:
+			var s := MaterialGen.generate_one(rng, weights, used, forced)
+			p.materials.append(s)
+			if _buildable_from(p, kind, min_hard):
+				ok = true
+				added += 1
+				pr.db.add(s)
+				break
+			p.materials.pop_back()
+		if not ok:
+			p.unbuildable.append(kind)
 
 static func _noise(rng: Rng, freq: float, type: int = FastNoiseLite.TYPE_SIMPLEX_SMOOTH) -> FastNoiseLite:
 	var n := FastNoiseLite.new()
@@ -186,7 +339,7 @@ static func _place_deposits(p: Planet, rng: Rng) -> void:
 						continue
 					if (c - p.spawn).length() < 3:
 						continue
-					p.deposits[c] = {"sub": m.id, "amount": rng.range_f(25.0, 70.0)}
+					p.deposits[c] = {"sub": m.id, "amount": rng.range_f(60.0, 150.0)}
 
 ## Клетка грунта рядом с препятствием: такие залежи требуют абилок мобильности.
 static func _cell_near_obstacle(p: Planet, rng: Rng) -> Vector2i:

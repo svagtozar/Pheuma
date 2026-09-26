@@ -50,6 +50,11 @@ const TAGS := {
 		"inc": [], "weights": {"crystalline": 2.2, "brittle": 1.6}, "goals": {"beacon": 1.3}},
 	"seismic": {"n": "сейсмическая", "desc": "Землетрясения иногда рвут трубы.",
 		"inc": [], "weights": {"dense": 1.3}, "terrain": ["chasm"], "goals": {"mining": 1.2}},
+	"fungal_biosphere": {"n": "грибная биосфера", "desc": "Грибницы повсюду: органика, волокна, споровые выбросы забивают насосы.",
+		"inc": ["frozen"], "atm": ["toxic"], "weights": {"organic": 2.5, "fibrous": 2.0, "toxic": 1.5},
+		"goals": {"science": 1.3, "terraform": 1.6}},
+	"ringed": {"n": "кольца", "desc": "Над горизонтом кольца; обломки падают вместе с металлом и тугоплавкой породой.",
+		"inc": [], "weights": {"metallic": 1.5, "crystalline": 1.5, "refractory": 2.0}, "goals": {"orbital": 2.0}},
 	# --- аномалии ---
 	"anomalous_field": {"n": "аномальное поле", "desc": "Невозможные свойства встречаются часто.",
 		"inc": [], "anomaly": true, "exotic_mult": 5.0, "goals": {"anomaly": 3.0}},
@@ -58,7 +63,10 @@ const TAGS := {
 	"temporal_drift": {"n": "временной дрейф", "desc": "Процессы идут то быстрее, то медленнее.",
 		"inc": [], "anomaly": true, "weights": {"chrono_lagged": 12.0}, "goals": {"science": 1.5}},
 	"ancient_ruins": {"n": "древние руины", "desc": "Остатки чужих машин и залежи экзотики.",
-		"inc": [], "anomaly": true, "exotic_mult": 3.0, "goals": {"anomaly": 3.0}},
+		"inc": [], "anomaly": true, "exotic_mult": 3.0, "goals": {"anomaly": 2.0, "archaeology": 4.0}},
+	"singularity": {"n": "сингулярность", "desc": "Рядом крошечная чёрная дыра: тяжело, время петляет, пустотное и сверхтекучее не редкость.",
+		"inc": ["low_gravity"], "anomaly": true, "grav": 1.6, "exotic_mult": 2.0,
+		"weights": {"void": 3.0, "chrono_lagged": 2.0, "superfluid": 2.0}, "goals": {"anomaly": 1.5}},
 }
 
 static func all() -> Array:

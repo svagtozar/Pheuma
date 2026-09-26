@@ -79,11 +79,24 @@ const PROCESSES := {
 		"dur": 4.0, "outs": 1, "temp": "sinter", "rules": [
 			{"all": ["porous"], "add": ["dense", "crystalline"]},
 			{"all": ["metallic"], "add": ["magnetic"]},
+			{"all": ["dense", "crystalline"], "add": ["refractory"]},
 		]},
 	"irradiator": {"n": "Облучатель", "desc": "Нужен радиоактивный источник (материал постройки или реагент слева).",
 		"dur": 3.0, "outs": 1, "source": "radioactive", "rules": [
 			{"add": ["luminous"], "remove": ["toxic"]},
 			{"all": ["magnetic"], "remove": ["magnetic"], "add": ["antigravitic"]},
+		]},
+	"cryochamber": {"n": "Криокамера", "desc": "Глубокая заморозка под давлением: летучее становится криогенным, криогенное летучее — сверхтекучим.",
+		"dur": 4.0, "gas_min": 1.5, "gas_use": 0.5, "outs": 1, "temp": "cryo", "rules": [
+			{"all": ["volatile"], "add": ["cryogenic"]},
+			{"all": ["cryogenic", "volatile"], "add": ["superfluid"]},
+			{"all": ["hygroscopic"], "remove": ["hygroscopic"], "add": ["brittle"]},
+		]},
+	"resonator": {"n": "Резонатор", "desc": "Нужен кристаллический камертон (материал постройки или реагент слева). Пористый кристалл собирается сам в себя.",
+		"dur": 3.0, "outs": 1, "source": "crystalline", "rules": [
+			{"all": ["crystalline", "porous"], "remove": ["porous"], "add": ["self_assembling"]},
+			{"all": ["brittle"], "add": ["porous"]},
+			{"all": ["metallic"], "add": ["conductive"]},
 		]},
 	"loom": {"n": "Ткацкий станок", "desc": "Из волокнистого делает упругое изолирующее полотно.",
 		"dur": 3.0, "outs": 1, "rules": [

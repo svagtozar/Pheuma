@@ -168,3 +168,11 @@ func test_cannon_modifiers():
 func test_handling_rules_reference_known_tags():
 	for r in HandlingRules.RULES:
 		assert_true(MaterialTags.TAGS.has(r.tag), r.tag)
+
+func test_volatile_cargo_does_not_evaporate_in_cannon():
+	var w := TestHelpers.world()
+	var vol := w.db.add(Substance.new("v", "V", ["volatile", "organic"]))
+	var c := w.place("cannon", Vector2i(3, 3), 0, w.starter, true)
+	c.store(Portion.new(vol, 5.0))
+	TestHelpers.run(w, 10.0)
+	assert_almost_eq(c.total_mass(), 5.0, 0.01)

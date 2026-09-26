@@ -10,7 +10,10 @@ var goal_label: Label
 var log_label: Label
 var status_label: Label
 var msg_label: Label
-var inv_list: ItemList
+var inv_box: VBoxContainer
+var inv_title: Label
+var inv_scroll: ScrollContainer
+var inv_collapsed := false
 var inspector_panel: PanelContainer
 var inspector_label: Label
 var inspector_buttons: HFlowContainer
@@ -22,16 +25,28 @@ var skills_title: Label
 var fab_box: VBoxContainer
 var fab_bp := ""
 var fab_mat: OptionButton
+var fab_go: Button
+var fab_reason: Label
+var fab_ids: Array = []
 var codex_label: RichTextLabel
 var briefing_label: RichTextLabel
 var tut_panel: PanelContainer
 var tut_label: RichTextLabel
 var tut_done_btn: Button
+var event_panel: PanelContainer
+var event_label: Label
+var choice_box: VBoxContainer
+var reward_box: VBoxContainer
+var macro_box: VBoxContainer
+var insp_inner := -1          # id внутренней машины свёрнутого блока, открытой в инспекторе
+const MODAL := ["briefing", "choice", "reward"]
 
 var _placed: Array = []       # [Control, anchor, offset]
 var _inv_sig := ""
 var _insp_sig := ""
 var _t := 0.0
+var _txt_t := 0.0
+var _force_text := true       # первый кадр и после действий — сразу
 
 func _ready() -> void:
 	mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -41,7 +56,7 @@ func _ready() -> void:
 
 ## Раскладка вручную: anchor — угол экрана, offset — смещение от него.
 func _layout() -> void:
-	var vp := get_viewport_rect().size
+	var vp: Vector2 = get_viewport_rect().size / (main.ui_scale if main != null else 1.0)
 	size = vp
 	for e in _placed:
 		var c: Control = e[0]
@@ -110,6 +125,7 @@ func _window(name: String, size: Vector2, title: String) -> VBoxContainer:
 	close.text = "✕"
 	close.pressed.connect(func(): p.visible = false)
 	head.add_child(close)
+	close.visible = not name in ["choice", "reward"]
 	windows[name] = p
 	return v
 
@@ -122,13 +138,16 @@ func _build() -> void:
 	var invp := _panel(Vector2(8, 190), Vector2(330, 0))
 	var iv := VBoxContainer.new()
 	invp.add_child(iv)
-	var it := _label(iv, 13)
-	it.text = "Инвентарь (Tab — выбор, клик — выбрать)"
-	inv_list = ItemList.new()
-	inv_list.custom_minimum_size = Vector2(314, 180)
-	inv_list.add_theme_font_size_override("font_size", 12)
-	inv_list.item_selected.connect(_on_inv_selected)
-	iv.add_child(inv_list)
+	inv_title = _label(iv, 13)
+	inv_title.autowrap_mode = TextServer.AUTOWRAP_OFF
+	inv_scroll = ScrollContainer.new()
+	inv_scroll.custom_minimum_size = Vector2(314, 0)
+	inv_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	iv.add_child(inv_scroll)
+	inv_box = VBoxContainer.new()
+	inv_box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	inv_box.add_theme_constant_override("separation", 2)
+	inv_scroll.add_child(inv_box)
 
 	inspector_panel = _panel(Vector2(-398, 140), Vector2(390, 0), Control.PRESET_TOP_RIGHT)
 	var insp := VBoxContainer.new()
@@ -178,6 +197,24 @@ func _build() -> void:
 	off.pressed.connect(func(): main.end_tutorial(false))
 	th.add_child(off)
 	tut_panel.visible = false
+
+	# Событие планеты.
+	event_panel = _panel(Vector2(-300, 8), Vector2(600, 0), Control.PRESET_CENTER_TOP)
+	var esb := StyleBoxFlat.new()
+	esb.bg_color = Color(0.25, 0.08, 0.05, 0.88)
+	esb.border_color = Color(1.0, 0.5, 0.3)
+	esb.set_border_width_all(1)
+	esb.set_corner_radius_all(4)
+	esb.set_content_margin_all(8)
+	event_panel.add_theme_stylebox_override("panel", esb)
+	event_label = _label(event_panel, 14)
+	event_label.custom_minimum_size = Vector2(584, 0)
+	event_panel.visible = false
+
+	# Выбор пути и награда за этап.
+	choice_box = _window("choice", Vector2(800, 250), "Выбор пути")
+	reward_box = _window("reward", Vector2(820, 250), "Этап выполнен — выберите награду")
+	macro_box = _window("macro_actions", Vector2(620, 190), "Выделенная схема")
 
 	# Палитра построек.
 	var pv := _window("palette", Vector2(820, 600), "Постройки (B)")
@@ -240,8 +277,14 @@ func _build() -> void:
 
 const HELP := """Движение — WASD / стрелки. Колесо мыши — масштаб.
 E (удерживать) — копать залежь под курсором или рядом.
-Z — анализ касанием: материал в соседней клетке или выбранный в инвентаре.
-Tab / [ ] — выбрать материал в инвентаре.
+Z — касание: физика материала рядом и видимые теги (блеск, грани, волокна…). Остальные теги скрыты:
+   в карточке выбранного материала (инвентарь) — пробы Нагрев, Капля, Магнит, Ток, Счётчик. Проба тратит
+   0.5 кг образца и говорит «есть/нет» про свой набор тегов. Что-то выдаёт только поведение: утечка из бака,
+   пламя в печи, рост в контейнере — следите за журналом. Карточка: Известно / Исключено / Возможно.
+   Клик по возможному тегу — догадка (до трёх): «Проверить» вдвое дешевле пробы, верная догадка даёт знание.
+   Лаборатория (Шаман, «Чутьё веществ») сама пробует всё, что проходит насквозь, и даёт сигнал, узнав новое.
+Tab / [ ] — выбрать материал в инвентаре (или клик по строке). I — свернуть инвентарь.
+   У выбранного материала: пробы, «Выбросить». Наведите курсор на машину — полное имя и состояние.
 G (удерживать) — подкачать бортовой баллон (от бака/трубы рядом или вручную из атмосферы).
 
 B — постройки. ЛКМ — поставить, R — повернуть, ПКМ/Esc — отмена. Трубы можно тянуть.
@@ -253,20 +296,35 @@ V — провод: клик по источнику сигнала, затем 
    Провод делается из выбранного материала; проводящий дотягивается дальше.
    ЛКМ по проводу — добавить путевую точку, тянуть — двигать, ПКМ по точке — удалить.
 
-M — макроблок: выделите прямоугольник с машинами (зажать ЛКМ и протянуть). Сохраняются
-   машины, настройки, провода и входы/выходы; библиотека общая для всех планет.
+M — макроблок: выделите прямоугольник с машинами (зажать ЛКМ и протянуть), затем выберите:
+   «Сохранить в библиотеку», «Свернуть на месте» (работающая схема со всем грузом и газом
+   становится одной клеткой) или оба сразу. Библиотека общая для всех планет.
    Поставить — в палитре (B), раздел «Макроблоки»; R — повернуть, C — свернуть в одну клетку.
-   Свёрнутый блок работает как одна машина: входы/выходы схемы выведены на его стороны.
+   Свёрнутый блок работает как одна машина: входы/выходы груза — на его сторонах,
+   газовые порты (кружок цвета давления) соединяются с соседними трубами, провода через
+   границу схемы становятся сигнальными входом и выходом блока (жёлтые треугольники).
+   Инспектор блока: список машин внутри — у каждой свои настройки; «Развернуть» — обратно в машины.
 Логистика — на пушках: у пушки можно задать маршруты «груз с тегом → своя цель» (инспектор).
    Сборные сооружения: 4 секции пневмобатареи квадратом — тяжёлая пушка (20 кг, ×2.2 дальность);
    ловчие сети у приёмника ловят промахи; 4 секции склада квадратом — склад на 320 кг.
-F5 — сохранить, F9 — загрузить (автосохранение каждые 2 минуты).
+F5 — быстрое сохранение, F9 — загрузить последнее; пять слотов — в меню паузы (Esc).
 
-1–6 — абилки установленных модулей (цель — курсор).
+E на клетке руин (древние руины) — раскопки: артефакты с невозможными тегами; клетка вырабатывается за 10 кг.
+1–6 — абилки установленных модулей (цель — курсор). Сейсмозаряд выводит новые жилы, камертон раскрывает
+   всё вокруг, походная кузня спекает выбранное в руках, холодильный ранец не даёт грузу гореть в руках.
+Криокамера делает летучее криогенным, а криогенное летучее — сверхтекучим (утекает сквозь стенки, кроме плотных).
+   Резонатор (кристалл в стенках или слева) собирает пористый кристалл в самосборный — он чинит контейнер.
+   Тугоплавкое (спекатель: плотное + кристаллическое) держит на 300 °C больше.
 F — фабрикатор (рядом с ним): модули и детали робота из любого подходящего материала.
 K — прокачка: шесть классов. Знания дают открытия, опыт — действия класса.
 J — справочник тегов: как теги меняют обращение с материалом и как их получить.
-P — пауза. Shift+N — новая планета. H — эта справка.
+Esc — пауза и меню (сохранение в слоты, загрузка, настройки, выход в главное меню).
+P — пауза без меню. Shift+N — новая планета. H — эта справка.
+
+События планеты: метеоритные дожди, гейзеры, бури, землетрясения, кислотные ливни, вспышки
+   аномалии, перепады температуры, споровые выбросы (забивают насосы), обломки колец, временные петли. Сначала предупреждение (красный баннер сверху), потом само событие.
+   Почти каждое несёт и угрозу, и возможность: новые залежи, бесплатный газ, невозможные теги.
+Цели: у этапов 2 и 3 можно выбрать путь. За каждый этап — одна награда из трёх карточек.
 
 Выход машин — по стрелке, второй выход (у разделителей) — голубая стрелка справа.
 Вход — сзади и сбоку; у обработчика и облучателя левый бок — вход реагента/источника.
@@ -279,7 +337,7 @@ func toggle(name: String) -> void:
 	var w: Control = windows[name]
 	var show := not w.visible
 	for k in windows:
-		if k != "briefing":
+		if not k in MODAL:
 			windows[k].visible = false
 	w.visible = show
 	_layout()
@@ -292,11 +350,11 @@ func toggle(name: String) -> void:
 
 func close_all() -> void:
 	for k in windows:
-		if k != "briefing":
+		if not k in MODAL:
 			windows[k].visible = false
 
 func blocks_game() -> bool:
-	return windows.briefing.visible or windows.help.visible
+	return windows.briefing.visible or windows.help.visible or windows.choice.visible or windows.reward.visible
 
 func handle_key(e: InputEventKey) -> bool:
 	if windows.briefing.visible:
@@ -320,8 +378,9 @@ func show_briefing() -> void:
 	s += "Материалов на планете: %d (теги неизвестны до анализа)\n\n" % p.materials.size()
 	s += "[b]Цель: %s[/b]\n%s\n" % [p.goal.n, p.goal.desc]
 	var i := 1
-	for st in p.goal.stages:
-		s += "  %d. %s\n" % [i, st.desc]
+	for raw in p.goal.stages:
+		var opts: Array = Goals.options(raw)
+		s += "  %d. %s\n" % [i, " [color=#9fb0c0]или[/color] ".join(opts.map(func(o): return o.desc))]
 		i += 1
 	if p.goal.has("rare") and p.goal.id == "mining":
 		s += "  Редкий тег: [color=#ffd479]%s[/color]\n" % MaterialTags.display(p.goal.rare)
@@ -380,16 +439,21 @@ func _rebuild_palette() -> void:
 			var b := Button.new()
 			b.text = "%s (%.0f кг)" % [Buildings.name_of(k), world.build_cost(k)]
 			var reason := ""
+			var use: Substance = world.pick_build_material(k, sub)
 			if not world.robot.unlocked.has(k):
-				reason = "не изучено"
-			elif sub != null:
-				reason = Buildings.check_material(k, sub, world.planet.ambient_temp)
+				reason = "не изучено — откройте в прокачке (K)"
+			elif use == null:
+				var why := Buildings.check_material(k, sub, world.planet.ambient_temp) if sub != null else ""
+				reason = "нет подходящего материала: нужно %.0f кг твёрдого материала с твёрдостью ≥ %.1f%s" % [world.build_cost(k), Buildings.KINDS[k].get("hard", 0.0), " (" + why + ")" if why != "" else ""]
+			if use != null and use != sub and reason == "":
+				b.text += " — из «%s»" % use.name
 			b.tooltip_text = Buildings.desc_of(k) + ("\n\nНельзя: " + reason if reason != "" else "")
-			if sub != null and reason == "":
-				b.tooltip_text += "\n\nИз этого материала:\n" + "\n".join(ComponentStats.describe(k, sub, world.robot.passive("quality")))
+			if use != null and reason == "":
+				b.tooltip_text += "\n\nИз «%s»:\n" % use.name + "\n".join(ComponentStats.describe(k, use, world.robot.passive("quality")))
 			b.disabled = reason != ""
+			var uid: String = use.id if use != null else ""
 			b.pressed.connect(func():
-				main.start_build(k, sub_id)
+				main.start_build(k, uid)
 				windows.palette.visible = false)
 			flow.add_child(b)
 	var ml := _label(palette_box, 14)
@@ -461,15 +525,24 @@ func _rebuild_fab() -> void:
 	for c in fab_box.get_children():
 		if c.get_index() > 0:
 			c.queue_free()
+	fab_go = null
+	fab_reason = null
 	var r := world.robot
-	var near := false
-	for m in world.machines_of("fabricator"):
-		if world.near_robot(m.cell, 2.5):
-			near = true
+	var ability_bps: Array = r.blueprints.keys().filter(func(k): return Modules.MODULES[k].slot == "ability")
 	var l := _label(fab_box, 13)
-	l.text = "Изготовление доступно рядом с фабрикатором." if not near else "Выберите чертёж и материал. Свойства модуля зависят от материала."
+	l.text = "Выберите чертёж и материал — свойства модуля зависят от материала. Работает, если робот не дальше %.1f кл. от фабрикатора." % World.FAB_RADIUS
+	if ability_bps.is_empty():
+		var hint := _label(fab_box, 13)
+		hint.add_theme_color_override("font_color", Color(1.0, 0.85, 0.4))
+		hint.text = "Чертежей модулей с абилками пока нет. Откройте прокачку (K) и изучите первый узел любого класса — он стоит 1 знание и открывает чертёж. Здесь пока можно сделать новый корпус или ручной бур."
+		var kb := Button.new()
+		kb.text = "Открыть прокачку"
+		kb.pressed.connect(func(): toggle("skills"))
+		fab_box.add_child(kb)
 	var bps := HFlowContainer.new()
 	fab_box.add_child(bps)
+	if fab_bp == "" or not r.blueprints.has(fab_bp):
+		fab_bp = ability_bps[0] if not ability_bps.is_empty() else "hull"
 	for k in Modules.MODULES:
 		if not r.blueprints.has(k):
 			continue
@@ -492,13 +565,13 @@ func _rebuild_fab() -> void:
 		fab_mat = OptionButton.new()
 		fab_mat.custom_minimum_size = Vector2(520, 0)
 		h.add_child(fab_mat)
-		var ids := _eligible(func(s): return Modules.check_material(fab_bp, s, world.planet.ambient_temp))
-		_fill_material_option(fab_mat, ids, r.selected)
+		fab_ids = _eligible(func(s): return Modules.check_material(fab_bp, s, world.planet.ambient_temp) if world.robot.mass_of(s.id) >= d.cost else "мало")
+		_fill_material_option(fab_mat, fab_ids, r.selected)
 		var preview := _label(fab_box, 12)
 		var upd := func():
 			var sid := _selected_meta(fab_mat)
 			if sid == "":
-				preview.text = "Нет подходящего материала."
+				preview.text = ""
 				return
 			var sk: String = fab_bp if fab_bp in ["hull", "hand_drill"] else "module"
 			var st := ComponentStats.compute(sk, world.db.get_sub(sid), r.passive("quality"))
@@ -506,13 +579,16 @@ func _rebuild_fab() -> void:
 				st.max_hp, st.hardness, st.mass, st.flex, st.shield_heat * 100, st.shield_radiation * 100, st.shield_toxic * 100, st.shield_acid * 100]
 		upd.call()
 		fab_mat.item_selected.connect(func(_i): upd.call())
-		var go := Button.new()
-		go.text = "Изготовить"
-		go.disabled = not near or ids.is_empty()
-		go.pressed.connect(func():
-			main.say(world.fabricate(fab_bp, world.db.get_sub(_selected_meta(fab_mat))))
+		fab_go = Button.new()
+		fab_go.text = "Изготовить"
+		fab_go.pressed.connect(func():
+			var sid := _selected_meta(fab_mat)
+			main.say(world.fabricate(fab_bp, world.db.get_sub(sid)) if sid != "" else "нет подходящего материала")
 			_rebuild_fab())
-		h.add_child(go)
+		h.add_child(fab_go)
+		fab_reason = _label(fab_box, 13)
+		fab_reason.add_theme_color_override("font_color", Color(1.0, 0.45, 0.4))
+		_update_fab_state()
 	var sep := HSeparator.new()
 	fab_box.add_child(sep)
 	var ml := _label(fab_box, 13)
@@ -546,6 +622,23 @@ func _rebuild_fab() -> void:
 			_rebuild_fab())
 		hb.add_child(eb)
 
+## Живое состояние кнопки «Изготовить»: почему нельзя — красным.
+func _update_fab_state() -> void:
+	if fab_go == null or not is_instance_valid(fab_go):
+		return
+	var why := ""
+	var dist := world.fabricator_distance()
+	if dist == INF:
+		why = "Нет фабрикатора: поставьте его (B → Добыча и хранение → Фабрикатор)."
+	elif dist > World.FAB_RADIUS:
+		why = "Подойдите к фабрикатору: сейчас %.1f кл., нужно не дальше %.1f." % [dist, World.FAB_RADIUS]
+	elif fab_ids.is_empty():
+		var d: Dictionary = Modules.MODULES[fab_bp]
+		why = "Нет подходящего материала: нужно %.0f кг твёрдого материала с твёрдостью ≥ %.1f%s." % [d.cost, d.get("hard", 0.0),
+			" и тегом " + " или ".join(d.any.map(func(t): return MaterialTags.display(t))) if d.has("any") else ""]
+	fab_go.disabled = why != ""
+	fab_reason.text = why
+
 func _rebuild_codex() -> void:
 	var r := world.robot
 	var recipes_ok: bool = r.has_module("predictor") or r.learned.has("s3")
@@ -559,6 +652,7 @@ func _rebuild_codex() -> void:
 			continue
 		var col := "#e0a8ff" if MaterialTags.is_exotic(t) else "#a8d8ff"
 		s += "[b][color=%s]%s[/color][/b]\n" % [col, MaterialTags.display(t)]
+		s += "  [color=#9fd8a0]распознать:[/color] %s\n" % Probes.how(t)
 		for rule in HandlingRules.rules_for(t):
 			s += "  · %s\n" % rule.desc
 		if recipes_ok:
@@ -568,13 +662,24 @@ func _rebuild_codex() -> void:
 
 # ---------------------------------------------------------------- обновление
 
-func _on_inv_selected(i: int) -> void:
-	world.robot.selected = inv_list.get_item_metadata(i)
+func toggle_inventory() -> void:
+	inv_collapsed = not inv_collapsed
+	_inv_sig = ""
 
 func refresh() -> void:
 	if world == null:
 		return
 	_t += get_process_delta_time()
+	msg_label.text = main.message if main.message_t > 0.0 else ""
+	msg_label.visible = main.message_t > 0.0
+	_refresh_event()
+	_refresh_goal_windows()
+	# Тексты панелей и раскладка — 10 раз в секунду, а не каждый кадр.
+	_txt_t -= get_process_delta_time()
+	if _txt_t > 0.0 and not _force_text:
+		return
+	_txt_t = 0.1
+	_force_text = false
 	var r := world.robot
 	var p := world.planet
 	info_label.text = "%s  (seed %d)\n%s\n%.0f °C · %.2f атм · %.2f g\nЗнания: %d · Тегов известно: %d · Машин: %d/%d" % [
@@ -596,6 +701,10 @@ func refresh() -> void:
 	var mode_text := {"none": "", "build": "Строительство: %s — ЛКМ поставить, R повернуть, ПКМ отмена" % (Buildings.name_of(main.build_kind) if main.build_kind != "" else ""),
 		"macro_select": "Макроблок: протяните ЛКМ по машинам", "macro_place": "Макроблок%s: ЛКМ поставить, R повернуть, C свернуть/развернуть, ПКМ отмена" % (" (свёрнутый)" if main.macro_collapsed else ""),
 		"remove": "Снос — ЛКМ по машине", "wire": "Провод — источник, затем приёмник (Shift — вход 2)", "link": "Наведение пушки — пушка, затем приёмник"}
+	if main.mode == "build" and main.build_kind != "":
+		var err: String = world.can_place(main.build_kind, main.mouse_cell(), main.build_material())
+		var bm: Substance = main.build_material()
+		mode_text["build"] += "\nМатериал: %s. %s" % [bm.name if bm != null else "—", "Можно ставить." if err == "" else "Здесь нельзя: " + err]
 	var sel := world.db.get_sub(r.selected) if r.selected != "" else null
 	status_label.text = "Корпус %.0f/%.0f   Баллон %.1f/%.1f   Масса %.0f   Бур тв. %.1f   Выбрано: %s\n%s\n%s" % [
 		r.hp, r.max_hp(), r.tank, r.tank_cap(), r.total_mass(), r.mining_hardness(),
@@ -610,37 +719,307 @@ func refresh() -> void:
 		var st: Dictionary = t.current()
 		tut_label.text = "[b]Обучение %d/%d: %s[/b]\n%s\n[color=#9fb0c0][i]%s[/i][/color]" % [t.step + 1, Tutorial.STEPS.size(), st.title, st.text, st.hint]
 		tut_done_btn.visible = st.id == "goal"
-	msg_label.text = main.message if main.message_t > 0.0 else ""
-	msg_label.visible = main.message_t > 0.0
 	_refresh_inventory()
 	_layout()
+	if windows.fabricator.visible:
+		_update_fab_state()
 	if _t > 0.2:
 		_t = 0.0
 		_refresh_inspector()
 
+func _refresh_event() -> void:
+	var txt: String = world.director.status_text()
+	event_panel.visible = txt != ""
+	event_label.text = txt
+	# Баннер события — под панелью обучения, если она видна.
+	for e in _placed:
+		if e[0] == event_panel:
+			e[2] = Vector2(-300, (tut_panel.size.y + 16.0) if tut_panel.visible else 8.0)
+
+func _card(parent: Container, title: String, body: String, f: Callable) -> void:
+	var b := Button.new()
+	b.custom_minimum_size = Vector2(240, 150)
+	b.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	b.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	b.add_theme_font_size_override("font_size", 14)
+	b.text = "%s\n\n%s" % [title, body]
+	b.pressed.connect(f)
+	parent.add_child(b)
+
+## Окна выбора пути и награды открываются сами, когда трекер цели их ждёт.
+func _refresh_goal_windows() -> void:
+	var g: GoalsTracker = world.goals
+	if main.in_menu or main.menus.any_open() or windows.briefing.visible:
+		return
+	if not g.reward_pending.is_empty():
+		if not windows.reward.visible:
+			for c in reward_box.get_children():
+				if c.get_index() > 0:
+					c.queue_free()
+			var l := _label(reward_box, 13)
+			l.text = "Возьмите одну карточку."
+			var row := HBoxContainer.new()
+			row.add_theme_constant_override("separation", 10)
+			reward_box.add_child(row)
+			for id in g.reward_pending:
+				var cid: String = id
+				_card(row, Rewards.CARDS[cid].n, Rewards.CARDS[cid].desc, func():
+					main.say(g.take_reward(cid))
+					windows.reward.visible = false)
+			windows.reward.visible = true
+			_layout()
+		return
+	windows.reward.visible = false
+	if g.choice_pending():
+		if not windows.choice.visible:
+			for c in choice_box.get_children():
+				if c.get_index() > 0:
+					c.queue_free()
+			var l := _label(choice_box, 13)
+			l.text = "%s — этап %d из %d. Выберите, как его пройти:" % [g.goal().n, g.stage + 1, g.goal().stages.size()]
+			var row := HBoxContainer.new()
+			row.add_theme_constant_override("separation", 10)
+			choice_box.add_child(row)
+			var alts: Array = g.raw_stage(g.stage).alt
+			for i in alts.size():
+				var idx: int = i
+				var st: Dictionary = alts[i]
+				var extra := ""
+				if st.has("tag"):
+					extra = "\nтег: " + MaterialTags.display(st.tag)
+				_card(row, st.desc, st.get("pitch", "") + extra, func():
+					g.choose(idx)
+					windows.choice.visible = false)
+			windows.choice.visible = true
+			_layout()
+	else:
+		windows.choice.visible = false
+
 func _refresh_inventory() -> void:
 	var r := world.robot
 	var keys: Array = r.inventory.keys()
-	keys.sort()
-	var sig := ""
+	keys.sort_custom(func(a, b): return r.inventory[a].mass > r.inventory[b].mass)
+	var sig := "%s|" % inv_collapsed
 	for k in keys:
-		sig += "%s:%.1f:%s;" % [k, r.inventory[k].mass, world.is_analyzed(world.db.get_sub(k))]
-	sig += r.selected
+		var ks: Substance = world.db.get_sub(k)
+		sig += "%s:%.1f:%s:%d:%d:%d;" % [k, r.inventory[k].mass, world.is_analyzed(ks), r.inventory[k].phase(),
+			world.known_tags_of(ks).size(), world.excluded_of(ks).size()]
+	sig += r.selected + ":%d:%s:%s:%s" % [int(r.tank * 10.0), r.last_probe.length(), r.focus_sub, str(r.hypotheses)]
+	var fs: Substance = world.db.get_sub(r.focus_sub) if r.focus_sub != "" else null
+	if fs != null:
+		sig += ":%d:%d:%s" % [world.known_tags_of(fs).size(), world.excluded_of(fs).size(), world.probe_deposit(fs.id) != null]
 	if sig == _inv_sig:
 		return
 	_inv_sig = sig
-	inv_list.clear()
+	for c in inv_box.get_children():
+		c.queue_free()
+	inv_title.text = "Инвентарь — %.1f кг  (I — %s, Tab — выбор)" % [r.carried_mass(), "развернуть" if inv_collapsed else "свернуть"]
+	inv_scroll.visible = not inv_collapsed
+	if inv_collapsed:
+		return
+	if keys.is_empty():
+		var e := _label(inv_box, 12)
+		e.text = "Пусто. Подойдите к залежи и держите E."
 	for k in keys:
-		var pt: Portion = r.inventory[k]
-		var idx := inv_list.add_item("%s — %.1f кг" % [world.sub_label(pt.substance), pt.mass])
-		inv_list.set_item_metadata(idx, k)
-		inv_list.set_item_icon_modulate(idx, pt.substance.color)
-		inv_list.set_item_custom_fg_color(idx, pt.substance.color.lightened(0.4))
-		var tip := "T плавл. %.0f °C, T кип. %.0f °C, плотность %.1f, твёрдость %.1f\nСейчас: %s, %.0f °C" % [
-			pt.substance.melt, pt.substance.boil, pt.substance.density, pt.substance.hardness, Substance.PHASE_NAMES[pt.phase()], pt.temp]
-		inv_list.set_item_tooltip(idx, tip)
-		if k == r.selected:
-			inv_list.select(idx)
+		inv_box.add_child(_inv_row(k, k == r.selected))
+	_deposit_card()
+	inv_scroll.custom_minimum_size.y = min(460.0, keys.size() * 46.0 + (190.0 if r.selected != "" else 0.0))
+
+func _inv_row(id: String, selected: bool) -> Control:
+	var r := world.robot
+	var pt: Portion = r.inventory[id]
+	var s: Substance = pt.substance
+	var card := PanelContainer.new()
+	var sb := StyleBoxFlat.new()
+	sb.bg_color = Color(0.2, 0.32, 0.45, 0.9) if selected else Color(0.12, 0.13, 0.16, 0.9)
+	sb.border_color = Color(0.5, 0.8, 1.0) if selected else Color(0, 0, 0, 0)
+	sb.set_border_width_all(1)
+	sb.set_corner_radius_all(3)
+	sb.set_content_margin_all(4)
+	card.add_theme_stylebox_override("panel", sb)
+	card.mouse_filter = Control.MOUSE_FILTER_STOP
+	card.tooltip_text = "T плавл. %.0f °C, T кип. %.0f °C, плотность %.1f, твёрдость %.1f\nСейчас: %s, %.0f °C" % [
+		s.melt, s.boil, s.density, s.hardness, Substance.PHASE_NAMES[pt.phase()], pt.temp]
+	card.gui_input.connect(func(ev):
+		if ev is InputEventMouseButton and ev.pressed and ev.button_index == MOUSE_BUTTON_LEFT:
+			r.selected = id
+			_inv_sig = "")
+	var v := VBoxContainer.new()
+	v.add_theme_constant_override("separation", 0)
+	card.add_child(v)
+	var h := HBoxContainer.new()
+	v.add_child(h)
+	var sw := ColorRect.new()
+	sw.color = s.color
+	sw.custom_minimum_size = Vector2(14, 14)
+	sw.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	sw.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	h.add_child(sw)
+	var name_l := Label.new()
+	name_l.text = s.name + ("" if pt.phase() == Substance.Phase.SOLID else "  (%s)" % Substance.PHASE_NAMES[pt.phase()])
+	name_l.add_theme_font_size_override("font_size", 13)
+	name_l.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	name_l.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	name_l.custom_minimum_size = Vector2(150, 0)
+	name_l.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	h.add_child(name_l)
+	var mass_l := Label.new()
+	mass_l.text = "%.1f кг" % pt.mass
+	mass_l.add_theme_font_size_override("font_size", 13)
+	mass_l.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	h.add_child(mass_l)
+	var tags := Label.new()
+	tags.add_theme_font_size_override("font_size", 11)
+	tags.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	tags.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	var known: Array = world.known_tags_of(s).map(func(t): return MaterialTags.display(t))
+	var unknown := world.unknown_count(s)
+	if not world.is_analyzed(s) and known.is_empty():
+		tags.text = "не ощупан — Z рядом с залежью или выберите и сделайте пробу"
+		tags.add_theme_color_override("font_color", Color(1.0, 0.8, 0.4))
+	else:
+		tags.text = ", ".join(known) + (("  +%d ?" % unknown) if unknown > 0 else "  · опознан")
+		tags.add_theme_color_override("font_color", Color(0.7, 0.78, 0.85) if unknown == 0 else Color(0.95, 0.85, 0.6))
+	v.add_child(tags)
+	if selected:
+		_material_card(v, s)
+		var btns := HBoxContainer.new()
+		v.add_child(btns)
+		for amt in [1.0, 5.0]:
+			var d := Button.new()
+			d.text = "Выбросить %.0f кг" % amt
+			d.add_theme_font_size_override("font_size", 11)
+			var a: float = amt
+			d.pressed.connect(func():
+				world.drop_from_inventory(id, a)
+				_inv_sig = "")
+			btns.add_child(d)
+		var all := Button.new()
+		all.text = "Всё"
+		all.add_theme_font_size_override("font_size", 11)
+		all.pressed.connect(func():
+			world.drop_from_inventory(id, pt.mass)
+			_inv_sig = "")
+		btns.add_child(all)
+	return card
+
+## Карточка расследования выбранного материала: физика, известное, исключённое,
+## возможное и пробы (каждая тратит образец).
+## Карточка залежи, которой коснулись (Z): пробы берут образец прямо из неё —
+## так можно изучить и жидкость или газ, которые не унести в руках.
+func _deposit_card() -> void:
+	var r := world.robot
+	if r.focus_sub == "" or r.inventory.has(r.focus_sub):
+		return
+	var s: Substance = world.db.get_sub(r.focus_sub)
+	if s == null or world.probe_deposit(s.id) == null:
+		return
+	var card := PanelContainer.new()
+	var sb := StyleBoxFlat.new()
+	sb.bg_color = Color(0.22, 0.3, 0.2, 0.9)
+	sb.set_corner_radius_all(3)
+	sb.set_content_margin_all(4)
+	card.add_theme_stylebox_override("panel", sb)
+	var v := VBoxContainer.new()
+	card.add_child(v)
+	var t := _label(v, 12)
+	t.text = "Залежь рядом: " + world.sub_label(s)
+	t.custom_minimum_size = Vector2(300, 0)
+	_material_card(v, s)
+	inv_box.add_child(card)
+
+func _material_card(v: VBoxContainer, s: Substance) -> void:
+	var r := world.robot
+	var info := _label(v, 11)
+	info.custom_minimum_size = Vector2(300, 0)
+	var lines: Array = []
+	if world.is_analyzed(s):
+		lines.append("тв. %.1f · плотн. %.1f · плавится %.0f °C · кипит %.0f °C" % [s.hardness, s.density, s.melt, s.boil])
+	var ex: Array = world.excluded_of(s).map(func(t): return MaterialTags.display(t))
+	if not ex.is_empty():
+		lines.append("Исключено тегов: %d (наведите — список)" % ex.size())
+		info.mouse_filter = Control.MOUSE_FILTER_STOP
+		info.tooltip_text = "Исключено: " + ", ".join(ex)
+	info.text = "\n".join(lines)
+	info.add_theme_color_override("font_color", Color(0.75, 0.8, 0.88))
+	if world.unknown_count(s) > 0:
+		# Возможные теги — кнопки: клик ставит или снимает догадку.
+		var hyp: Array = world.hypotheses_of(s)
+		var ph := _label(v, 11)
+		ph.text = "Возможно (клик — догадка, до %d; верная даёт знание):" % world.MAX_HYPOTHESES
+		ph.add_theme_color_override("font_color", Color(0.75, 0.8, 0.88))
+		var pf := HFlowContainer.new()
+		v.add_child(pf)
+		var pos: Array = world.possible_of(s)
+		for t in pos.slice(0, 14):
+			var tb := Button.new()
+			var on: bool = t in hyp
+			tb.text = ("✦ " if on else "") + MaterialTags.display(t)
+			tb.flat = not on
+			tb.add_theme_font_size_override("font_size", 10)
+			tb.tooltip_text = "Распознать: " + Probes.how(t)
+			var tag: String = t
+			tb.pressed.connect(func():
+				var e3: String = world.toggle_hypothesis(s, tag)
+				if e3 != "":
+					main.say(e3)
+				_inv_sig = "")
+			pf.add_child(tb)
+		if pos.size() > 14:
+			var more := _label(pf, 10)
+			more.text = "…ещё %d" % (pos.size() - 14)
+		# Проверка догадок: вдвое дешевле пробы, но только про один тег.
+		if not hyp.is_empty():
+			var hf := HFlowContainer.new()
+			v.add_child(hf)
+			for t in hyp:
+				var cb := Button.new()
+				cb.text = "Проверить «%s»" % MaterialTags.display(t)
+				cb.add_theme_font_size_override("font_size", 11)
+				var cerr: String = world.check_error(s.id, t)
+				cb.disabled = cerr != ""
+				cb.tooltip_text = "Образец %.2f кг. %s" % [world.probe_cost() * 0.5, cerr]
+				var tag2: String = t
+				cb.pressed.connect(func():
+					var e4: String = world.check_hypothesis(s.id, tag2)
+					if e4 != "":
+						main.say(e4)
+					_inv_sig = "")
+				hf.add_child(cb)
+		var pb := HFlowContainer.new()
+		v.add_child(pb)
+		for id in Probes.ORDER:
+			var d: Dictionary = Probes.PROBES[id]
+			var b := Button.new()
+			b.text = d.n
+			b.add_theme_font_size_override("font_size", 11)
+			var err: String = world.probe_error(s.id, id)
+			b.disabled = err != ""
+			var names: Array = d.tags.filter(func(t): return not MaterialTags.is_exotic(t) or r.known_tags.has(t)).map(func(t): return MaterialTags.display(t))
+			b.tooltip_text = "%s\nРазличает: %s\nОбразец %.1f кг%s%s" % [d.desc, ", ".join(names), world.probe_cost(),
+				(", газ %.1f" % d.gas) if d.gas > 0.0 else "", ("\nНельзя: " + err) if err != "" else ""]
+			var pid: String = id
+			b.pressed.connect(func():
+				var e2: String = world.probe(s.id, pid)
+				if e2 != "":
+					main.say(e2)
+				_inv_sig = "")
+			pb.add_child(b)
+		if r.passive("probe_all") > 0:
+			var all_b := Button.new()
+			all_b.text = "Все пробы"
+			all_b.add_theme_font_size_override("font_size", 11)
+			all_b.pressed.connect(func():
+				var e5: String = world.probe_all(s.id)
+				if e5 != "":
+					main.say(e5)
+				_inv_sig = "")
+			pb.add_child(all_b)
+	if r.last_probe != "" and r.last_probe.contains(s.name):
+		var lp := _label(v, 11)
+		lp.custom_minimum_size = Vector2(300, 0)
+		lp.text = "▸ " + r.last_probe
+		lp.add_theme_color_override("font_color", Color(0.6, 0.95, 0.7))
 
 func _refresh_inspector() -> void:
 	var c = main.selected_cell
@@ -657,8 +1036,16 @@ func _refresh_inspector() -> void:
 			lines.append("  → %s: %s" % ["прямо" if o[1] == 0 else "вправо", world.sub_label(o[0].substance)])
 		if res.note != "":
 			lines.append("  " + res.note)
+	var im = null
+	if m is MacroMachine:
+		im = m.inner.machines.get(insp_inner)
+		if im != null:
+			lines.append("")
+			lines.append("— Внутри: " + ", ".join(PackedStringArray(im.describe(m.inner).map(func(x): return str(x)))))
 	inspector_label.text = "\n".join(lines)
-	var sig := "%d:%s:%s:%s" % [m.id, str(m.config), m.manual_off, main.route_tag_pick]
+	inspector_panel.size = inspector_panel.get_combined_minimum_size()
+	var sig :="%d:%s:%s:%s:%d:%s:%s" % [m.id, str(m.config), m.manual_off, main.route_tag_pick, insp_inner,
+		str(im.config) if im != null else "", im.manual_off if im != null else false]
 	if sig == _insp_sig:
 		return
 	_insp_sig = sig
@@ -669,6 +1056,25 @@ func _refresh_inspector() -> void:
 	_btn("Снести", func():
 		world.remove_at(m.cell)
 		main.selected_cell = null)
+	if m.kind == "fabricator":
+		_btn("Открыть фабрикатор (F)", func(): if not windows.fabricator.visible: toggle("fabricator"))
+	if m is MacroMachine:
+		_btn("Развернуть", func(): main.unfold_macro(m))
+		var ids: Array = m.inner.machines.keys()
+		ids.sort()
+		for iid in ids:
+			var x: Machine = m.inner.machines[iid]
+			var mark := "▸ " if iid == insp_inner else ""
+			_btn("%s%s %d,%d" % [mark, x.display_name(), x.cell.x, x.cell.y], func(): self.insp_inner = -1 if self.insp_inner == iid else iid)
+		if im != null:
+			_btn("Выключить внутри" if not im.manual_off else "Включить внутри", func(): im.manual_off = not im.manual_off)
+			_config_buttons(im, m.inner)
+		return
+	_config_buttons(m, world)
+
+## Кнопки настроек машины; grid — мир или внутренность свёрнутого блока.
+func _config_buttons(m: Machine, grid) -> void:
+	var inside: bool = grid != world
 	if m.config.has("pass_through"):
 		_btn("Выдача: %s" % ("да" if m.config.pass_through else "нет"), func(): m.config.pass_through = not m.config.pass_through)
 	if m.config.has("tag"):
@@ -677,12 +1083,36 @@ func _refresh_inspector() -> void:
 		_btn("T −100", func(): m.config.target_t = max(100.0, m.config.target_t - 100.0))
 		_btn("T +100", func(): m.config.target_t += 100.0)
 	if m.config.has("target_p"):
-		_btn("P −1", func(): m.config.target_p = max(1.0, m.config.target_p - 1.0))
-		_btn("P +1", func(): m.config.target_p += 1.0)
+		_btn("P −0.5", func(): m.config.target_p = max(0.0, m.config.target_p - 0.5))
+		_btn("P +0.5", func(): m.config.target_p += 0.5)
+	if m.config.has("reverse"):
+		_btn("Режим: %s" % ("откачка" if m.config.reverse else "накачка"), func(): m.config.reverse = not m.config.reverse)
 	if m.config.has("fire_p"):
 		_btn("Выстрел −0.5", func(): m.config.fire_p = max(1.2, m.config.fire_p - 0.5))
 		_btn("Выстрел +0.5", func(): m.config.fire_p += 0.5)
-		if not m.is_silo():
+		if inside:
+			if main.route_tag_pick == "":
+				main.route_tag_pick = _next_tag("")
+			var tgt = grid.machines.get(int(m.config.get("target", -1)))
+			_btn("Цель: %s ▶" % (tgt.display_name() if tgt != null else "нет"), func():
+				m.config.target = _next_receiver(m, grid, int(m.config.get("target", -1))))
+			_btn("Тег маршрута: %s ▶" % MaterialTags.display(main.route_tag_pick), func(): main.route_tag_pick = _next_tag(main.route_tag_pick))
+			var cur := -1
+			for r in m.config.get("routes", []):
+				if r[0] == main.route_tag_pick:
+					cur = int(r[1])
+			var rt = grid.machines.get(cur)
+			_btn("Маршрут %s → %s ▶" % [MaterialTags.display(main.route_tag_pick), rt.display_name() if rt != null else "нет"], func():
+				var tag: String = main.route_tag_pick
+				var nxt := _next_receiver(m, grid, cur)
+				var routes: Array = m.config.get("routes", []).filter(func(x): return x[0] != tag)
+				if nxt >= 0:
+					routes.append([tag, nxt])
+				m.config.routes = routes)
+			for r in m.config.get("routes", []):
+				var tag: String = r[0]
+				_btn("✕ %s" % MaterialTags.display(tag), func(): m.config.routes = m.config.routes.filter(func(x): return x[0] != tag))
+		elif not m.is_silo():
 			_btn("Навести (L)", func():
 				main.route_tag = ""
 				main.set_mode("link")
@@ -705,6 +1135,47 @@ func _refresh_inspector() -> void:
 		_btn("Порог −", func(): m.config.threshold -= _step(m.config.mode))
 		_btn("Порог +", func(): m.config.threshold += _step(m.config.mode))
 
+## Следующий приёмник внутри блока для пушки (по кругу, с вариантом «нет» = -1).
+func _next_receiver(cannon: Machine, grid, cur: int) -> int:
+	var ids: Array = grid.machines.keys().filter(func(i): return i != cannon.id and grid.machines[i].capacity() > 0.0)
+	ids.sort()
+	ids.append(-1)
+	return ids[(ids.find(cur) + 1) % ids.size()]
+
+## Окно после выделения схемы рамкой (M).
+func show_macro_actions(mb: Dictionary, collapse_err: String) -> void:
+	for c in macro_box.get_children():
+		if c != macro_box.get_child(0):
+			c.queue_free()
+	var l := _label(macro_box, 14)
+	l.text = "«%s»: %d машин, схема %d×%d\n%s" % [mb.name, mb.parts.size(), int(mb.size[0]), int(mb.size[1]), Macroblocks.describe_ports(mb)]
+	l.custom_minimum_size = Vector2(560, 0)
+	if collapse_err != "":
+		var e := _label(macro_box, 13)
+		e.text = "Свернуть на месте нельзя: " + collapse_err
+		e.add_theme_color_override("font_color", Color(1.0, 0.45, 0.4))
+	var h := HBoxContainer.new()
+	macro_box.add_child(h)
+	var acts := [["Сохранить в библиотеку", true, false], ["Свернуть на месте", false, true], ["Сохранить и свернуть", true, true]]
+	for a in acts:
+		var b := Button.new()
+		b.text = a[0]
+		b.disabled = a[2] and collapse_err != ""
+		var save: bool = a[1]
+		var col: bool = a[2]
+		b.pressed.connect(func():
+			windows.macro_actions.visible = false
+			main.macro_action(save, col))
+		h.add_child(b)
+	var cancel := Button.new()
+	cancel.text = "Отмена"
+	cancel.pressed.connect(func():
+		windows.macro_actions.visible = false
+		main.pending_macro = {})
+	h.add_child(cancel)
+	if not windows.macro_actions.visible:
+		toggle("macro_actions")
+
 func _step(mode: String) -> float:
 	return {"level": 0.1, "tag": 0.0, "pressure": 0.5, "temp": 50.0}[mode]
 
@@ -722,5 +1193,6 @@ func _btn(text: String, f: Callable) -> void:
 	b.add_theme_font_size_override("font_size", 12)
 	b.pressed.connect(func():
 		f.call()
-		_insp_sig = "")
+		_insp_sig = ""
+		_refresh_inspector.call_deferred())
 	inspector_buttons.add_child(b)

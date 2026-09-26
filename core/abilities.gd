@@ -37,7 +37,83 @@ static func _dispatch(kind: String, w: World, m: Dictionary, target: Vector2) ->
 		"drone": return drone(w, m, target)
 		"relay": return relay(w, m, target)
 		"repair": return repair(w, m, target)
+		"seismic_charge": return seismic_charge(w, m, target)
+		"field_forge": return field_forge(w, m, target)
+		"tuning_fork": return tuning_fork(w, m, target)
 	return "неизвестная абилка"
+
+## Новые залежи у курсора: материал — один из тех, что уже есть на планете.
+static func seismic_charge(w: World, m: Dictionary, target: Vector2) -> String:
+	var c := cell_of(target)
+	if not w.near_robot(c, 10.0):
+		return "слишком далеко"
+	var mats: Array = w.planet.materials.filter(func(s): return not s.is_exotic())
+	if mats.is_empty():
+		return "нечему выходить на поверхность"
+	var sub: Substance = w.rng.pick(mats)
+	var want := 5 if m.sub.has("dense") else 3
+	var n := 0
+	for r in range(0, 4):
+		for dy in range(-r, r + 1):
+			for dx in range(-r, r + 1):
+				var q := c + Vector2i(dx, dy)
+				if n >= want or max(abs(dx), abs(dy)) != r:
+					continue
+				if not w.planet.buildable(q) or w.planet.deposits.has(q) or w.grid.has(q) or w.tile_overrides.has(q):
+					continue
+				w.planet.deposits[q] = {"sub": sub.id, "amount": w.rng.range_f(40.0, 80.0)}
+				w.revealed[q] = true
+				n += 1
+	if n == 0:
+		return "здесь некуда: нужен свободный грунт"
+	w.sound("boom", c)
+	w.robot.xp.gatherer += 3.0
+	w.log_event(c, "Сейсмозаряд: вышли жилы «%s» — %d" % [sub.name, n])
+	return ""
+
+## Спекание выбранного материала в руках (правила спекателя).
+static func field_forge(w: World, _m: Dictionary, _target: Vector2) -> String:
+	var r := w.robot
+	if r.selected == "" or r.mass_of(r.selected) < 1.0:
+		return "выберите в инвентаре материал (нужно хотя бы 1 кг)"
+	var p := r.take_item(r.selected, min(3.0, r.mass_of(r.selected)))
+	var ctx := {"db": w.db, "pressure": 0.0, "compress_bonus": 0.0, "target_t": 900.0,
+		"ambient": w.planet.ambient_temp, "reagent": null, "filter_tag": ""}
+	var res := Processor.run("sinter", p, ctx)
+	var out: Portion = res.outs[0][0] if not res.outs.is_empty() else p
+	out.temp = w.planet.ambient_temp
+	r.add_item(out)
+	if out.substance == p.substance:
+		return "кузня не меняет этот материал"
+	for t in res.added:
+		w.discover_tag(t)
+	r.selected = out.substance.id
+	r.xp.crafter += 2.0
+	w.log_event(r.cell(), "Кузня: %s → %s" % [p.substance.name, w.sub_label(out.substance)])
+	return ""
+
+## Анализ всего в радиусе у курсора.
+static func tuning_fork(w: World, m: Dictionary, target: Vector2) -> String:
+	var c := cell_of(target)
+	if not w.near_robot(c, 10.0):
+		return "слишком далеко"
+	var radius := 6 if m.sub.has("crystalline") else 4
+	var seen := {}
+	for dy in range(-radius, radius + 1):
+		for dx in range(-radius, radius + 1):
+			if dx * dx + dy * dy > radius * radius:
+				continue
+			for s in substances_at(w, c + Vector2i(dx, dy)):
+				seen[s.id] = s
+	if seen.is_empty():
+		return "вокруг нечего слушать"
+	# Касание всего вокруг и бесплатная проба «Ток» — камертон звенит в ответ.
+	for s in seen.values():
+		w.touch(s)
+		w.probe(s.id, "spark", true)
+	w.robot.xp.shaman += 1.0
+	w.log_event(c, "Камертон: веществ услышано — %d" % seen.size())
+	return ""
 
 static func cell_of(v: Vector2) -> Vector2i:
 	return Vector2i(floori(v.x), floori(v.y))
@@ -195,8 +271,16 @@ static func analyzer(w: World, _m: Dictionary, target: Vector2) -> String:
 	var subs := substances_at(w, c)
 	if subs.is_empty():
 		return "здесь нечего анализировать"
+	# Анализатор раскрывает по одному неизвестному тегу у каждого вещества в клетке.
+	var n := 0
 	for s in subs:
-		w.analyze(s)
+		w.touch(s)
+		var hidden: Array = s.tags.filter(func(t): return not t in w.known_tags_of(s))
+		if not hidden.is_empty():
+			w.reveal(s, w.rng.pick(hidden), "анализатор")
+			n += 1
+	if n == 0:
+		return "здесь всё уже известно"
 	return ""
 
 static func drone(w: World, m: Dictionary, target: Vector2) -> String:

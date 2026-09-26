@@ -25,8 +25,13 @@ var learned := {}
 var blueprints := {"hull": true, "hand_drill": true}
 var unlocked := {}                    # постройки
 var known_tags := {}
-var analyzed := {}                    # id материалов с раскрытыми тегами
+var analyzed := {}                    # id материалов, которых касались (физика известна)
+var sub_known := {}                   # id материала → {тег: true (есть) | false (исключён)}
+var last_probe := ""                  # текст последней пробы (для карточки материала)
+var focus_sub := ""                   # залежь, которой коснулись (Z): её карточка в инвентаре
+var hypotheses := {}                  # id материала → [теги-догадки игрока]
 var known_interactions := {}
+var bonus_slots := 0                  # награды за этапы
 var _next_module := 1
 
 func _init() -> void:
@@ -47,7 +52,7 @@ func passive(key: String) -> float:
 	return s
 
 func slots() -> int:
-	return BASE_SLOTS + int(passive("slots"))
+	return BASE_SLOTS + int(passive("slots")) + bonus_slots
 
 func max_hp() -> float:
 	return hull.stats.max_hp * 1.2 if hull != null else 60.0

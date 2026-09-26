@@ -8,13 +8,17 @@ extends Machine
 var _cd := 0.0
 
 func init_config() -> void:
-	config.fire_p = 8.0 if kind == "launch_silo" else 3.0
+	config.fire_p = 6.0 if kind == "launch_silo" else 3.0
 	config.target = -1
 	if kind != "launch_silo":
 		config.routes = []
 
 func is_silo() -> bool:
 	return kind == "launch_silo"
+
+## Камера пушки — под давлением, значит закрытая: летучее в ней не испаряется.
+func handling_ctx() -> String:
+	return "sealed"
 
 func accept(p: Portion, from_cell: Vector2i) -> bool:
 	if p.mass > free_space() + 0.001:
@@ -88,7 +92,9 @@ func fire(w, p: float) -> void:
 	items = keep
 	var extra: Array = []
 	for q in payload:
+		var s0: Substance = q.substance
 		var r: Dictionary = Handling.event(q, "launch", w.handling_env(self, "launch"))
+		w.observe(r, s0)
 		extra.append_array(r.spawn)
 		if r.jammed != null:
 			store(r.jammed)
@@ -119,7 +125,8 @@ func fire(w, p: float) -> void:
 		total += q.mass
 		scatter = max(scatter, Handling.cannon_scatter(q, w.planet))
 	factor = factor / total if total > 0.0 else 1.0
-	scatter *= (1.0 - w.robot.passive("aim"))
+	var storm: float = w.event_mods.scatter
+	scatter = (scatter * storm + (2.0 if storm > 1.0 else 0.0)) * (1.0 - w.robot.passive("aim"))
 	var rng_tiles := range_for(p, w.planet) * factor * range_mult()
 	var dist := from.distance_to(to)
 	var dest := to

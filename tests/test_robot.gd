@@ -34,7 +34,7 @@ func test_learning_unlocks_buildings_and_slots():
 
 func test_all_classes_have_nodes_and_blueprints_exist():
 	for c in SkillTree.CLASS_ORDER:
-		assert_between(SkillTree.nodes_of(c).size(), 3, 4)
+		assert_between(SkillTree.nodes_of(c).size(), 3, 5)
 	for n in SkillTree.NODES:
 		if n.has("blueprint"):
 			assert_true(Modules.MODULES.has(n.blueprint), n.blueprint)

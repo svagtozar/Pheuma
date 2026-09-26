@@ -5,14 +5,16 @@ extends Node2D
 ##   --seed=N          — планета с заданным seed
 ##   --autotest        — собрать цепочку, прогнать симуляцию, проверить и выйти
 ##   --screenshot=путь — сохранить скриншот через пару секунд и выйти
-##   --open=окно       — открыть окно (palette, skills, fabricator, codex, help, briefing)
+##   --open=окно       — открыть окно (palette, skills, fabricator, codex, help, briefing,
+##                       pause, settings, slots, end, event, choice, reward)
 ##   --tutorial        — начать обучение (при первом запуске оно включается само)
 
 const T := 32.0
 const WorldView := preload("res://game/world_view.gd")
 const Hud := preload("res://game/ui/hud.gd")
 const Audio := preload("res://game/audio.gd")
-const AUTOSAVE_EVERY := 120.0
+const Menus := preload("res://game/ui/menus.gd")
+var autosave_every := 120.0
 const SETTINGS := "user://settings.json"
 
 var world: World
@@ -20,15 +22,27 @@ var sim: Sim
 var view: Node2D
 var cam: Camera2D
 var hud: Control
+var menus: Control
+var ui_layer: CanvasLayer
+var ui_scale := 1.0
+var in_menu := false
 var audio: Node
 var seed_value := 0
 var macro_lib: Array = []
 var macro_idx := -1
 var macro_rot := 0
 var macro_collapsed := false
+var pending_macro := {}        # выделенная рамкой схема, ждёт выбора действия
 var route_tag := ""
 var route_tag_pick := ""
 var tutorial: Tutorial = null
+var _uitest := false
+var _demo := false          # --demo[=N]: у робота строится завод из N машин (для скриншотов и замера кадров)
+var _demo_n := 13
+var _bench := false         # --bench: 5 с кадрового профиля и выход
+var _bench_t := 0.0
+var _bench_frames := 0
+var _bench_us := {"draw": 0, "hud": 0, "sim": 0, "fx": 0}
 var sel_start = null
 var _autosave_t := 0.0
 
@@ -53,6 +67,7 @@ func _ready() -> void:
 	var args := OS.get_cmdline_user_args() + OS.get_cmdline_args()
 	var s := -1
 	var want_tutorial := false
+	var want_menu := false
 	for a in args:
 		if a.begins_with("--seed="):
 			s = int(a.substr(7))
@@ -60,10 +75,22 @@ func _ready() -> void:
 			autotest = true
 		elif a == "--tutorial":
 			want_tutorial = true
+		elif a == "--uitest":
+			autotest = true
+			_uitest = true
 		elif a.begins_with("--screenshot="):
 			screenshot_path = a.substr(13)
 		elif a.begins_with("--open="):
 			open_window = a.substr(7)
+		elif a == "--menu":
+			want_menu = true
+		elif a == "--demo" or a.begins_with("--demo="):
+			_demo = true
+			if a.begins_with("--demo="):
+				_demo_n = int(a.substr(7))
+		elif a == "--bench":
+			_bench = true
+			_demo = true
 	randomize()
 	view = WorldView.new()
 	view.main = self
@@ -72,22 +99,51 @@ func _ready() -> void:
 	cam.zoom = Vector2(1.5, 1.5)
 	add_child(cam)
 	cam.make_current()
-	var layer := CanvasLayer.new()
-	add_child(layer)
+	ui_layer = CanvasLayer.new()
+	add_child(ui_layer)
 	hud = Hud.new()
 	hud.main = self
-	layer.add_child(hud)
+	ui_layer.add_child(hud)
+	menus = Menus.new()
+	menus.main = self
+	ui_layer.add_child(menus)
 	audio = Audio.new()
 	add_child(audio)
+	apply_settings()
 	macro_lib = Macroblocks.load_library()
-	var first_run: bool = not settings().get("tutorial_done", false) and s < 0 and not autotest and screenshot_path == ""
+	var plain_start: bool = s < 0 and not autotest and screenshot_path == "" and not want_tutorial
+	var first_run: bool = plain_start and not settings().get("tutorial_done", false)
 	if want_tutorial or first_run:
 		start_tutorial()
+	elif want_menu or plain_start:
+		open_main_menu()
 	else:
 		new_world(s if s >= 0 else randi() % 1000000)
-	if autotest:
+	if _demo:
+		call_deferred("_build_demo")
+	if _uitest:
+		call_deferred("run_uitest")
+	elif autotest:
 		call_deferred("run_autotest")
-	if open_window == "briefing":
+	if open_window in ["pause", "settings"]:
+		if open_window == "settings":
+			menus.open_settings("pause")
+		else:
+			menus.show_panel("pause")
+	elif open_window == "slots":
+		SaveGame.save_file(world, "slot1")
+		menus.open_slots("load", "pause")
+	elif open_window == "event":
+		world.director.enabled = true
+		world.director.start("meteors", world.robot_cell() + Vector2i(4, -2))
+		world.director.current.t = 0.01
+	elif open_window == "choice":
+		world.goals.stage = 1
+	elif open_window == "reward":
+		world.goals.reward_pending = Rewards.offer(world, 0)
+	elif open_window == "end":
+		menus.show_run_end(world)
+	elif open_window == "briefing":
 		hud.show_briefing()
 	elif open_window != "":
 		hud.toggle(open_window)
@@ -104,6 +160,64 @@ func set_setting(key: String, value) -> void:
 	var f := FileAccess.open(SETTINGS, FileAccess.WRITE)
 	if f != null:
 		f.store_string(JSON.stringify(d))
+
+# ---------------------------------------------------------------- меню
+
+func open_main_menu() -> void:
+	new_world(randi() % 1000000)
+	in_menu = true
+	hud.visible = false
+	hud.close_all()
+	menus.show_main()
+
+func _leave_menu() -> void:
+	in_menu = false
+	hud.visible = true
+	menus.close_all()
+
+func menu_new_game(s: int) -> void:
+	_leave_menu()
+	new_world(s if s >= 0 else randi() % 1000000)
+	hud.show_briefing()
+
+func menu_continue() -> void:
+	var slot := SaveGame.latest_slot()
+	if slot != "":
+		load_from(slot)
+
+func menu_tutorial() -> void:
+	_leave_menu()
+	start_tutorial()
+
+func save_to(slot: String) -> String:
+	var err := SaveGame.save_file(world, slot)
+	return err if err != "" else "Сохранено: %s" % SaveGame.slot_title(slot)
+
+func load_from(slot: String) -> void:
+	var lw := SaveGame.load_file(slot)
+	if lw == null:
+		say("не удалось загрузить «%s»" % SaveGame.slot_title(slot))
+		return
+	_leave_menu()
+	new_world(0, lw)
+	say("Загружено: %s" % SaveGame.slot_title(slot))
+
+func apply_settings() -> void:
+	var st := settings()
+	var vol: float = float(st.get("volume", 0.8))
+	AudioServer.set_bus_volume_db(0, linear_to_db(max(vol, 0.0001)))
+	ui_scale = float(st.get("ui_scale", 1.0))
+	ui_layer.scale = Vector2(ui_scale, ui_scale)
+	autosave_every = float(st.get("autosave", 120.0))
+	if DisplayServer.get_name() != "headless":
+		var full: bool = st.get("fullscreen", false)
+		var cur := DisplayServer.window_get_mode()
+		if full and cur != DisplayServer.WINDOW_MODE_FULLSCREEN:
+			DisplayServer.window_set_mode(DisplayServer.WINDOW_MODE_FULLSCREEN)
+		elif not full and cur == DisplayServer.WINDOW_MODE_FULLSCREEN:
+			DisplayServer.window_set_mode(DisplayServer.WINDOW_MODE_WINDOWED)
+	hud._layout()
+	menus._layout()
 
 func start_tutorial() -> void:
 	var w := World.create(Tutorial.SEED, Tutorial.PLANET_TAGS)
@@ -154,11 +268,16 @@ func mouse_cell() -> Vector2i:
 
 func build_material() -> Substance:
 	var r := world.robot
+	var pref: Substance = null
 	if build_sub_id != "" and r.inventory.has(build_sub_id):
-		return world.db.get_sub(build_sub_id)
-	if r.selected != "":
-		return world.db.get_sub(r.selected)
-	return null
+		pref = world.db.get_sub(build_sub_id)
+	elif r.selected != "":
+		pref = world.db.get_sub(r.selected)
+	if mode == "build" and build_kind != "":
+		var s := world.pick_build_material(build_kind, pref)
+		if s != null:
+			return s
+	return pref
 
 func set_mode(m: String) -> void:
 	mode = m
@@ -187,7 +306,12 @@ func _process(dt: float) -> void:
 	if world == null:
 		return
 	message_t -= dt
-	var paused: bool = hud.blocks_game()
+	var paused: bool = hud.blocks_game() or menus.any_open() or in_menu
+	if in_menu:
+		cam.position += Vector2(18, 6) * dt
+	if world.goals.completed and not world.meta.get("end_shown", false) and not autotest and tutorial == null:
+		world.meta.end_shown = true
+		menus.show_run_end(world)
 	sim.paused = paused or manual_pause
 	if not paused:
 		var dir := Vector2.ZERO
@@ -205,7 +329,9 @@ func _process(dt: float) -> void:
 			var c := mouse_cell()
 			if world.machine_at(c) == null and world.can_place("pipe", c, build_material()) == "":
 				world.place("pipe", c, 0, build_material())
+		var t_sim := Time.get_ticks_usec()
 		sim.advance(dt)
+		_bench_us.sim += Time.get_ticks_usec() - t_sim
 		if tutorial != null:
 			if tutorial.update(world):
 				world.sound("fanfare", world.robot_cell())
@@ -214,12 +340,17 @@ func _process(dt: float) -> void:
 			if tutorial.done:
 				end_tutorial(true)
 		_autosave_t += dt
-		if _autosave_t >= AUTOSAVE_EVERY and not autotest:
+		if autosave_every > 0.0 and _autosave_t >= autosave_every and not autotest and not in_menu:
 			_autosave_t = 0.0
 			SaveGame.save_file(world, "auto")
-	cam.position = cam.position.lerp(world.robot.pos * T, min(1.0, dt * 8.0))
+	if not in_menu:
+		cam.position = cam.position.lerp(world.robot.pos * T, min(1.0, dt * 8.0))
+	var t_hud := Time.get_ticks_usec()
 	hud.refresh()
-	if screenshot_path != "":
+	_bench_us.hud += Time.get_ticks_usec() - t_hud
+	if _bench:
+		_bench_step(dt)
+	if screenshot_path != "" and not _uitest:
 		_shot_t += dt
 		if _shot_t > 2.5:
 			_save_screenshot()
@@ -242,7 +373,13 @@ func _mine_target() -> Vector2i:
 func _unhandled_input(event: InputEvent) -> void:
 	if world == null:
 		return
+	if (in_menu or menus.any_open()) and not event is InputEventKey:
+		return
 	if event is InputEventKey and event.pressed and not event.echo:
+		if menus.any_open() or in_menu:
+			if event.keycode == KEY_ESCAPE and not in_menu:
+				menus.close_all()
+			return
 		_on_key(event)
 	elif event is InputEventMouseButton:
 		_on_mouse_button(event)
@@ -257,11 +394,16 @@ func _on_key(e: InputEventKey) -> void:
 	match e.keycode:
 		KEY_B: hud.toggle("palette")
 		KEY_K: hud.toggle("skills")
-		KEY_F: hud.toggle("fabricator")
+		KEY_F:
+			hud.toggle("fabricator")
+			if world.fabricator_distance() > World.FAB_RADIUS and hud.windows.fabricator.visible:
+				say("изготовление работает у фабрикатора: подойдите ближе" if world.fabricator_distance() < INF else "сначала поставьте фабрикатор (B)")
 		KEY_H, KEY_F1: hud.toggle("help")
 		KEY_X: set_mode("remove" if mode != "remove" else "none")
 		KEY_V: set_mode("wire" if mode != "wire" else "none")
 		KEY_L: set_mode("link" if mode != "link" else "none")
+		KEY_I:
+			hud.toggle_inventory()
 		KEY_M:
 			set_mode("macro_select" if mode != "macro_select" else "none")
 		KEY_F5:
@@ -294,9 +436,15 @@ func _on_key(e: InputEventKey) -> void:
 		KEY_1, KEY_2, KEY_3, KEY_4, KEY_5, KEY_6:
 			use_slot(e.keycode - KEY_1)
 		KEY_ESCAPE:
+			var busy: bool = mode != "none" or selected_cell != null
+			for k in hud.windows:
+				if hud.windows[k].visible:
+					busy = true
 			set_mode("none")
 			selected_cell = null
 			hud.close_all()
+			if not busy:
+				menus.show_panel("pause")
 		KEY_N:
 			if world.goals.completed or shift:
 				new_world(randi() % 1000000)
@@ -309,7 +457,7 @@ func _on_key(e: InputEventKey) -> void:
 func _touch_analyze() -> void:
 	var r := world.robot
 	if r.cooldowns.has("touch"):
-		say("анализ касанием перезаряжается")
+		say("касание перезаряжается")
 		return
 	var c := mouse_cell()
 	var subs: Array = []
@@ -318,10 +466,17 @@ func _touch_analyze() -> void:
 	if subs.is_empty() and r.selected != "":
 		subs = [world.db.get_sub(r.selected)]
 	if subs.is_empty():
-		say("нечего анализировать: подойдите вплотную или выберите материал в инвентаре")
+		say("нечего ощупать: подойдите вплотную к залежи или выберите материал в инвентаре")
 		return
 	for s in subs:
-		world.analyze(s)
+		world.touch(s)
+	# Залежь под курсором — её карточка с пробами появится в инвентаре.
+	var dep = world.planet.deposits.get(c)
+	if dep != null and world.near_robot(c, 1.8):
+		r.focus_sub = dep.sub
+		hud._inv_sig = ""
+		if hud.inv_collapsed:
+			hud.toggle_inventory()
 	r.cooldowns["touch"] = 3.0
 
 func use_slot(i: int) -> void:
@@ -365,15 +520,47 @@ func _finish_macro_select() -> void:
 	var r := selection_rect()
 	sel_start = null
 	var mb := Macroblocks.capture(world, r, "Макроблок %d" % (macro_lib.size() + 1))
+	set_mode("none")
 	if mb.is_empty():
 		say("в выделении нет машин")
 		return
-	macro_lib.append(JSON.parse_string(JSON.stringify(mb)))
-	if tutorial != null:
-		tutorial.macros_made += 1
-	Macroblocks.save_library(macro_lib)
-	say("Сохранён «%s»: %d машин, %s. B — поставить" % [mb.name, mb.parts.size(), Macroblocks.describe_ports(mb)])
-	set_mode("none")
+	pending_macro = {"rect": r, "mb": mb}
+	hud.show_macro_actions(mb, MacroMachine.collapse_error(mb))
+
+## Действие над выделенной схемой: сохранить в библиотеку и/или свернуть на месте.
+func macro_action(save: bool, collapse: bool) -> void:
+	if pending_macro.is_empty():
+		return
+	var mb: Dictionary = pending_macro.mb
+	var r: Rect2i = pending_macro.rect
+	pending_macro = {}
+	var msg := ""
+	if save:
+		macro_lib.append(JSON.parse_string(JSON.stringify(mb)))
+		if tutorial != null:
+			tutorial.macros_made += 1
+		Macroblocks.save_library(macro_lib)
+		msg = "Сохранён «%s»: %d машин, %s. B — поставить" % [mb.name, mb.parts.size(), Macroblocks.describe_ports(mb)]
+	if collapse:
+		var res := Macroblocks.collapse_region(world, r, mb.name)
+		if res.err != "":
+			msg = (msg + ". " if msg != "" else "") + "Не свернуть: " + res.err
+		else:
+			if tutorial != null and not save:
+				tutorial.macros_made += 1
+			selected_cell = res.macro.cell
+			hud.insp_inner = -1
+			msg = "«%s» свёрнут на месте (%d машин). Инспектор — настройки внутри, «Развернуть»" % [mb.name, mb.parts.size()]
+	if msg != "":
+		say(msg)
+
+func unfold_macro(m: MacroMachine) -> void:
+	var err := Macroblocks.unfold(world, m)
+	if err != "":
+		say("Не развернуть: " + err)
+		return
+	selected_cell = null
+	say("Макроблок развёрнут")
 
 func start_macro(idx: int, collapsed: bool = false) -> void:
 	set_mode("macro_place")
@@ -402,6 +589,9 @@ func _click(shift: bool) -> void:
 				var sub: Substance = world.db.get_sub(world.robot.selected) if world.robot.selected != "" else null
 				var err := Macroblocks.place_collapsed(world, macro_lib[macro_idx], c, macro_rot, sub) if macro_collapsed else Macroblocks.place(world, macro_lib[macro_idx], c, macro_rot, sub)
 				say(err if err != "" else "Макроблок «%s» построен" % macro_lib[macro_idx].name)
+				if err == "" and macro_collapsed:
+					selected_cell = c
+					hud.insp_inner = -1
 		"build":
 			var sub := build_material()
 			var err := world.can_place(build_kind, c, sub)
@@ -445,6 +635,8 @@ func _click(shift: bool) -> void:
 				var idx := world.logic.insert_waypoint(nw.id, mouse_world(), ends[0] / T, ends[1] / T)
 				_drag = {"wire": nw.id, "idx": idx}
 				return
+			if c != selected_cell:
+				hud.insp_inner = -1
 			selected_cell = c if world.machine_at(c) != null else null
 
 func _wire_ends(w: Dictionary) -> Array:
@@ -455,7 +647,36 @@ func _wire_ends(w: Dictionary) -> Array:
 
 # ---------------------------------------------------------------- автотест и скриншот
 
+## Демо-завод у робота (--demo=N): для скриншотов и замеров.
+func _build_demo() -> void:
+	var w := world
+	var c := DemoFactory.build(w, w.planet.spawn + Vector2i(2, -3), _demo_n)
+	w.robot.pos = c + Vector2(0.5, 0.5)
+	cam.position = w.robot.pos * T
+	cam.reset_smoothing()
+
+## Кадровый профиль: 1 с разогрева, 5 с замера, затем средние мс на кадр по частям.
+func _bench_step(dt: float) -> void:
+	_bench_t += dt
+	if _bench_t < 1.0:
+		for k in _bench_us:
+			_bench_us[k] = 0
+		view.prof_draw_us = 0
+		view.prof_fx_us = 0
+		_bench_frames = 0
+		return
+	_bench_frames += 1
+	if _bench_t < 6.0:
+		return
+	var f := float(max(1, _bench_frames))
+	print("BENCH машин=%d кадров/с=%.1f кадр=%.2f мс | отрисовка %.2f, частицы %.2f, интерфейс %.2f, симуляция %.2f мс" % [
+		world.machines.size(), f / 5.0, 5000.0 / f, view.prof_draw_us / f / 1000.0, view.prof_fx_us / f / 1000.0,
+		_bench_us.hud / f / 1000.0, _bench_us.sim / f / 1000.0])
+	audio.stop_all()
+	get_tree().quit(0)
+
 func _save_screenshot() -> void:
+	print("Кадров в секунду: ", Engine.get_frames_per_second(), ", частиц: ", view.fx.parts.size())
 	var img := get_viewport().get_texture().get_image()
 	img.save_png(screenshot_path)
 	print("Скриншот сохранён: ", screenshot_path)
@@ -564,6 +785,230 @@ func _build_logistics(w: World) -> Dictionary:
 			bat.accept(Portion.new(sub, 20.0), o + Vector2i(-1, 0))
 			return {"battery": bat, "warehouse": wh}
 	return {}
+
+## Проверка интерфейса: изготовить и установить модуль через кнопки окна фабрикатора.
+func run_uitest() -> void:
+	var w := world
+	var fc := w.planet.spawn + Vector2i(1, 0)
+	w.place("fabricator", fc, 0, w.starter)
+	w.robot.pos = Vector2(fc) + Vector2(0.5, 1.5)
+	await get_tree().process_frame
+	# Изучаем узел через окно прокачки.
+	hud.toggle("skills")
+	await get_tree().process_frame
+	var learn_btn := _find_button(hud.skills_box, "Пневмокрюк")
+	print("[uitest] кнопка узла: ", learn_btn != null, " disabled=", learn_btn.disabled if learn_btn else "-")
+	if learn_btn: learn_btn.pressed.emit()
+	await get_tree().process_frame
+	print("[uitest] чертёж крюка: ", w.robot.blueprints.has("hook"))
+	hud.toggle("fabricator")
+	await get_tree().process_frame
+	var bp := _find_button(hud.fab_box, "Пневмокрюк")
+	print("[uitest] кнопка чертежа: ", bp != null)
+	if bp: bp.pressed.emit()
+	await get_tree().process_frame
+	var go := _find_button(hud.fab_box, "Изготовить")
+	print("[uitest] кнопка «Изготовить»: ", go != null, " disabled=", go.disabled if go else "-", " материалов в списке=", hud.fab_mat.item_count if hud.fab_mat else -1)
+	if go: go.pressed.emit()
+	await get_tree().process_frame
+	print("[uitest] модулей в запасе: ", w.robot.modules.size(), " сообщение: ", message)
+	var eq := _find_button(hud.fab_box, "Установить")
+	if eq: eq.pressed.emit()
+	await get_tree().process_frame
+	print("[uitest] установлено: ", w.robot.equipped.map(func(m): return m.kind))
+	hud.close_all()
+	# Бур настоящим кликом мыши по ближайшей залежи.
+	var dep := Vector2i(-1, -1)
+	for c in w.planet.deposits:
+		if not w.grid.has(c) and (dep == Vector2i(-1, -1) or (Vector2(c) - w.robot.pos).length() < (Vector2(dep) - w.robot.pos).length()):
+			dep = c
+	w.robot.pos = Vector2(dep) + Vector2(0.5, 1.5)
+	cam.position = w.robot.pos * T
+	cam.reset_smoothing()
+	await get_tree().process_frame
+	await get_tree().process_frame
+	start_build("drill")
+	var screen := get_viewport().get_canvas_transform() * ((Vector2(dep) + Vector2(0.5, 0.5)) * T)
+	get_viewport().warp_mouse(screen)
+	await get_tree().process_frame
+	print("[uitest] мышь над клеткой ", mouse_cell(), ", залежь ", dep, ", проверка: «", w.can_place("drill", dep, build_material()), "»")
+	for pressed in [true, false]:
+		var ev := InputEventMouseButton.new()
+		ev.button_index = MOUSE_BUTTON_LEFT
+		ev.pressed = pressed
+		ev.position = screen
+		ev.global_position = screen
+		Input.parse_input_event(ev)
+		await get_tree().process_frame
+	var placed = w.machine_at(dep)
+	print("[uitest] бур поставлен: ", placed != null and placed.kind == "drill", " сообщение: ", message)
+	# Награда за этап и выбор пути — через карточки окна.
+	w.goals.reward_pending = Rewards.offer(w, 0)
+	await get_tree().process_frame
+	await get_tree().process_frame
+	var card := _find_button(hud.reward_box, "")
+	for c in hud.reward_box.find_children("*", "Button", true, false):
+		if c.text.contains(Rewards.CARDS[w.goals.reward_pending[0]].n):
+			card = c
+	var reward_ok := false
+	if card:
+		card.pressed.emit()
+		reward_ok = w.goals.reward_pending.is_empty()
+	w.goals.stage = 1
+	await get_tree().process_frame
+	await get_tree().process_frame
+	var alt0: String = w.goals.raw_stage(1).alt[0].desc
+	var choice_btn := _find_button(hud.choice_box, alt0)
+	if choice_btn:
+		choice_btn.pressed.emit()
+	var choice_ok: bool = w.goals.choices.has("1") and not w.goals.choice_pending()
+	print("[uitest] награда выбрана: ", reward_ok, ", путь выбран: ", choice_ok)
+	var macro_ok := await _uitest_macro(w)
+	var probe_ok := await _uitest_probe(w)
+	# Сохранение в слот через меню паузы и загрузка обратно.
+	var old_dir := SaveGame.DIR
+	SaveGame.DIR = "user://uitest_saves"
+	for sl in SaveGame.all_slots():
+		SaveGame.delete_slot(sl)
+	menus.open_slots("save", "pause")
+	await get_tree().process_frame
+	var save_btn := _find_button(menus.slots_box, "Сохранить")
+	var saved := save_btn != null
+	if save_btn: save_btn.pressed.emit()
+	await get_tree().process_frame
+	var n_before := w.machines.size()
+	menus.open_slots("load", "pause")
+	await get_tree().process_frame
+	var load_btn := _find_button(menus.slots_box, "Загрузить")
+	if load_btn: load_btn.pressed.emit()
+	await get_tree().process_frame
+	var loaded_ok: bool = world != w and world.machines.size() == n_before and not menus.any_open()
+	print("[uitest] слот: сохранён=", saved, " загружен=", loaded_ok, " машин ", world.machines.size(), "/", n_before)
+	SaveGame.delete_slot("slot1")
+	SaveGame.DIR = old_dir
+	_finish_autotest(w.robot.has_module("hook") and placed != null and saved and loaded_ok and reward_ok and choice_ok and macro_ok and probe_ok)
+
+## Проба из карточки материала в инвентаре: кнопка «Нагрев» меняет известное или исключённое.
+func _uitest_probe(w: World) -> bool:
+	var s: Substance = null
+	for m in w.planet.materials:
+		if s == null and not w.is_identified(m) and m.phase_at(w.planet.ambient_temp) == Substance.Phase.SOLID:
+			s = m
+	if s == null:
+		print("[uitest] проба: нет неопознанного материала")
+		return true
+	w.robot.add_item(Portion.new(s, 3.0, w.planet.ambient_temp))
+	w.robot.selected = s.id
+	w.robot.tank = w.robot.tank_cap()
+	hud.inv_collapsed = false
+	hud._inv_sig = ""
+	await get_tree().process_frame
+	await get_tree().process_frame
+	hud._inv_sig = ""
+	hud._refresh_inventory()
+	var k0: int = w.known_tags_of(s).size() + w.excluded_of(s).size()
+	var btn := _find_button(hud.inv_box, "Нагрев")
+	var found := btn != null
+	if btn: btn.pressed.emit()
+	await get_tree().process_frame
+	var k1: int = w.known_tags_of(s).size() + w.excluded_of(s).size()
+	print("[uitest] проба «Нагрев»: кнопка ", found, ", известно+исключено ", k0, " → ", k1, " (", w.sub_label(s), ")")
+	# Догадка: клик по возможному тегу, затем «Проверить».
+	var hyp_ok := true
+	var pos: Array = w.possible_of(s).filter(func(t): return w.check_error(s.id, t) == "")
+	if w.unknown_count(s) > 0 and not pos.is_empty():
+		hud._inv_sig = ""
+		hud._refresh_inventory()
+		var tb := _find_button(hud.inv_box, MaterialTags.display(pos[0]))
+		if tb: tb.pressed.emit()
+		var marked: bool = pos[0] in w.hypotheses_of(s)
+		if screenshot_path != "":
+			hud._inv_sig = ""
+			await get_tree().process_frame
+			await get_tree().process_frame
+			_save_screenshot()
+		hud._inv_sig = ""
+		hud._refresh_inventory()
+		var cb := _find_button(hud.inv_box, "Проверить")
+		var has_check := cb != null
+		if cb: cb.pressed.emit()
+		var settled: bool = pos[0] in w.known_tags_of(s) or pos[0] in w.excluded_of(s)
+		hyp_ok = marked and has_check and settled
+		print("[uitest] догадка «", MaterialTags.display(pos[0]), "»: поставлена ", marked, ", проверена ", settled)
+	return found and k1 > k0 and hyp_ok
+
+## Схема «контейнер → фильтр → контейнер»: выделить рамкой, «Свернуть на месте»,
+## в инспекторе блока сменить тег внутреннего фильтра, «Развернуть».
+func _uitest_macro(w: World) -> bool:
+	var base := Vector2i(-1, -1)
+	var rc := Vector2i(floori(w.robot.pos.x), floori(w.robot.pos.y))
+	for r in range(2, 20):
+		for dy in range(-r, r + 1):
+			for dx in range(-r, r + 1):
+				if base != Vector2i(-1, -1):
+					continue
+				var c := rc + Vector2i(dx, dy)
+				var ok := true
+				for i in 3:
+					var q := c + Vector2i(i, 0)
+					if not w.planet.buildable(q) or w.grid.has(q) or w.tile_overrides.has(q):
+						ok = false
+				if ok:
+					base = c
+	if base == Vector2i(-1, -1):
+		print("[uitest] макроблок: нет места")
+		return false
+	w.place("container", base, 0, w.starter, true)
+	var flt := w.place("filter", base + Vector2i(1, 0), 0, w.starter, true)
+	w.place("container", base + Vector2i(2, 0), 0, w.starter, true)
+	var tag0: String = flt.config.tag
+	for t in ["dense", "brittle", "volatile"]:
+		w.robot.known_tags[t] = true
+	cam.position = (Vector2(base) + Vector2(1.5, 0.5)) * T
+	cam.reset_smoothing()
+	await get_tree().process_frame
+	await get_tree().process_frame
+	set_mode("macro_select")
+	sel_start = base
+	get_viewport().warp_mouse(get_viewport().get_canvas_transform() * ((Vector2(base) + Vector2(2.5, 0.5)) * T))
+	await get_tree().process_frame
+	_finish_macro_select()
+	await get_tree().process_frame
+	var col := _find_button(hud.macro_box, "Свернуть на месте")
+	print("[uitest] окно схемы: ", hud.windows.macro_actions.visible, ", кнопка свёртки: ", col != null)
+	if col: col.pressed.emit()
+	await get_tree().process_frame
+	var macro = world.machine_at(selected_cell) if selected_cell != null else null
+	var collapsed: bool = macro is MacroMachine and macro.inner.machines.size() == 3
+	print("[uitest] свёрнуто: ", collapsed, " сообщение: ", message)
+	if not collapsed:
+		return false
+	hud._refresh_inspector()
+	await get_tree().process_frame
+	var inner_btn := _find_button(hud.inspector_buttons, "Фильтр")
+	if inner_btn: inner_btn.pressed.emit()
+	await get_tree().process_frame
+	await get_tree().process_frame
+	var tag_btn := _find_button(hud.inspector_buttons, "Тег:")
+	if tag_btn: tag_btn.pressed.emit()
+	await get_tree().process_frame
+	var ifl: Machine = macro.inner.machines_of("filter")[0]
+	var tag1: String = ifl.config.tag
+	print("[uitest] тег внутреннего фильтра: ", tag0, " → ", tag1)
+	await get_tree().process_frame
+	var unf := _find_button(hud.inspector_buttons, "Развернуть")
+	if unf: unf.pressed.emit()
+	await get_tree().process_frame
+	var back = world.machine_at(base + Vector2i(1, 0))
+	var unfolded: bool = back != null and back.kind == "filter" and back.config.tag == tag1
+	print("[uitest] развёрнуто: ", unfolded, " сообщение: ", message)
+	return tag1 != tag0 and unfolded
+
+func _find_button(root: Node, text_part: String) -> Button:
+	for c in root.find_children("*", "Button", true, false):
+		if not c.is_queued_for_deletion() and text_part in c.text:
+			return c
+	return null
 
 func _finish_autotest(ok: bool) -> void:
 	print("AUTOTEST ", "OK" if ok else "FAILED")

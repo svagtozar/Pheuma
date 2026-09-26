@@ -28,6 +28,8 @@ var rng: Rng:
 	get: return world.rng
 var stats: Dictionary:
 	get: return world.stats
+var event_mods: Dictionary:
+	get: return world.event_mods
 
 func _init(w: World, h, p_size: Vector2i) -> void:
 	_outer = weakref(w)
@@ -87,6 +89,12 @@ func sound(name: String, _c: Vector2i) -> void:
 func on_processed(m: Machine, input: Portion, res: Dictionary) -> void:
 	world.on_processed(m, input, res)
 
+func observe(res: Dictionary, sub: Substance) -> void:
+	world.observe(res, sub, host.cell)
+
+func add_fx(kind: String, _c: Vector2i, col: Color = Color.WHITE, text: String = "") -> void:
+	world.add_fx(kind, host.cell, col, text)
+
 func net_receiver(_c: Vector2i):
 	return null
 
@@ -99,7 +107,7 @@ func handling_env(m, _ctx: String) -> Dictionary:
 				hot = true
 	return {"planet": planet, "db": db, "rng": rng, "container": m.built_from if m != null else null,
 		"neighbors": m.items if m != null else [], "hot_nearby": hot,
-		"shield": robot.shield(), "safe_fire": robot.passive("safe_fire") > 0}
+		"shield": robot.shield(), "safe_fire": robot.passive("safe_fire") > 0, "corrosion": world.event_mods.corrosion}
 
 func drop_portions(_c: Vector2i, arr: Array) -> void:
 	world.drop_portions(host.cell, arr)
@@ -131,8 +139,11 @@ func push(src: Machine, p: Portion, c: Vector2i) -> bool:
 	return host.push_out(world, src, p, c)
 
 func tick(dt: float) -> void:
-	World.eval_logic(self)
-	if not host.enabled:
+	# Внешний провод в блок: если у схемы есть сигнальные входы — идёт в них,
+	# иначе выключает весь блок целиком.
+	World.eval_logic(self, {MacroMachine.SIG_SOURCE: host.outer_signal})
+	var off: bool = host.manual_off if host.has_sig_in() else not host.enabled
+	if off:
 		for m in machines.values():
 			m.enabled = false
 	World.tick_machines(self, dt)

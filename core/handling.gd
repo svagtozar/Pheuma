@@ -13,9 +13,34 @@ class_name Handling
 const EVENT_CTX := ["launch", "impact"]
 const CORROSION_PROOF := ["insulating", "crystalline", "anchoring"]
 
+## Можно ли носить и хранить без вреда: не разъедает хранилища и не горит в руках.
+## safe_fire — навык Хранителя огня или холодильный ранец.
+static func safe_to_carry(s: Substance, planet: Planet, safe_fire: bool = false) -> bool:
+	if s.has("acidic"):
+		return false
+	var burns: bool = (s.has("pyrophoric") or s.has("flammable")) and planet.oxidizing()
+	return not burns or safe_fire
+
 static func new_result() -> Dictionary:
 	return {"lost": 0.0, "spawn": [], "jammed": null, "robot_damage": 0.0, "container_damage": 0.0,
-		"fire": false, "signal": false, "absorb_gas": 0.0, "crawl": false, "events": [], "discovered": []}
+		"fire": false, "signal": false, "absorb_gas": 0.0, "crawl": false, "events": [], "discovered": [],
+		"revealed": []}
+
+## Наблюдение: если эффект правила что-то заметно сделал, его тег выдаёт себя.
+static func _snap(res: Dictionary, p: Portion) -> Array:
+	return [res.lost, res.container_damage, res.spawn.size(), res.fire, res.signal, res.robot_damage,
+		res.absorb_gas, res.crawl, res.jammed != null, p.mass, p.temp, p.substance]
+
+static func _observe(r: Dictionary, before: Array, res: Dictionary, p: Portion) -> void:
+	var after := _snap(res, p)
+	for i in before.size():
+		var a = before[i]
+		var b = after[i]
+		var changed: bool = (abs(float(a) - float(b)) > 0.0005) if typeof(a) == TYPE_FLOAT else a != b
+		if changed:
+			if not r.tag in res.revealed:
+				res.revealed.append(r.tag)
+			return
 
 ## Непрерывные эффекты за dt секунд.
 static func tick(p: Portion, ctx: String, env: Dictionary, dt: float) -> Dictionary:
@@ -37,6 +62,8 @@ static func tick(p: Portion, ctx: String, env: Dictionary, dt: float) -> Diction
 			res.lost += mass0 * 0.5 * dt
 		elif phase == Substance.Phase.LIQUID and ctx == "ground":
 			res.lost += mass0 * 0.05 * dt
+	if ctx == "carried" and env.get("cold_pack", false):
+		p.temp = min(p.temp, planet.ambient_temp)   # холодильный ранец
 	if ctx == "carried" and p.temp > 200.0:
 		res.robot_damage += 0.5 * dt * (1.0 - env.get("shield", {}).get("heat", 0.0))
 
@@ -51,7 +78,9 @@ static func tick(p: Portion, ctx: String, env: Dictionary, dt: float) -> Diction
 						ok = true
 				if not ok:
 					continue
+			var before := _snap(res, p)
 			_apply(r, p, mass0, phase, ctx, env, dt, res)
+			_observe(r, before, res, p)
 
 	# Среда планеты действует на открыто лежащие порции через таблицу взаимодействий.
 	if (ctx == "open" or ctx == "ground") and rng.chance(0.03 * dt):
@@ -74,7 +103,9 @@ static func event(p: Portion, ctx: String, env: Dictionary) -> Dictionary:
 	for tag in p.substance.tags:
 		for r in HandlingRules.rules_for(tag):
 			if ctx in r.ctx:
+				var before := _snap(res, p)
 				_apply(r, p, mass0, p.phase(), ctx, env, 1.0, res)
+				_observe(r, before, res, p)
 	return res
 
 static func _relax_temperature(p: Portion, ctx: String, env: Dictionary, dt: float) -> void:
@@ -104,7 +135,7 @@ static func _apply(r: Dictionary, p: Portion, mass0: float, phase: int, ctx: Str
 				lit = true
 			if not r.get("always", false) and env.get("hot_nearby", false):
 				lit = true
-			if ctx == "carried" and env.get("safe_fire", false):
+			if ctx == "carried" and (env.get("safe_fire", false) or env.get("cold_pack", false)):
 				lit = false
 			if lit:
 				res.lost += mass0 * rate * dt
@@ -126,7 +157,7 @@ static func _apply(r: Dictionary, p: Portion, mass0: float, phase: int, ctx: Str
 			for t in CORROSION_PROOF:
 				if cont.has(t):
 					return
-			res.container_damage += rate * dt * min(1.0, mass0 / 5.0)
+			res.container_damage += rate * env.get("corrosion", 1.0) * dt * min(1.0, mass0 / 5.0)
 		"phase_leak":
 			if cont != null and cont.has("anchoring"):
 				return
@@ -137,6 +168,20 @@ static func _apply(r: Dictionary, p: Portion, mass0: float, phase: int, ctx: Str
 			res.robot_damage += rate * dt * min(2.0, mass0 / 5.0) * (1.0 - shield.get("radiation", 0.0))
 		"warm":
 			p.temp += rate * dt
+		"chill":
+			var cold: float = planet.ambient_temp - 100.0
+			p.temp = max(cold, p.temp - rate * dt)
+			for n in env.get("neighbors", []):
+				if n != p:
+					n.temp = max(cold, n.temp - rate * dt)
+		"seep":
+			var holds := false
+			if cont != null:
+				holds = cont.has("dense") or cont.has("anchoring")
+			if not holds:
+				res.lost += mass0 * rate * dt
+		"mend":
+			res.container_damage -= rate * dt * min(1.0, mass0 / 5.0)
 		"absorb_water":
 			p.mass += mass0 * rate * dt
 			if rng.chance(rate * 2.0 * dt):

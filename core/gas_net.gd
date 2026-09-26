@@ -5,6 +5,7 @@ extends RefCounted
 ## добавляют только насосы, а убирают вентиляция, потребители и разрывы.
 
 var nodes := {}   # id → {"v": объём, "n": количество газа, "max_p": предельное давление, "vent": bool}
+var vented_total := 0.0   # сколько газа выпущено в атмосферу (сброс, откачка) — для терраформирования
 var edges := {}   # "a:b" → {"a", "b", "k", "open"}
 var atm_pressure := 1.0
 var ambient := 15.0
@@ -115,7 +116,10 @@ func step(dt: float) -> Array:
 		nd.n = max(0.0, nd.n + delta[id])
 		if nd.vent:
 			var target: float = atm_pressure * nd.v / temp_factor()
-			nd.n += (target - nd.n) * min(1.0, 2.0 * dt)
+			var dn: float = (target - nd.n) * min(1.0, 2.0 * dt)
+			nd.n += dn
+			if dn < 0.0:
+				vented_total -= dn
 	var burst: Array = []
 	for id in nodes:
 		if pressure(id) > nodes[id].max_p:

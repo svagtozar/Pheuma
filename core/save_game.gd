@@ -4,7 +4,7 @@ class_name SaveGame
 ## постройки, сети, порции, робот, прогресс цели.
 
 const VERSION := 1
-const DIR := "user://saves"
+static var DIR := "user://saves"   # тесты подменяют на свою папку
 
 static func v2i(a) -> Vector2i:
 	return Vector2i(int(a[0]), int(a[1]))
@@ -64,16 +64,17 @@ static func machine_restore(w: World, m: Machine, md: Dictionary, gas: GasNet) -
 		m.config[k] = v
 	m.items = md.items.map(func(a): return p_from(w, a)).filter(func(p): return p != null)
 	m.out_queue = md.out.map(func(e): return [p_from(w, e[0]), int(e[1])]).filter(func(e): return e[0] != null)
-	if md.has("gas") and gas.has_node(m.id):
-		gas.nodes[m.id].n = float(md.gas)
 	if m is Processor:
 		m.busy = p_from(w, md.get("busy"))
 		m.reagent = p_from(w, md.get("reagent"))
 		m.progress = float(md.get("progress", 0.0))
 	if m is Dome:
 		m.temp = float(md.get("temp", w.planet.ambient_temp))
+	# Сначала extra: свёрнутый блок заводит в нём свой газовый узел, потом газ.
 	if md.has("extra"):
 		m.load_extra(w, md.extra)
+	if md.has("gas") and gas.has_node(m.id):
+		gas.nodes[m.id].n = float(md.gas)
 
 static func to_dict(w: World) -> Dictionary:
 	var d := {"version": VERSION, "seed": w.planet.seed_value, "time": w.time,
@@ -81,8 +82,10 @@ static func to_dict(w: World) -> Dictionary:
 	d.tiles = Marshalls.raw_to_base64(w.planet.tiles)
 	var dep := {}
 	for c in w.planet.deposits:
-		dep["%d,%d" % [c.x, c.y]] = w.planet.deposits[c].amount
+		dep["%d,%d" % [c.x, c.y]] = {"sub": w.planet.deposits[c].sub, "amount": w.planet.deposits[c].amount}
 	d.deposits = dep
+	# Материалы планеты: после генерации могут добавиться новые (экзотика метеоритов).
+	d.planet_materials = w.planet.materials.map(func(s): return {"id": s.id, "name": s.name, "tags": s.tags, "noise": s.noise})
 	var derived: Array = []
 	for s in w.db.all():
 		if "#" in s.id:
@@ -111,17 +114,24 @@ static func to_dict(w: World) -> Dictionary:
 	d.revealed = w.revealed.keys().map(func(c): return [c.x, c.y])
 	d.overrides = w.tile_overrides.keys().map(func(c): return [c.x, c.y, w.tile_overrides[c].tile, w.tile_overrides[c].t])
 	d.launched = w.launched
+	d.excavated = w.excavated
+	d.ruin_dug = w.ruin_dug.keys().map(func(c): return [c.x, c.y, w.ruin_dug[c]])
+	d.vented = w.gas.vented_total
 	d.built_kinds = w.built_kinds.keys()
+	d.events = w.director.to_dict()
+	d.stats = w.stats
 	d.meta = w.meta
-	d.goals = {"stage": w.goals.stage, "hold": w.goals.hold, "completed": w.goals.completed, "progress": w.goals.progress}
+	d.goals = {"stage": w.goals.stage, "hold": w.goals.hold, "completed": w.goals.completed, "progress": w.goals.progress,
+		"choices": w.goals.choices, "reward_pending": w.goals.reward_pending, "base_hits": w.goals.base_hits,
+		"base_vented": w.goals.base_vented}
 	var r := w.robot
 	d.robot = {"pos": [r.pos.x, r.pos.y], "hp": r.hp, "tank": r.tank, "selected": r.selected,
 		"inventory": r.inventory.values().map(func(p): return p_to(p)),
 		"modules": r.modules.map(func(m): return mod_to(m)), "equipped": r.equipped.map(func(m): return mod_to(m)),
 		"hull": mod_to(r.hull), "drill": mod_to(r.drill), "next_module": r._next_module,
 		"xp": r.xp, "knowledge": r.knowledge, "learned": r.learned.keys(), "blueprints": r.blueprints.keys(),
-		"unlocked": r.unlocked.keys(), "known_tags": r.known_tags.keys(), "analyzed": r.analyzed.keys(),
-		"interactions": r.known_interactions.keys(), "last_safe": [r.last_safe.x, r.last_safe.y]}
+		"unlocked": r.unlocked.keys(), "known_tags": r.known_tags.keys(), "analyzed": r.analyzed.keys(), "sub_known": r.sub_known, "hypotheses": r.hypotheses,
+		"interactions": r.known_interactions.keys(), "last_safe": [r.last_safe.x, r.last_safe.y], "bonus_slots": r.bonus_slots}
 	return d
 
 static func from_dict(d: Dictionary) -> World:
@@ -129,10 +139,20 @@ static func from_dict(d: Dictionary) -> World:
 	w.events.clear()
 	w.time = float(d.time)
 	w.planet.tiles = Marshalls.base64_to_raw(d.tiles)
+	for md in d.get("planet_materials", []):
+		if w.db.get_sub(md.id) == null:
+			var s := Substance.new(md.id, md.id, md.tags, md.noise)
+			s.name = md.name
+			w.planet.materials.append(s)
+			w.db.add(s)
 	for k in d.deposits:
 		var c := v2i(k.split(","))
-		if w.planet.deposits.has(c):
-			w.planet.deposits[c].amount = float(d.deposits[k])
+		var v = d.deposits[k]
+		if typeof(v) == TYPE_DICTIONARY:
+			# Новые залежи (метеориты, сейсмозаряд) создаются заново.
+			w.planet.deposits[c] = {"sub": str(v.sub), "amount": float(v.amount)}
+		elif w.planet.deposits.has(c):
+			w.planet.deposits[c].amount = float(v)   # старый формат сохранения
 	for s in d.substances:
 		w.db.restore(s.id, s.root, s.name, s.tags)
 	for md in d.machines:
@@ -150,8 +170,17 @@ static func from_dict(d: Dictionary) -> World:
 		w.revealed[v2i(c)] = true
 	for o in d.overrides:
 		w.tile_overrides[Vector2i(int(o[0]), int(o[1]))] = {"tile": int(o[2]), "t": float(o[3])}
-	w.launched = {"mass": float(d.launched.mass), "tags": d.launched.tags, "exotic": float(d.launched.exotic)}
+	w.launched = {"mass": float(d.launched.mass), "tags": d.launched.tags, "exotic": float(d.launched.exotic), "subs": d.launched.get("subs", {})}
+	w.excavated = float(d.get("excavated", 0.0))
+	for r in d.get("ruin_dug", []):
+		w.ruin_dug[Vector2i(int(r[0]), int(r[1]))] = float(r[2])
+	w.gas.vented_total = float(d.get("vented", 0.0))
 	w.meta = d.get("meta", {})
+	if d.has("stats"):
+		for k in d.stats:
+			w.stats[k] = int(d.stats[k])
+	if d.has("events"):
+		w.director.from_dict(d.events)
 	w.built_kinds = {}
 	for k in d.built_kinds:
 		w.built_kinds[k] = true
@@ -159,6 +188,10 @@ static func from_dict(d: Dictionary) -> World:
 	w.goals.hold = float(d.goals.hold)
 	w.goals.completed = d.goals.completed
 	w.goals.progress = float(d.goals.progress)
+	w.goals.choices = d.goals.get("choices", {})
+	w.goals.reward_pending = d.goals.get("reward_pending", [])
+	w.goals.base_hits = int(d.goals.get("base_hits", 0))
+	w.goals.base_vented = float(d.goals.get("base_vented", 0.0))
 	var rd: Dictionary = d.robot
 	var r := w.robot
 	r.pos = Vector2(rd.pos[0], rd.pos[1])
@@ -178,12 +211,24 @@ static func from_dict(d: Dictionary) -> World:
 	for k in rd.xp:
 		r.xp[k] = float(rd.xp[k])
 	r.knowledge = int(rd.knowledge)
+	r.bonus_slots = int(rd.get("bonus_slots", 0))
 	r.last_safe = v2i(rd.last_safe)
 	r.learned = _as_set(rd.learned)
 	r.blueprints = _as_set(rd.blueprints)
 	r.unlocked = _as_set(rd.unlocked)
 	r.known_tags = _as_set(rd.known_tags)
 	r.analyzed = _as_set(rd.analyzed)
+	r.hypotheses = rd.get("hypotheses", {})
+	if rd.has("sub_known"):
+		r.sub_known = rd.sub_known
+	else:
+		# Старое сохранение: всё, что было проанализировано, считается известным целиком.
+		for id in r.analyzed:
+			var s: Substance = w.db.get_sub(id)
+			if s != null:
+				r.sub_known[id] = {"_done": true}
+				for t in s.tags:
+					r.sub_known[id][t] = true
 	r.known_interactions = _as_set(rd.interactions)
 	w.log_event(w.robot_cell(), "Игра загружена")
 	return w
@@ -194,8 +239,27 @@ static func _as_set(arr: Array) -> Dictionary:
 		out[k] = true
 	return out
 
+const SLOTS := ["slot1", "slot2", "slot3", "slot4", "slot5"]
+const SLOT_NAMES := {"auto": "Автосохранение", "quick": "Быстрое (F5)"}
+
 static func path_for(slot: String) -> String:
 	return "%s/%s.json" % [DIR, slot]
+
+static func meta_path(slot: String) -> String:
+	return "%s/%s.meta.json" % [DIR, slot]
+
+static func slot_title(slot: String) -> String:
+	if SLOT_NAMES.has(slot):
+		return SLOT_NAMES[slot]
+	return "Слот %s" % slot.trim_prefix("slot")
+
+## Короткое описание сохранения для списка слотов.
+static func make_meta(w: World, slot: String) -> Dictionary:
+	return {"slot": slot, "planet": w.planet.name, "seed": w.planet.seed_value,
+		"tags": w.planet.tags.map(func(t): return PlanetTags.display(t)), "goal": w.planet.goal.n,
+		"stage": w.goals.stage + 1, "stages": w.planet.goal.stages.size(), "completed": w.goals.completed,
+		"time": w.time, "date": Time.get_datetime_string_from_system(false, true),
+		"unix": Time.get_unix_time_from_system(), "tutorial": w.meta.has("tutorial_step")}
 
 static func save_file(w: World, slot: String = "quick") -> String:
 	DirAccess.make_dir_recursive_absolute(DIR)
@@ -203,6 +267,10 @@ static func save_file(w: World, slot: String = "quick") -> String:
 	if f == null:
 		return "не удалось записать сохранение"
 	f.store_string(JSON.stringify(to_dict(w)))
+	f.close()
+	var m := FileAccess.open(meta_path(slot), FileAccess.WRITE)
+	if m != null:
+		m.store_string(JSON.stringify(make_meta(w, slot)))
 	return ""
 
 static func load_file(slot: String = "quick") -> World:
@@ -215,3 +283,37 @@ static func load_file(slot: String = "quick") -> World:
 
 static func exists(slot: String = "quick") -> bool:
 	return FileAccess.file_exists(path_for(slot))
+
+static func delete_slot(slot: String) -> void:
+	for p in [path_for(slot), meta_path(slot)]:
+		if FileAccess.file_exists(p):
+			DirAccess.remove_absolute(p)
+
+## Описание слота или {} если он пуст.
+static func slot_meta(slot: String) -> Dictionary:
+	if not exists(slot):
+		return {}
+	if FileAccess.file_exists(meta_path(slot)):
+		var d = JSON.parse_string(FileAccess.get_file_as_string(meta_path(slot)))
+		if typeof(d) == TYPE_DICTIONARY:
+			return d
+	return {"slot": slot, "planet": "?", "goal": "", "stage": 0, "stages": 0, "time": 0.0, "date": "", "unix": 0}
+
+## Все слоты: автосохранение, быстрое, ручные.
+static func all_slots() -> Array:
+	return ["auto", "quick"] + SLOTS
+
+## Самое свежее сохранение ("" — нет ни одного).
+static func latest_slot() -> String:
+	var best := ""
+	var t := -1.0
+	for s in all_slots():
+		var m := slot_meta(s)
+		if not m.is_empty() and float(m.get("unix", 0)) > t:
+			t = float(m.get("unix", 0))
+			best = s
+	return best
+
+static func format_time(sec: float) -> String:
+	var m := int(sec) / 60
+	return "%d ч %02d мин" % [m / 60, m % 60] if m >= 60 else "%d мин" % m
