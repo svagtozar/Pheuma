@@ -186,7 +186,7 @@ static func _place_deposits(p: Planet, rng: Rng) -> void:
 						continue
 					if (c - p.spawn).length() < 3:
 						continue
-					p.deposits[c] = {"sub": m.id, "amount": rng.range_f(25.0, 70.0)}
+					p.deposits[c] = {"sub": m.id, "amount": rng.range_f(60.0, 150.0)}
 
 ## Клетка грунта рядом с препятствием: такие залежи требуют абилок мобильности.
 static func _cell_near_obstacle(p: Planet, rng: Rng) -> Vector2i:

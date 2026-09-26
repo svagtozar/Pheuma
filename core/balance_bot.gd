@@ -42,10 +42,12 @@ func is_free(c: Vector2i) -> bool:
 func minable(s: Substance) -> bool:
 	return s.hardness <= w.robot.mining_hardness() + 0.5
 
-func deposits_of(s: Substance) -> Array:
+func deposits_of(s: Substance, free_only: bool = false) -> Array:
 	var out: Array = []
 	for c in w.planet.deposits:
 		if w.planet.deposits[c].sub == s.id and w.planet.deposits[c].amount > 1.0:
+			if free_only and w.grid.has(c):
+				continue
 			out.append(c)
 	out.sort_custom(func(a, b): return center(a).distance_to(w.robot.pos) < center(b).distance_to(w.robot.pos))
 	return out
@@ -56,7 +58,7 @@ func mine_mass(s: Substance, mass: float) -> bool:
 	var guard := 0
 	while w.robot.mass_of(s.id) < mass and guard < 400:
 		guard += 1
-		var deps := deposits_of(s)
+		var deps := deposits_of(s, true)
 		if deps.is_empty():
 			return false
 		travel(deps[0])
@@ -74,9 +76,16 @@ func material_for(kind: String, check: Callable = Callable()) -> Substance:
 		if Buildings.check_material(kind, s, w.planet.ambient_temp) != "":
 			return false
 		return check.is_null() or check.call(s)
+	# Стартовый сплав держим на пусковую шахту, если цель требует отправки на орбиту.
+	var reserve := 0.0
+	if kind != "launch_silo":
+		for st in w.planet.goal.stages:
+			if st.type.begins_with("launch") and w.machines_of("launch_silo").is_empty():
+				reserve = w.build_cost("launch_silo")
 	for id in w.robot.inventory:
 		var s: Substance = w.db.get_sub(id)
-		if ok.call(s) and w.robot.mass_of(id) >= cost:
+		var spare: float = w.robot.mass_of(id) - (reserve if s == w.starter else 0.0)
+		if ok.call(s) and spare >= cost:
 			return s
 	var cands: Array = w.planet.materials.filter(func(s): return ok.call(s) and minable(s) and not deposits_of(s).is_empty())
 	cands.sort_custom(func(a, b): return center(deposits_of(a)[0]).distance_to(w.robot.pos) < center(deposits_of(b)[0]).distance_to(w.robot.pos))
@@ -124,61 +133,87 @@ func learn_what_we_can() -> void:
 # ---------------------------------------------------------------- установки
 
 ## Место у залежи: бур, затем путь машин по выходам (с поворотами для выхода 1).
-func find_site(mat: Substance, outs: Array) -> Dictionary:
-	for dep in deposits_of(mat).slice(0, 25):
+## outs — выход каждой машины пути (последний элемент — конечная постройка).
+func find_site(mat: Substance, outs: Array, splits: Array = []) -> Dictionary:
+	while splits.size() < outs.size():
+		splits.append(false)
+	var deps := deposits_of(mat, true).slice(0, 30)
+	deps.sort_custom(func(a, b): return w.planet.deposits[a].amount > w.planet.deposits[b].amount)
+	for dep in deps:
+		if w.grid.has(dep):
+			continue
 		for f in 4:
 			var cells: Array = []
 			var cur: Vector2i = dep
 			var dir := f
 			var ok := true
+			var dumps: Array = []
 			for k in outs.size():
 				var nd: int = (dir + (outs[k - 1] if k > 0 else 0)) % 4
+				# У разделяющей машины второй выход — под сброс.
+				if k > 0 and splits[k - 1]:
+					var other: Vector2i = cur + Machine.DIRS[(dir + (1 - outs[k - 1])) % 4]
+					if not is_free(other) or other in cells.map(func(e): return e[0]):
+						ok = false
+						break
+					dumps.append(other)
 				cur = cur + Machine.DIRS[nd]
 				dir = nd
-				if not is_free(cur) or cur in cells:
+				if not is_free(cur) or cur in cells.map(func(e): return e[0]) or cur in dumps:
 					ok = false
 					break
 				cells.append([cur, dir])
 			if ok:
-				return {"dep": dep, "facing": f, "cells": cells}
+				return {"dep": dep, "facing": f, "cells": cells, "dumps": dumps}
 	return {}
 
-## Построить установку по плану; sink — вид постройки на конце ("container",
-## "launch_silo") или [вид, проверка материала].
+## Построить установку по плану; sink — вид конечной постройки или [вид, проверка материала].
 func build_chain(pl: Dictionary, sink) -> Machine:
-	var procs: Array = pl.get("procs", [])
-	if pl.kind == "treat":
-		procs = ["treater"]
-	var outs: Array = pl.get("out", [])
-	if outs.size() < procs.size():
-		outs = procs.map(func(_p): return 0)
-	outs = outs + [0]
-	var site := find_site(pl.mat, outs)
+	var steps: Array = pl.steps
+	var outs: Array = steps.map(func(st): return st.out) + [0]
+	var splits: Array = steps.map(func(st): return st.op == "process" and Processes.PROCESSES[st.pid].outs == 2) + [false]
+	var site := find_site(pl.mat, outs, splits)
 	if site.is_empty():
 		note("нет места для установки у залежи %s" % pl.mat.name)
 		return null
 	var drill := build("drill", site.dep, site.facing, func(s): return s.hardness + 0.5 >= pl.mat.hardness)
 	if drill == null:
 		return null
-	var last: Machine = null
-	for i in procs.size():
+	for i in steps.size():
+		var st: Dictionary = steps[i]
 		var e: Array = site.cells[i]
-		var kind: String = procs[i] if procs[i] != "treater" else "treater"
-		for k in Buildings.KINDS:
-			if Buildings.KINDS[k].get("process", "") == procs[i]:
-				kind = k
-		var fac: int = site.cells[i + 1][1] if outs[i] == 0 else (site.cells[i + 1][1] + 3) % 4
-		var m := build(kind, e[0], fac)
+		var fac: int = site.cells[i + 1][1] if st.out == 0 else (site.cells[i + 1][1] + 3) % 4
+		var chk := Callable()
+		if st.has("source"):
+			var src: Substance = st.source
+			# Облучатель лучше строить прямо из радиоактивного материала — тогда источник вечный.
+			if Buildings.check_material(st.kind, src, w.planet.ambient_temp) == "":
+				mine_mass(src, w.build_cost(st.kind) + 1.0)
+				chk = func(s): return s.has("radioactive")
+		var m := build(st.kind, e[0], fac, chk)
+		if m == null and not chk.is_null():
+			m = build(st.kind, e[0], fac)
 		if m == null:
 			return null
-		var gmin: float = Processes.PROCESSES[procs[i]].get("gas_min", 0.0)
+		if st.op == "treat":
+			_feeders.append([st.reagent, m])
+		elif st.has("source") and not m.built_from.has("radioactive"):
+			_feeders.append([st.source, m])
+		var gmin: float = Processes.PROCESSES[st.pid].get("gas_min", 0.0) if st.op == "process" else 0.0
 		if gmin > 0.0:
-			pump_for(m, 10.0 if procs[i] == "compressor" else gmin + 1.5, 2 if procs[i] == "compressor" else 1)
-		last = m
-	var se: Array = site.cells[procs.size()]
+			pump_for(m, 10.0 if st.pid == "compressor" else gmin + 1.5, 2 if st.pid == "compressor" else 1)
+	for dc in site.dumps:
+		build("container", dc, 0)
+	var se: Array = site.cells[steps.size()]
+	# Летучее, жидкое и газ — только в закрытый бак, иначе улетит из контейнера.
+	if sink is String and sink == "container" and pl.has("final"):
+		var fp: Portion = pl.final
+		var amb_phase: int = fp.substance.phase_at(w.planet.ambient_temp)
+		if amb_phase != Substance.Phase.SOLID or fp.has("volatile") or fp.has("antigravitic"):
+			sink = "tank"
 	var sk: String = sink if sink is String else sink[0]
-	var chk: Callable = Callable() if sink is String else sink[1]
-	var snk := build(sk, se[0], se[1], chk)
+	var chk2: Callable = Callable() if sink is String else sink[1]
+	var snk := build(sk, se[0], se[1], chk2)
 	if snk == null:
 		return null
 	if sk == "launch_silo":
@@ -186,27 +221,29 @@ func build_chain(pl: Dictionary, sink) -> Machine:
 	note("установка: %s → %s" % [Planner.describe(pl), snk.display_name()])
 	return snk
 
-## Произвести mass кг материала с тегом в контейнер (и при нужде забрать в инвентарь).
+## Установка, которая производит материал с тегом в конечную постройку.
 func produce(tag: String, sink = "container") -> Machine:
 	var mats: Array = w.planet.materials.filter(func(s): return not deposits_of(s).is_empty())
+	learn_what_we_can()
 	var pl := Planner.plan(w, tag, mats)
 	if pl.is_empty():
-		learn_what_we_can()
-		pl = Planner.plan(w, tag, mats)
-	if pl.is_empty():
-		note("не нашёл способа получить «%s»" % MaterialTags.display(tag))
+		note("планировщик: «%s» не получить из материалов планеты" % MaterialTags.display(tag))
 		return null
-	if pl.kind == "treat" and not mine_mass(pl.reagent, 15.0):
-		note("не добыть реагент %s" % pl.reagent.name)
-		return null
-	var snk := build_chain(pl, sink)
-	if snk != null and pl.kind == "treat":
-		_treaters.append([pl.reagent, snk])
-	return snk
+	note("план для «%s»: %s" % [MaterialTags.display(tag), Planner.describe(pl)])
+	for k in pl.locked:
+		if not unlock(k):
+			note("не открыть «%s»" % Buildings.name_of(k))
+			return null
+	for st in pl.steps:
+		var rg: Substance = st.get("reagent", st.get("source"))
+		if rg != null and not mine_mass(rg, 12.0):
+			note("не добыть реагент %s" % rg.name)
+			return null
+	return build_chain(pl, sink)
 
-var _treaters: Array = []
+var _feeders: Array = []   # [реагент, машина] — подкладывать в боковой вход
 
-## Подкладывать реагент в обработчики и топливо в печь купола, пока идёт ожидание.
+## Подкладывать реагенты в машины и топливо в печь купола, пока идёт ожидание.
 func maintain() -> void:
 	if not _feed.is_empty() and w.machines.has(_feed[1].id) and _feed[1].items.is_empty():
 		var fs: Substance = _feed[0]
@@ -215,15 +252,222 @@ func maintain() -> void:
 		travel(_feed[1].cell)
 		w.robot.selected = fs.id
 		w.insert_into(_feed[1].cell, false, min(6.0, w.robot.mass_of(fs.id)))
-	for pair in _treaters:
+	for pair in _feeders:
 		var rg: Substance = pair[0]
-		for m in w.machines_of("treater"):
-			if m.reagent == null or m.reagent.mass < 2.0:
-				if w.robot.mass_of(rg.id) < 3.0:
-					mine_mass(rg, 10.0)
-				travel(m.cell)
-				w.robot.selected = rg.id
-				w.insert_into(m.cell, true, min(5.0, w.robot.mass_of(rg.id)))
+		var m: Machine = pair[1]
+		if not w.machines.has(m.id):
+			continue
+		if m.reagent == null or m.reagent.mass < 2.0:
+			if w.robot.mass_of(rg.id) < 3.0:
+				mine_mass(rg, 10.0)
+			if w.robot.mass_of(rg.id) < 0.5:
+				continue
+			travel(m.cell)
+			w.robot.selected = rg.id
+			w.insert_into(m.cell, true, min(5.0, w.robot.mass_of(rg.id)))
+
+# ---------------------------------------------------------------- прокачка
+
+const UNLOCK_LIMIT := 900.0
+
+func node_unlocking(kind: String) -> String:
+	for nd in SkillTree.NODES:
+		if kind in nd.get("unlock", []):
+			return nd.id
+	return ""
+
+## Открыть постройку: изучить узел (и предыдущие), набрав опыт класса и знания.
+func unlock(kind: String) -> bool:
+	if w.robot.unlocked.has(kind):
+		return true
+	var id := node_unlocking(kind)
+	if id == "":
+		return false
+	var chain: Array = []
+	var cur := id
+	while cur != "":
+		chain.push_front(cur)
+		cur = SkillTree.prev_of(cur)
+	var t0 := w.time
+	for nid in chain:
+		if w.robot.learned.has(nid):
+			continue
+		var nd := SkillTree.node(nid)
+		while Progression.can_learn(w.robot, nid) != "":
+			if w.time - t0 > UNLOCK_LIMIT:
+				note("не хватило времени на узел «%s»: %s" % [nd.n, Progression.can_learn(w.robot, nid)])
+				return false
+			if w.robot.xp[nd.cls] < nd.xp:
+				if not farm_xp(nd.cls):
+					note("не набрать опыт «%s»" % SkillTree.CLASSES[nd.cls].n)
+					return false
+			elif w.robot.knowledge < nd.cost:
+				if not farm_knowledge():
+					note("не набрать знаний")
+					return false
+		Progression.learn(w.robot, nid)
+		note("изучено ради «%s»: %s" % [Buildings.name_of(kind), nd.n])
+	return w.robot.unlocked.has(kind)
+
+var _farm := {}
+
+## Один «подход» к набору опыта класса. false — если способа нет.
+func farm_xp(cls: String) -> bool:
+	var soft: Array = w.planet.materials.filter(func(s): return minable(s) and s.phase_at(w.planet.ambient_temp) == Substance.Phase.SOLID and not deposits_of(s).is_empty())
+	match cls:
+		"gatherer":
+			return not soft.is_empty() and mine_mass(soft[0], w.robot.mass_of(soft[0].id) + 5.0)
+		"crafter", "chief":
+			var kind := "container" if cls == "crafter" else "sensor"
+			var c := _free_near(w.planet.spawn)
+			for i in 5:
+				var m := build(kind, c, 0)
+				if m == null:
+					return false
+				w.remove_at(c)
+			return true
+		"firekeeper":
+			if not _farm.has("furnace") or not w.machines.has(_farm.furnace.id):
+				var c := _free_near(w.planet.spawn)
+				var f := build("furnace", c, 0)
+				if f == null:
+					return false
+				pump_for(f, 2.5, 1)
+				_farm.furnace = f
+				build("container", c + Vector2i(1, 0), 0)
+			if soft.is_empty():
+				return false
+			var fu: Machine = _farm.furnace
+			mine_mass(soft[0], 6.0)
+			travel(fu.cell)
+			w.robot.selected = soft[0].id
+			w.insert_into(fu.cell, false, min(6.0, w.robot.mass_of(soft[0].id)))
+			run(12.0)
+			return true
+		"shaman":
+			return farm_knowledge()
+		"hunter":
+			if not w.robot.has_module("hook"):
+				if not w.robot.blueprints.has("hook"):
+					return false
+				var fab = w.machines_of("fabricator")
+				if fab.is_empty():
+					var fb := build("fabricator", _free_near(w.planet.spawn), 0)
+					if fb == null:
+						return false
+					fab = [fb]
+				travel(fab[0].cell)
+				if w.fabricate("hook", w.starter) != "":
+					var s2 := material_for("fabricator")
+					if s2 == null or w.fabricate("hook", s2) != "":
+						return false
+				w.robot.equip(w.robot.modules[-1].uid)
+			for i in 5:
+				while w.robot.tank < 1.0:
+					w.refill_robot(1.0)
+					run(1.0)
+				var dst := w.robot.cell() + Vector2i(3, 0)
+				if not w.walkable(dst):
+					dst = w.robot.cell() - Vector2i(3, 0)
+				Abilities.use(w, "hook", center(dst))
+				run(1.1)
+			return true
+	return false
+
+## Знания: анализ новых материалов, первые постройки новых видов, открытия в машинах.
+func farm_knowledge() -> bool:
+	var k0 := w.robot.knowledge
+	for s in w.planet.materials:
+		if not w.is_analyzed(s) and not deposits_of(s).is_empty():
+			travel(deposits_of(s)[0])
+			w.analyze(s)
+			if w.robot.knowledge > k0 + 1:
+				return true
+	for k in Buildings.KINDS:
+		if w.robot.unlocked.has(k) and not w.built_kinds.has(k) and Buildings.KINDS[k].cat in [0, 1, 2, 3] and k != "drill":
+			var c := _free_near(w.planet.spawn)
+			var m := build(k, c, 0)
+			if m != null:
+				w.remove_at(c)
+				return true
+	var before := w.robot.knowledge
+	_experiment()
+	return w.robot.knowledge > before or w.robot.knowledge > k0
+
+## Прогнать образцы через машины и обработчик ради новых тегов и взаимодействий.
+## Лаборатория строится один раз; перепробованные пары запоминаются.
+## Возвращает false, когда пробовать больше нечего.
+var _lab_machines := {}
+var _tried := {}
+
+func _experiment(max_tries: int = 8) -> bool:
+	if not _farm.has("lab"):
+		_lab()
+		_farm.lab = true
+	var pids: Array = []
+	for pid in Processes.PROCESSES:
+		if pid in ["filter", "magnet_sep", "irradiator"]:
+			continue
+		if w.robot.unlocked.has(Planner.kind_of(pid)):
+			pids.append(pid)
+	pids.sort()
+	var tries := 0
+	for pid in pids:
+		if not _lab_machines.has(pid) or not w.machines.has(_lab_machines[pid].id):
+			var c := _free_near(w.planet.spawn)
+			var m := build(Planner.kind_of(pid), c, 0)
+			if m == null:
+				continue
+			build("container", c + Vector2i(1, 0), 0)
+			if Processes.PROCESSES[pid].get("gas_min", 0.0) > 0.0:
+				pump_for(m, 10.0 if pid == "compressor" else 3.0, 1)
+			_lab_machines[pid] = m
+		var lm: Machine = _lab_machines[pid]
+		var samples: Array = w.robot.inventory.keys().filter(func(id): return w.robot.mass_of(id) >= 1.0)
+		samples.sort()
+		for id in samples:
+			if pid == "treater":
+				for id2 in samples:
+					var key := "%s:%s:%s" % [pid, id2, id]
+					if id2 == id or _tried.has(key) or w.robot.mass_of(id2) < 1.0 or w.robot.mass_of(id) < 1.0:
+						continue
+					_tried[key] = true
+					var ir := Interactions.apply(w.db.get_sub(id2).tags, w.db.get_sub(id).tags)
+					if ir.keys.is_empty():
+						continue
+					travel(lm.cell)
+					if lm.reagent != null:
+						w.robot.add_item(lm.reagent)
+						lm.reagent = null
+					w.robot.selected = id2
+					w.insert_into(lm.cell, true, 1.0)
+					w.robot.selected = id
+					w.insert_into(lm.cell, false, 1.0)
+					run(4.0)
+					tries += 1
+					if tries >= max_tries:
+						return true
+			else:
+				var key := "%s:%s" % [pid, id]
+				if _tried.has(key):
+					continue
+				_tried[key] = true
+				travel(lm.cell)
+				w.robot.selected = id
+				w.insert_into(lm.cell, false, 1.0)
+				run(Processes.PROCESSES[pid].dur + 1.0)
+				tries += 1
+				if tries >= max_tries:
+					return true
+	# Продукты лаборатории — тоже образцы.
+	for pid in _lab_machines:
+		var lm: Machine = _lab_machines[pid]
+		var out = w.machine_at(lm.cell + Vector2i(1, 0))
+		if out != null and not out.items.is_empty():
+			travel(out.cell)
+			w.take_from(out.cell)
+			tries += 1
+	return tries > 0
 
 func wait_until(cond: Callable, limit: float) -> bool:
 	var t0 := w.time
@@ -249,6 +493,11 @@ func play() -> void:
 			ok = wait_until(func(): return w.goals.stage > i or w.goals.completed, STAGE_LIMIT - (w.time - _stage_start))
 			if not ok:
 				why = "не успел за %.0f мин (прогресс %d%%)" % [STAGE_LIMIT / 60.0, int(w.goals.progress * 100)]
+				for m in w.machines.values():
+					if m.kind in ["pump", "pipe", "sensor", "gate_not", "fabricator"]:
+						continue
+					note("  %s %d,%d: %s, груз %.1f кг%s" % [m.display_name(), m.cell.x, m.cell.y, m.status if m.status != "" else "—", m.total_mass(),
+						", реагент %.1f" % m.reagent.mass if m is Processor and m.reagent != null else ""])
 		stages.append({"desc": st.desc, "ok": ok, "time": w.time - _stage_start, "why": why})
 		if not ok:
 			return
@@ -277,7 +526,7 @@ func do_stage(st: Dictionary) -> String:
 			var any: Array = w.planet.materials.filter(func(s): return minable(s) and s.phase_at(w.planet.ambient_temp) == Substance.Phase.SOLID and not deposits_of(s).is_empty())
 			if any.is_empty():
 				return "нечего добывать для отправки"
-			return "" if build_chain({"kind": "direct", "mat": any[0]}, "launch_silo") != null else "не построить шахту"
+			return "" if build_chain({"mat": any[0], "steps": [], "locked": []}, "launch_silo") != null else "не построить шахту"
 		"launch_tag":
 			return "" if produce(st.tag, "launch_silo") != null else "не получить «%s» для отправки" % MaterialTags.display(st.tag)
 		"launch_exotic":
@@ -325,50 +574,23 @@ func _lab() -> void:
 	learn_what_we_can()
 
 func _discover(st: Dictionary) -> String:
+	var idx: int = w.planet.goal.stages.find(st)
+	var done := func() -> bool: return w.goals.stage > idx or w.goals.completed
+	var t0 := w.time
 	_lab()
-	var done := func() -> bool: return w.goals.stage > w.planet.goal.stages.find(st) or w.goals.completed
-	if done.call():
-		return ""
-	# Прогон образцов через все доступные машины.
-	for pid in Planner.usable_processes(w) + ["treater"]:
-		var kind := ""
-		for k in Buildings.KINDS:
-			if Buildings.KINDS[k].get("process", "") == pid:
-				kind = k
-		var c := _free_near(w.planet.spawn)
-		var m := build(kind, c, 0)
-		if m == null:
-			continue
-		build("container", c + Vector2i(1, 0), 0)
-		if Processes.PROCESSES[pid].get("gas_min", 0.0) > 0.0:
-			pump_for(m, 10.0 if pid == "compressor" else 3.0, 1)
-		var samples: Array = w.robot.inventory.keys()
-		for i in samples.size():
-			var id: String = samples[i]
-			if w.robot.mass_of(id) < 1.0:
-				continue
-			travel(m.cell)
-			w.robot.selected = id
-			if pid == "treater":
-				for id2 in samples:
-					if id2 == id or w.robot.mass_of(id2) < 1.0:
-						continue
-					w.robot.selected = id2
-					w.insert_into(m.cell, true, 1.0)
-					w.robot.selected = id
-					w.insert_into(m.cell, false, 1.0)
-					run(4.0)
-					if m.reagent != null:
-						w.robot.add_item(m.reagent)
-						m.reagent = null
-					if done.call():
-						return ""
-			else:
-				w.insert_into(m.cell, false, 1.0)
-				run(Processes.PROCESSES[pid].dur + 1.0)
-		if done.call():
-			return ""
-	return "" if done.call() else "кончились идеи для открытий"
+	while not done.call() and w.time - t0 < STAGE_LIMIT:
+		learn_what_we_can()
+		if not _experiment():
+			# Идеи кончились — попробуем открыть новую машину и продолжить.
+			var opened := false
+			for k in ["distiller", "electrolyzer", "compressor", "sinter", "loom", "centrifuge", "decompressor"]:
+				if not w.robot.unlocked.has(k) and unlock(k):
+					opened = true
+					break
+			if not opened:
+				break
+		run(5.0)
+	return "" if done.call() else "кончились идеи для открытий (тегов %d, взаимодействий %d)" % [w.robot.known_tags.size(), w.robot.known_interactions.size()]
 
 func _sensors(n: int) -> String:
 	var c := _free_near(w.planet.spawn)
@@ -387,8 +609,6 @@ func _sensors(n: int) -> String:
 	return ""
 
 func _dome(st: Dictionary) -> String:
-	if w.planet.atm_pressure > st.p[1]:
-		return "атмосфера %.1f атм выше нормы купола, а стравить давление ниже атмосферного нечем" % w.planet.atm_pressure
 	var c := _free_near(w.planet.spawn)
 	var dome := build("dome", c, 0, func(s): return s.has("insulating")) if not w.planet.materials.filter(func(s): return s.has("insulating")).is_empty() else null
 	if dome == null:
@@ -398,6 +618,15 @@ func _dome(st: Dictionary) -> String:
 	var target_p: float = clamp(1.1, st.p[0] + 0.1, st.p[1] - 0.1)
 	if w.planet.atm_pressure < st.p[0]:
 		pump_for(dome, target_p, 1)
+	elif w.planet.atm_pressure > st.p[1]:
+		# Плотная атмосфера: насос в режиме откачки.
+		for d in Machine.DIRS:
+			if is_free(dome.cell + d):
+				var pm := build("pump", dome.cell + d, 0)
+				if pm != null:
+					pm.config.reverse = true
+					pm.config.target_p = target_p
+				break
 	var amb := w.planet.ambient_temp
 	if amb >= st.t[0] and amb <= st.t[1]:
 		return ""

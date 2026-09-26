@@ -200,3 +200,14 @@ func test_starter_kit():
 	assert_not_null(w.robot.drill)
 	assert_true(w.robot.unlocked.has("drill"))
 	assert_false(w.robot.unlocked.has("compressor"))
+
+func test_reverse_pump_lowers_pressure_below_atmosphere():
+	var w := H.world()
+	w.planet.atm_pressure = 3.0
+	w.gas.atm_pressure = 3.0
+	var tank := w.place("tank", Vector2i(3, 3), 0, w.starter, true)
+	var pump := w.place("pump", Vector2i(4, 3), 0, w.starter, true)
+	pump.config.reverse = true
+	pump.config.target_p = 1.0
+	H.run(w, 60.0)
+	assert_lt(w.gas.pressure(tank.id), 1.3)

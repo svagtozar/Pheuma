@@ -15,7 +15,7 @@ func tick(w, dt: float) -> void:
 		if n == null:
 			continue
 		if n.kind == "furnace" and n.hot:
-			temp += 4.0 * dt
+			temp += 1.5 * dt
 		elif n.kind == "condenser" and n.hot:
-			temp -= 4.0 * dt
+			temp -= 1.5 * dt
 	status = "T %.0f °C, %.2f атм" % [temp, w.gas.pressure(id)]

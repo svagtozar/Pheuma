@@ -817,8 +817,10 @@ func _refresh_inspector() -> void:
 		_btn("T −100", func(): m.config.target_t = max(100.0, m.config.target_t - 100.0))
 		_btn("T +100", func(): m.config.target_t += 100.0)
 	if m.config.has("target_p"):
-		_btn("P −1", func(): m.config.target_p = max(1.0, m.config.target_p - 1.0))
-		_btn("P +1", func(): m.config.target_p += 1.0)
+		_btn("P −0.5", func(): m.config.target_p = max(0.0, m.config.target_p - 0.5))
+		_btn("P +0.5", func(): m.config.target_p += 0.5)
+	if m.config.has("reverse"):
+		_btn("Режим: %s" % ("откачка" if m.config.reverse else "накачка"), func(): m.config.reverse = not m.config.reverse)
 	if m.config.has("fire_p"):
 		_btn("Выстрел −0.5", func(): m.config.fire_p = max(1.2, m.config.fire_p - 0.5))
 		_btn("Выстрел +0.5", func(): m.config.fire_p += 0.5)

@@ -38,7 +38,7 @@ const TEMPLATES := {
 		"desc": "Изучить планету и её вещества.", "w": 1.0,
 		"stages": [
 			{"type": "discover_tags", "n": 14, "desc": "Узнать 14 тегов"},
-			{"type": "discover_interactions", "n": 8, "desc": "Открыть 8 взаимодействий"},
+			{"type": "discover_interactions", "n": 5, "desc": "Открыть 5 взаимодействий"},
 			{"type": "sensor_network", "n": 6, "desc": "Построить сеть из 6 подключённых датчиков"},
 		]},
 	"anomaly": {"n": "Исследование аномалии",

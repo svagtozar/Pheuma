@@ -8,13 +8,17 @@ extends Machine
 var _cd := 0.0
 
 func init_config() -> void:
-	config.fire_p = 8.0 if kind == "launch_silo" else 3.0
+	config.fire_p = 6.0 if kind == "launch_silo" else 3.0
 	config.target = -1
 	if kind != "launch_silo":
 		config.routes = []
 
 func is_silo() -> bool:
 	return kind == "launch_silo"
+
+## Камера пушки — под давлением, значит закрытая: летучее в ней не испаряется.
+func handling_ctx() -> String:
+	return "sealed"
 
 func accept(p: Portion, from_cell: Vector2i) -> bool:
 	if p.mass > free_space() + 0.001:

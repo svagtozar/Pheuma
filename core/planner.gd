@@ -1,77 +1,116 @@
 class_name Planner
-## Планировщик получения тега из материалов планеты. Каждый вариант
-## проверяется настоящим прогоном Processor.run, а не только таблицами.
-## Используется ботом баланса (а в будущем — подсказками Шамана).
+## Планировщик получения тега из материалов планеты: поиск в ширину по
+## состояниям вещества (теги + фаза + температура). Шаг — машина обработки
+## или обработчик с реагентом из местных материалов. Каждый шаг проверяется
+## настоящим Processor.run / Interactions.apply.
 ##
-## План:
-##   {"kind": "direct", "mat": Substance}
-##   {"kind": "process", "mat": Substance, "procs": [pid, …], "out": [индексы выходов]}
-##   {"kind": "treat", "mat": Substance, "reagent": Substance}
+## План: {"mat": исходный материал, "steps": [шаг…], "locked": [закрытые постройки]}
+## Шаг:  {"op": "process", "pid": id, "kind": постройка, "out": 0|1}
+##       {"op": "treat", "reagent": Substance, "kind": "treater", "out": 0}
+## Для облучателя в шаге есть "source": радиоактивный материал.
+##
+## Побочный эффект: производные вещества создаются в w.db.
 
+const MAX_DEPTH := 5
+const MAX_STATES := 2500
 const MAX_P := 9.5
 
-## Контекст прогона машины «как у хорошо накачанной установки».
+static func kind_of(pid: String) -> String:
+	for k in Buildings.KINDS:
+		if Buildings.KINDS[k].get("process", "") == pid:
+			return k
+	return ""
+
 static func ctx_for(w, pid: String, reagent = null) -> Dictionary:
 	return {"db": w.db, "pressure": MAX_P if pid == "compressor" else 3.0, "compress_bonus": 0.0,
 		"target_t": 900.0, "ambient": w.planet.ambient_temp, "reagent": reagent, "filter_tag": ""}
 
-static func usable_processes(w) -> Array:
-	var out: Array = []
-	for k in Buildings.KINDS:
-		var d: Dictionary = Buildings.KINDS[k]
-		if d.has("process") and w.robot.unlocked.has(k) and not d.process in ["filter", "magnet_sep", "treater"]:
-			if d.process == "irradiator":
-				continue   # нужен радиоактивный источник — отдельный случай
-			out.append(d.process)
-	out.sort()
-	return out
+## Реагенты: твёрдые материалы с залежами, которые можно накопать.
+static func reagents(w, mats: Array) -> Array:
+	return mats.filter(func(m): return m.phase_at(w.planet.ambient_temp) == Substance.Phase.SOLID and m.hardness <= w.robot.mining_hardness() + 0.5)
 
-## Прогнать цепочку процессов; вернуть [порция, индексы выходов] или null.
-static func run_chain(w, mat: Substance, procs: Array, tag: String) -> Array:
-	var p := Portion.new(mat, 2.0, w.planet.ambient_temp)
-	var outs: Array = []
-	for pid in procs:
-		var res := Processor.run(pid, p, ctx_for(w, pid))
-		if res.get("wait", false) or res.outs.is_empty():
-			return []
-		var best = res.outs[0]
-		for o in res.outs:
-			if o[0].has(tag):
-				best = o
-		p = best[0]
-		outs.append(best[1])
-	return [p, outs] if p.has(tag) else []
-
-## Лучший план для тега среди материалов mats (Substance) с залежами на планете.
 static func plan(w, tag: String, mats: Array) -> Dictionary:
-	var solid := mats.filter(func(m): return m.phase_at(w.planet.ambient_temp) == Substance.Phase.SOLID)
+	var p := _search(w, tag, mats, false)
+	if p.is_empty():
+		p = _search(w, tag, mats, true)
+	return p
+
+static func _search(w, tag: String, mats: Array, allow_locked: bool) -> Dictionary:
+	var rgs := reagents(w, mats)
+	var radio: Array = rgs.filter(func(m): return m.has("radioactive"))
+	var pids: Array = []
+	for pid in Processes.PROCESSES:
+		if pid in ["filter", "magnet_sep", "treater"]:
+			continue
+		if pid == "irradiator" and radio.is_empty():
+			continue
+		var k := kind_of(pid)
+		if allow_locked or w.robot.unlocked.has(k):
+			pids.append(pid)
+	pids.sort()
+	var queue: Array = []
+	var seen := {}
 	for m in mats:
-		if m.has(tag):
-			return {"kind": "direct", "mat": m}
-	var procs := usable_processes(w)
-	for m in mats:
-		for pid in procs:
-			var r := run_chain(w, m, [pid], tag)
-			if not r.is_empty():
-				return {"kind": "process", "mat": m, "procs": [pid], "out": r[1]}
-	for m in mats:
-		for rg in solid:
-			if rg == m:
+		var p := Portion.new(m, 2.0, w.planet.ambient_temp)
+		queue.append({"mat": m, "p": p, "steps": []})
+		seen[_key(p)] = true
+	var head := 0
+	while head < queue.size() and seen.size() < MAX_STATES:
+		var s: Dictionary = queue[head]
+		head += 1
+		if s.p.has(tag):
+			return _finish(w, s)
+		if s.steps.size() >= MAX_DEPTH:
+			continue
+		for pid in pids:
+			var ctx := ctx_for(w, pid, Portion.new(radio[0], 5.0) if pid == "irradiator" else null)
+			var res := Processor.run(pid, s.p, ctx)
+			if res.get("wait", false):
 				continue
-			var ir := Interactions.apply(rg.tags, m.tags)
-			if tag in ir.tags:
-				return {"kind": "treat", "mat": m, "reagent": rg}
-	for m in mats:
-		for a in procs:
-			for b in procs:
-				var r := run_chain(w, m, [a, b], tag)
-				if not r.is_empty():
-					return {"kind": "process", "mat": m, "procs": [a, b], "out": r[1]}
+			for o in res.outs:
+				var np: Portion = o[0]
+				var k := _key(np)
+				if seen.has(k):
+					continue
+				seen[k] = true
+				var st := {"op": "process", "pid": pid, "kind": kind_of(pid), "out": o[1]}
+				if pid == "irradiator":
+					st.source = radio[0]
+				queue.append({"mat": s.mat, "p": np, "steps": s.steps + [st]})
+		for rg in rgs:
+			if rg == s.p.substance:
+				continue
+			var ir := Interactions.apply(rg.tags, s.p.substance.tags)
+			if ir.keys.is_empty() or ir.tags == s.p.substance.tags:
+				continue
+			var np := Portion.new(w.db.derive(s.p.substance, ir.tags), s.p.mass, s.p.temp + ir.heat)
+			var k := _key(np)
+			if seen.has(k):
+				continue
+			seen[k] = true
+			queue.append({"mat": s.mat, "p": np, "steps": s.steps + [{"op": "treat", "reagent": rg, "kind": "treater", "out": 0}]})
 	return {}
 
+static func _key(p: Portion) -> String:
+	return ",".join(p.substance.tags) + "|" + str(p.phase())
+
+static func _finish(w, s: Dictionary) -> Dictionary:
+	var locked: Array = []
+	for st in s.steps:
+		if not w.robot.unlocked.has(st.kind) and not st.kind in locked:
+			locked.append(st.kind)
+	return {"mat": s.mat, "steps": s.steps, "locked": locked, "final": s.p}
+
 static func describe(pl: Dictionary) -> String:
-	match pl.get("kind", ""):
-		"direct": return "залежь %s" % pl.mat.name
-		"process": return "%s → %s" % [pl.mat.name, " → ".join(pl.procs)]
-		"treat": return "%s обработать реагентом %s" % [pl.mat.name, pl.reagent.name]
-	return "нет плана"
+	if pl.is_empty():
+		return "нет плана"
+	var parts: Array = [pl.mat.name]
+	for st in pl.steps:
+		if st.op == "treat":
+			parts.append("обработка реагентом %s" % st.reagent.name)
+		else:
+			parts.append(Processes.PROCESSES[st.pid].n + (" (правый выход)" if st.out == 1 else ""))
+	var s := " → ".join(parts)
+	if not pl.locked.is_empty():
+		s += " [нужно открыть: %s]" % ", ".join(pl.locked.map(func(k): return Buildings.name_of(k)))
+	return s
