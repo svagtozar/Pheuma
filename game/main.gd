@@ -103,6 +103,7 @@ func _ready() -> void:
 			_bench = true
 			_demo = true
 	randomize()
+	ProtoControls.ensure()
 	view = WorldView.new()
 	view.main = self
 	add_child(view)
@@ -353,7 +354,13 @@ func _process(dt: float) -> void:
 		if Input.is_key_pressed(KEY_A) or Input.is_key_pressed(KEY_LEFT): dir.x -= 1
 		if Input.is_key_pressed(KEY_D) or Input.is_key_pressed(KEY_RIGHT): dir.x += 1
 		if dir != Vector2.ZERO:
-			world.move_robot(dir.normalized() * world.robot_speed() * dt)
+			dir = dir.normalized()
+		else:
+			# Левый стик геймпада (раскладка ProtoControls): наклон задаёт скорость.
+			var stick := ProtoControls.move_vector()
+			dir = Vector2(stick.x, -stick.y)
+		if dir != Vector2.ZERO:
+			world.move_robot(dir * world.robot_speed() * dt)
 		if Input.is_key_pressed(KEY_E):
 			say(world.mine(_mine_target(), dt))
 		if Input.is_key_pressed(KEY_G):
