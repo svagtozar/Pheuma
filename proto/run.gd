@@ -60,6 +60,7 @@ var mining                               # ProtoMining или null
 var body: Node3D                         # робот (груз — мета "cargo")
 var crystal: Substance                   # материал друз (для «сброса припасов»)
 var mats: Array = []                     # твёрдые материалы (прочность сети)
+var auto_tags := true                    # теги добытого и продукции узнаются сами (без лаборатории)
 
 # ---- ран
 var time := 0.0
@@ -280,7 +281,7 @@ func _pull_sources() -> void:
 		if d > 0.0:
 			mined += d
 			robot.xp.gatherer += d * 0.4
-			if crystal != null:
+			if crystal != null and auto_tags:
 				learn_tags(crystal)
 		_last.mined = mining.mined_total
 	if pneu == null:
@@ -293,7 +294,7 @@ func _pull_sources() -> void:
 	if nd > 0:
 		stats.hits += nd
 		robot.xp.chief += 0.5 * nd
-		for id in pneu.produced:
+		for id in (pneu.produced if auto_tags else {}):
 			var s: Substance = planet.db.get_sub(id)
 			if s != null:
 				learn_tags(s)

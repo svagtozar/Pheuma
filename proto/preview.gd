@@ -19,6 +19,9 @@ extends Node3D
 ##   этапов, награды, прокачка, события, советы и итоги; Esc / Menu — меню,
 ##   K — прокачка; --open=briefing|choice|reward|menu|skills|end|event — открыть
 ##   окно или начать событие (для кадра)
+##   Разведка материалов (ProtoLabDesk, ProtoLabPanel): Z / A — коснуться друзы, машины
+##   или груза и открыть карточку (пробы, догадки), V / RB — анализатор; в линии
+##   завода — лаборатория. --lab — открыть карточку сразу (для кадра)
 ##   --robot=clean (по умолчанию; другой вариант из RobotDesigns или old — прежний
 ##   каркас; корпус — металл планеты)
 ## Сборка для проверки (фича play3d в export_presets.cfg) стартует прямо сюда,
@@ -63,6 +66,9 @@ var _caption_layer: CanvasLayer
 var _zone: MeshInstance3D    # круг зоны события на земле
 var _fog_base := -1.0
 var _strike_seen = null
+var lab_desk: ProtoLabDesk   # знания о веществах (касание, пробы, догадки, лаборатория)
+var lab_panel: ProtoLabPanel
+var lab_demo := false        # --lab: карточка материала открыта с самого начала
 
 ## Сид следующей планеты в сборке для проверки (переживает перезагрузку сцены).
 static var build_seed := 14
@@ -100,6 +106,7 @@ func _ready() -> void:
 		elif a.begins_with("--open="):
 			open_win = a.substr(7)
 			want_run = true
+		elif a == "--lab": lab_demo = true
 	if next_seed >= 0:
 		seed_value = next_seed
 	if auto == "drill":
@@ -108,6 +115,7 @@ func _ready() -> void:
 	if auto == "sound" and RobotDesigns.tool_r == "":
 		RobotDesigns.tool_r = "drill"
 	planet = PlanetGen.generate(seed_value)
+	lab_desk = ProtoLabDesk.new(ProtoLabDesk.for_planet(planet))
 	var t0 := Time.get_ticks_msec()
 	style = ProtoWorldStyle.for_planet(planet)
 	terrain = ProtoTerrain.new(seed_value, style)
@@ -156,6 +164,7 @@ func _ready() -> void:
 		_builder()
 	if play or auto != "" or show_hud:
 		_hud()
+	_lab()
 	if play and auto == "":
 		saves = ProtoSave.new()
 		saves.name = "saves"
@@ -560,6 +569,9 @@ func _factory() -> void:
 	add_child(slab)
 	pneu = ProtoPneumatics.new(planet)
 	pneu.build_demo(Vector2i(-3, 0), a)
+	# Вторая труба линии — лаборатория: груз из приёмника проходит пробы.
+	pneu.remove(Vector2i(-1, 0))
+	pneu.place("lab", Vector2i(-1, 0), 0, a)
 	pneu.feed(Vector2i(-3, 0), Portion.new(ore, 30.0, planet.ambient_temp))
 	pneu_view = ProtoPneumaticsView.new()
 	pneu_view.name = "pneumatics"
@@ -567,6 +579,10 @@ func _factory() -> void:
 	pneu_origin = Vector3(pc.x, top, pc.z - 1.0)
 	pneu_view.setup(pneu, pneu_origin)
 	pneu_view.warm(9.0)
+	# Знания лаборатория пишет с начала игры (разогрев кадра их не трогает).
+	pneu.knowledge = lab_desk.world
+	lab_desk.net = pneu
+	lab_desk.origin = pneu_view.origin
 	print("Завод: корпуса из %s, в приёмнике %s" % [_label(a), _label(ore)])
 
 func _label(s: Substance) -> String:
@@ -713,6 +729,7 @@ func _dust() -> CPUParticles3D:
 func _caption() -> void:
 	var layer := CanvasLayer.new()
 	_caption_layer = layer
+	layer.name = "caption"
 	add_child(layer)
 	var l := Label.new()
 	l.position = Vector2(16, 12)
@@ -747,6 +764,69 @@ func _hud() -> void:
 		hud.extra_hints = [["Сохранить", "F5", "R3"], ["Другая планета", "Tab", "View"]]
 	add_child(hud)
 
+## Разведка материалов: карточка с пробами и догадками, анализатор, лента находок.
+func _lab() -> void:
+	lab_desk.robot = robot
+	lab_desk.mining = mining
+	if not (play or auto != "" or show_hud or lab_demo):
+		return
+	lab_panel = ProtoLabPanel.new()
+	lab_panel.name = "lab"
+	add_child(lab_panel)
+	lab_panel.setup(lab_desk, robot)
+	lab_panel.builder = get_node_or_null("builder")
+	if hud_pad:
+		lab_panel.pad = true
+	if hud != null:
+		hud.knowledge = lab_desk
+	if lab_demo:
+		_lab_demo.call_deferred()
+
+## Кадр карточки: коснуться, одна проба и одна догадка — видно, как сужается поиск.
+func _lab_demo() -> void:
+	if not robot.has_meta("cargo") or (robot.get_meta("cargo") as Array).is_empty():
+		var solids: Array = _solid_mats().duplicate()
+		solids.sort_custom(func(a, b): return a.tags.size() > b.tags.size())
+		var cargo: Array = []
+		for i in mini(3, solids.size()):
+			cargo.append(Portion.new(solids[i], 4.0, planet.ambient_temp))
+		robot.set_meta("cargo", cargo)
+	var w := lab_desk.world
+	if view == "cave" and mining != null and lab_desk.druse_near() == null:
+		# Кадр в пещере: робот встаёт вплотную к ближайшей друзе и смотрит на неё.
+		var best: Node3D = null
+		for c in mining.crystals():
+			if best == null or c.global_position.distance_to(robot.global_position) < best.global_position.distance_to(robot.global_position):
+				best = c
+		if best != null:
+			var d: Node3D = best.get_parent()
+			var nrm: Vector3 = d.get_meta("normal", Vector3.UP)
+			var flat := Vector3(nrm.x, 0, nrm.z)
+			if flat.length() < 0.2:
+				flat = (robot.global_position - best.global_position) * Vector3(1, 0, 1)
+			var p := best.global_position + flat.normalized() * 1.5
+			p.y = _floor_at(p + Vector3(0, 1.0, 0))
+			robot.global_position = p
+			robot.look_at(Vector3(best.global_position.x, p.y, best.global_position.z), Vector3.UP, true)
+			var pl := get_node_or_null("player")
+			if pl != null:
+				pl.cam_yaw = robot.rotation.y + 0.5
+	# Самое загадочное вещество — первым: так видно, как сужается поиск.
+	var cg: Array = robot.get_meta("cargo")
+	cg.sort_custom(func(a, b): return a.substance.tags.size() > b.substance.tags.size())
+	if not lab_panel.touch_open():
+		return
+	var s: Substance = lab_panel.current()
+	for pid in Probes.ORDER:
+		if w.unknown_count(s) > 1 and lab_desk.probe_error(s, pid) == "" and Probes.PROBES[pid].tags.any(func(t): return t in s.tags) \
+				and Probes.PROBES[pid].tags.filter(func(t): return t in s.tags).size() < w.unknown_count(s):
+			lab_desk.probe(s, pid)
+			break
+	var pos: Array = w.possible_of(s)
+	if not pos.is_empty():
+		lab_desk.toggle_guess(s, pos[0])
+	lab_panel._sig = ""
+
 ## Сборка для проверки: другая планета и выход с геймпада или клавиатуры.
 func _unhandled_input(e: InputEvent) -> void:
 	if not OS.has_feature("play3d") or not e.is_pressed() or e.is_echo():
@@ -770,6 +850,11 @@ func _process(dt: float) -> void:
 	_t += dt
 	if run != null:
 		_run_visuals(dt)
+	if lab_panel != null:
+		# Подпись планеты — под карточкой материала; пока та открыта, прячем.
+		var cap := get_node_or_null("caption") as CanvasLayer
+		if cap:
+			cap.visible = not lab_panel.open and run == null   # в ране слева сверху — цель
 	if shot_path != "" and _t > 1.5:
 		var img := get_viewport().get_texture().get_image()
 		img.save_png(shot_path)
@@ -782,6 +867,11 @@ func _process(dt: float) -> void:
 ## Ран: цель, награды, прокачка, события — логика общая с 2D (ProtoRun).
 func _run() -> void:
 	run = ProtoRun.new(planet, _solid_mats())
+	if lab_desk != null:
+		# Знания о веществах — у лаборатории (пробы, догадки): робот рана тот же,
+		# теги сами от добычи не открываются.
+		run.robot = lab_desk.world.robot
+		run.auto_tags = false
 	run.pneu_origin_v = pneu_origin
 	var pc := terrain.plateau()
 	run.attach(pneu, mining, robot, mining.sub if mining != null else null, Vector3(pc.x, pc.y, pc.z))

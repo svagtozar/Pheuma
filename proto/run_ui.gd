@@ -33,6 +33,7 @@ var pause_game := true             # окно ставит игру на пау�
 var modal := ""                    # открытое окно или ""
 var closable := true
 var _root: Control
+var _goal_panel: PanelContainer
 var _goal_title: Label
 var _goal_stage: Label
 var _goal_bar: ProgressBar
@@ -158,6 +159,7 @@ func _build_goal() -> void:
 	p.custom_minimum_size.x = GOAL_W
 	p.position = Vector2(PAD, PAD)
 	_root.add_child(p)
+	_goal_panel = p
 	var v: VBoxContainer = p.get_child(0)
 	_goal_title = _label("", 15, DIM)
 	v.add_child(_goal_title)
@@ -195,6 +197,9 @@ func _build_goal() -> void:
 	v.add_child(_skill_note)
 
 func refresh() -> void:
+	# Карточка материала лаборатории занимает то же место слева сверху.
+	var lab = get_parent().get("lab_panel") if get_parent() != null else null
+	_goal_panel.visible = not (lab != null and bool(lab.get("open")))
 	var g := run.goals
 	var goal: Dictionary = run.planet.goal
 	var n: int = goal.stages.size()
@@ -238,12 +243,9 @@ func _learnable() -> int:
 
 func _build_banner() -> void:
 	_banner = _panel(Color(0.35, 0.08, 0.05, 0.85))
-	_banner.set_anchors_preset(Control.PRESET_TOP_RIGHT)
-	_banner.grow_horizontal = Control.GROW_DIRECTION_BEGIN
-	_banner.offset_right = -PAD
-	_banner.offset_left = -PAD
-	_banner.offset_top = 150
-	_banner.custom_minimum_size.x = 360
+	# Между панелью цели и панелью завода (справа под ней — лента находок лаборатории).
+	_banner.position = Vector2(GOAL_W + PAD * 2.0, PAD)
+	_banner.custom_minimum_size.x = 440
 	_banner.visible = false
 	_root.add_child(_banner)
 	var v: VBoxContainer = _banner.get_child(0)
@@ -251,7 +253,7 @@ func _build_banner() -> void:
 	v.add_child(_banner_title)
 	_banner_tip = _label("", 15, Color(1, 0.9, 0.85))
 	_banner_tip.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	_banner_tip.custom_minimum_size.x = 332
+	_banner_tip.custom_minimum_size.x = 412
 	v.add_child(_banner_tip)
 
 func _refresh_banner() -> void:

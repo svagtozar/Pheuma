@@ -29,6 +29,7 @@ var sim: Sim
 var view: Node2D
 var view3d: Node3D = null      # объёмный вид (F3); создаётся при первом включении
 var use_3d := false
+var lab_panel: ProtoLabPanel = null   # 3D: карточка материала с геймпада (Z / A)
 var cam: Camera2D
 var hud: Control
 var menus: Control
@@ -50,6 +51,7 @@ var tutorial: Tutorial = null
 var _uitest := false
 var _demo := false          # --demo[=N]: у робота строится завод из N машин (для скриншотов и замера кадров)
 var _demo_n := 13
+var _lab_demo := false      # --lab: 3D-вид, робот у залежи, открыта карточка материала (для кадра)
 var _bench := false         # --bench: 5 с кадрового профиля и выход
 var _bench_t := 0.0
 var _bench_frames := 0
@@ -106,6 +108,9 @@ func _ready() -> void:
 			use_3d = true
 		elif a == "--pad":
 			pad_used = true
+		elif a == "--lab":
+			_lab_demo = true
+			use_3d = true
 		elif a == "--bench":
 			_bench = true
 			_demo = true
@@ -141,6 +146,8 @@ func _ready() -> void:
 		new_world(s if s >= 0 else randi() % 1000000)
 	if _demo:
 		call_deferred("_build_demo")
+	if _lab_demo:
+		call_deferred("_open_lab_demo")
 	if _uitest:
 		call_deferred("run_uitest")
 	elif autotest:
@@ -303,6 +310,17 @@ func set_3d(on: bool) -> void:
 	view.visible = not on
 	if view3d != null:
 		view3d.activate(on)
+	if on and world != null and (lab_panel == null or lab_panel.desk.world != world):
+		if lab_panel != null:
+			lab_panel.queue_free()
+		lab_panel = ProtoLabPanel.new()
+		lab_panel.setup(ProtoLabDesk.new(world))
+		lab_panel.feed_events = false
+		add_child(lab_panel)
+	if lab_panel != null:
+		lab_panel.enabled = on
+		if not on and lab_panel.open:
+			lab_panel.close()
 
 func mouse_cell() -> Vector2i:
 	var m := mouse_world()
@@ -355,6 +373,9 @@ func _process(dt: float) -> void:
 		world.meta.end_shown = true
 		menus.show_run_end(world)
 	sim.paused = paused or manual_pause
+	var lab_open: bool = lab_panel != null and lab_panel.open
+	if lab_panel != null and use_3d:
+		lab_panel.focus_cell = mouse_cell()
 	if not paused:
 		var dir := Vector2.ZERO
 		if Input.is_key_pressed(KEY_W) or Input.is_key_pressed(KEY_UP): dir.y -= 1
@@ -367,7 +388,7 @@ func _process(dt: float) -> void:
 			# Левый стик геймпада (раскладка ProtoControls): наклон задаёт скорость.
 			var stick := ProtoControls.move_vector()
 			dir = Vector2(stick.x, -stick.y)
-		if dir != Vector2.ZERO:
+		if dir != Vector2.ZERO and not lab_open:   # карточке материала нужны стик и стрелки
 			world.move_robot(dir * world.robot_speed() * dt)
 		# Добыча: E или правый курок (F — тоже клавиша бура в раскладке, но здесь это фабрикатор).
 		if Input.is_key_pressed(KEY_E) or (Input.is_action_pressed(ProtoControls.WORK) and not Input.is_physical_key_pressed(KEY_F)):
@@ -804,6 +825,34 @@ func _build_demo() -> void:
 	w.robot.pos = c + Vector2(0.5, 0.5)
 	cam.position = w.robot.pos * T
 	cam.reset_smoothing()
+
+## Кадр карточки материала в 3D: робот у ближайшей твёрдой залежи, касание,
+## одна проба и одна догадка.
+func _open_lab_demo() -> void:
+	var w := world
+	var best = null
+	for c in w.planet.deposits:
+		var sub: Substance = w.db.get_sub(w.planet.deposits[c].sub)
+		if sub == null or sub.phase_at(w.planet.ambient_temp) != Substance.Phase.SOLID or sub.tags.size() < 3:
+			continue
+		if best == null or Vector2(c).distance_to(w.robot.pos) < Vector2(best).distance_to(w.robot.pos):
+			best = c
+	if best == null or lab_panel == null:
+		return
+	w.robot.pos = Vector2(best) + Vector2(0.5, 1.6)
+	w.robot.tank = w.robot.tank_cap()
+	cam.position = w.robot.pos * T
+	lab_panel.focus_cell = best
+	if not lab_panel.touch_open():
+		return
+	var s: Substance = lab_panel.current()
+	for pid in Probes.ORDER:
+		if w.unknown_count(s) > 1 and lab_panel.desk.probe_error(s, pid) == "" and Probes.PROBES[pid].tags.any(func(t): return t in s.tags):
+			lab_panel.desk.probe(s, pid)
+			break
+	var pos: Array = w.possible_of(s)
+	if not pos.is_empty():
+		lab_panel.desk.toggle_guess(s, pos[0])
 
 ## Кадровый профиль: 1 с разогрева, 5 с замера, затем средние мс на кадр по частям.
 func _bench_step(dt: float) -> void:

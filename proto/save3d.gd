@@ -8,6 +8,7 @@ extends Node
 ##   корень получает restore_mined(ids), если такой метод есть);
 ##   пневмозавод — детали, их груз, газ и капсулы (корень.pneu, если он есть);
 ##   ран — цель, прокачка и события (корень.run — ProtoRun, если он есть).
+##   знания о веществах — корень.lab_desk (известные и исключённые теги, догадки, баллон).
 ## Порции пишутся как в 2D-сохранении (SaveGame.p_to), производные материалы —
 ## тоже, чтобы продукты завода пережили перезапуск.
 ## Когда: раз в AUTOSAVE_SEC, при смене планеты и выходе, по F5 / R3 (нажать
@@ -152,6 +153,9 @@ static func to_dict(r: Node3D) -> Dictionary:
 	var run = r.get("run")
 	if run != null:
 		d.run = run.to_dict()
+	var desk = r.get("lab_desk")
+	if desk != null:
+		d.knowledge = desk.save_dict()
 	return d
 
 static func apply(r: Node3D, d: Dictionary) -> void:
@@ -186,6 +190,9 @@ static func apply(r: Node3D, d: Dictionary) -> void:
 	var run = r.get("run")
 	if run != null and d.has("run"):
 		run.from_dict(d.run)
+	var desk = r.get("lab_desk")
+	if desk != null and d.has("knowledge"):
+		desk.load_dict(d.knowledge)
 
 # ---------------------------------------------------------------- пневмозавод
 
