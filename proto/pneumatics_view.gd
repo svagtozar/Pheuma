@@ -21,6 +21,7 @@ const LABEL_R := 4.5
 const LABEL_PX := 0.0009      # при fixed_size: ≈24 px строка на 1280×800
 
 var _nodes := {}          # id детали → Node3D
+var _batch: Array = []    # общие склеенные сетки неподвижных частей всех деталей
 var _sig := ""            # отпечаток расстановки: при смене трубы перестраиваются
 var _caps: Array = []     # MeshInstance3D капсул (пул)
 var _cap_mesh: CapsuleMesh
@@ -91,9 +92,10 @@ func _update_label_focus() -> void:
 # ---------------------------------------------------------------- корпуса
 
 func _rebuild() -> void:
-	for n in _nodes.values():
+	for n in _nodes.values() + _batch:
 		n.queue_free()
 	_nodes.clear()
+	_batch.clear()
 	_gauges.clear()
 	_labels.clear()
 	for c in net.parts:
@@ -120,6 +122,15 @@ func _rebuild() -> void:
 			l.no_depth_test = true
 			n.add_child(l)
 			_labels[part.id] = l
+	# Неподвижные части всех деталей — общими сетками по материалу (ProtoBatch):
+	# лампы, ролики, поршень, карусель и прочие живые части названы и остаются
+	# в своих узлах. Коллайдеры уже посчитаны по полным моделям.
+	var kids := get_child_count()
+	for n in _nodes.values():
+		ProtoBatch.merge_children(n)
+	ProtoBatch.merge_static(self, _nodes.values(), ["model", "tank_body"])
+	for i in range(kids, get_child_count()):
+		_batch.append(get_child(i))
 
 ## Стороны клетки (индексы DIRS), к которым подходят трубы: вперёд — если там
 ## деталь, назад — всегда у трубы и машины, с боков — если соседняя деталь
@@ -144,9 +155,19 @@ func _links(c: Vector2i) -> Array:
 			out.append(i)      # насос подключается к соседям газом
 	return out
 
+## Общие на все детали материалы корпуса (по веществу) и стекла (null):
+## одинаковые части разных машин склеиваются в одну сетку. Их никто не
+## перекрашивает — живые части берут свои материалы.
+static var _mats := {}
+
+static func _shared(sub: Substance) -> Material:
+	if not _mats.has(sub):
+		_mats[sub] = ProtoMachines.surface(sub) if sub != null else ProtoMachines.glass()
+	return _mats[sub]
+
 ## Корпус детали; links — стороны, куда вести патрубки. Работает и для призрака.
 static func build_part(kind: String, sub: Substance, dir: int, links: Array, holo := false) -> Node3D:
-	var body := ProtoMachines.hologram() if holo else ProtoMachines.surface(sub)
+	var body := ProtoMachines.hologram() if holo else _shared(sub)
 	var n := Node3D.new()
 	n.name = kind
 	var core: Node3D
@@ -219,7 +240,7 @@ static func _half_pipe(parent: Node3D, i: int, body: Material, holo: bool) -> vo
 	cm.height = half
 	cm.radial_segments = 14
 	tube.mesh = cm
-	tube.material_override = body if holo else ProtoMachines.glass()
+	tube.material_override = body if holo else _shared(null)
 	tube.position = Vector3(0, PIPE_Y, 0) + dv * half / 2.0
 	tube.rotation = Vector3(PI / 2.0, _yaw(i), 0)
 	parent.add_child(tube)
@@ -328,7 +349,7 @@ static func _lab_mesh(body: Material) -> Node3D:
 	dm.height = 0.8
 	dm.is_hemisphere = true
 	dome.mesh = dm
-	dome.material_override = ProtoMachines.glass()
+	dome.material_override = _shared(null)
 	dome.position = Vector3(0, 0.7, 0)
 	n.add_child(dome)
 	var cup := Node3D.new()
@@ -483,7 +504,7 @@ func _update_live() -> void:
 				lamp.material_override.emission = lc
 				lamp.material_override.emission_energy_multiplier = 2.5 if on else 0.2
 			"pump":
-				var piston := _find_mesh_at(n, 1.6)
+				var piston := n.find_child("piston", true, false) as MeshInstance3D
 				if piston:
 					piston.position.y = 1.6 + (sin(_t * 9.0) * 0.12 if part.hot else 0.0)
 			"furnace":
@@ -553,15 +574,6 @@ func _tank_fill(n: Node3D, part: Dictionary) -> void:
 			fill.set_meta("sub", it.substance.id)
 		fill.scale = Vector3(1, 1.1 * lv, 1)
 		fill.position = Vector3(0, 0.45 + 1.1 * lv / 2.0, 0)
-
-static func _find_mesh_at(n: Node, y: float) -> MeshInstance3D:
-	for ch in n.get_children():
-		if ch is MeshInstance3D and absf(ch.position.y - y) < 0.2 and ch.mesh is CylinderMesh and ch.mesh.height < 0.7:
-			return ch
-		var r := _find_mesh_at(ch, y)
-		if r:
-			return r
-	return null
 
 ## Капсулы: от входной стороны клетки к центру и дальше к выходной.
 func _update_caps() -> void:

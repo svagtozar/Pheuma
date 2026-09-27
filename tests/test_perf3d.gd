@@ -66,3 +66,89 @@ func test_robot_batching_keeps_joints():
 	# Шарниры и именованные узлы, которые ищет анимация, на месте.
 	for path in ["hips/chest/head", "hips/chest/shoulder_l/elbow_l/hand_l", "hips/hip_r/knee_r/ankle_r"]:
 		assert_not_null(r.get_node_or_null(path), path)
+
+const LIVE := ["lamp", "spin", "fill", "fill_mesh", "piston", "roller", "heap", "carousel", "sample", "gauge", "tank_body", "model"]
+
+## Живые части и треугольники модели: [имена живых узлов по порядку, треугольники].
+func _live_and_tris(n: Node) -> Array:
+	var names := []
+	var tris := 0
+	for c in n.find_children("*", "", true, false):
+		if String(c.name) in LIVE:
+			names.append(String(n.get_path_to(c)))
+		var mi := c as MeshInstance3D
+		if mi != null and mi.mesh != null and mi.visible:
+			tris += _tris(mi.mesh)
+	return [names, tris]
+
+func _check_batched(label: String, n: Node3D) -> Vector2i:
+	add_child_autofree(n)
+	var before := n.find_children("*", "MeshInstance3D", true, false).size()
+	var was := _live_and_tris(n)
+	ProtoBatch.merge_children(n)
+	var now := _live_and_tris(n)
+	assert_eq(now[0], was[0], "%s: живые части на месте" % label)
+	assert_eq(now[1], was[1], "%s: треугольники те же" % label)
+	return Vector2i(before, n.find_children("*", "MeshInstance3D", true, false).size())
+
+func test_machine_models_batching_keeps_live_parts():
+	var body := ProtoMachines.surface(Substance.new())
+	var total := Vector2i.ZERO
+	for kind in Buildings.KINDS:
+		var n := MachineModels.build(kind, body)
+		MachineModels.add_outlet(n, Vector3.RIGHT)
+		total += _check_batched(kind, n)
+	gut.p("MachineModels: сеток %d → %d" % [total.x, total.y])
+	assert_lt(total.y, total.x)
+
+func test_factory_parts_batching_keeps_live_parts():
+	var total := Vector2i.ZERO
+	for kind in ProtoPneumatics.KINDS:
+		var n := ProtoPneumaticsView.build_part(kind, Substance.new(), 0, [0, 1, 2, 3])
+		total += _check_batched(kind, n)
+	gut.p("Детали завода: сеток %d → %d" % [total.x, total.y])
+	assert_lt(total.y, total.x)
+
+func test_merge_static_joins_machines_keeps_live_parts():
+	# Десять машин из одного вещества: неподвижные части — общими сетками.
+	var body := ProtoMachines.surface(Substance.new())
+	var into := Node3D.new()
+	add_child_autofree(into)
+	var roots := []
+	for i in 10:
+		var n := MachineModels.build(["centrifuge", "drill", "container", "crusher", "pipe"][i % 5], body)
+		n.position = Vector3(i * 2.0, 0, 0)
+		n.rotation.y = i * 0.7
+		into.add_child(n)
+		roots.append(n)
+	var before := into.find_children("*", "MeshInstance3D", true, false).size()
+	var was := _live_and_tris(into)
+	for n in roots:
+		ProtoBatch.merge_children(n)
+	ProtoBatch.merge_static(into, roots)
+	var now := _live_and_tris(into)
+	var after := into.find_children("*", "MeshInstance3D", true, false).size()
+	gut.p("10 машин: сеток %d → %d" % [before, after])
+	assert_eq(now[0], was[0], "лампы, spin, fill на месте")
+	assert_eq(now[1], was[1], "треугольники те же")
+	assert_lt(after * 3, before, "сеток хотя бы втрое меньше")
+	# Склеенная сетка стоит там же, где стояли детали: общий габарит тот же.
+	var aabb := func(root: Node3D) -> AABB:
+		var box := AABB()
+		var first := true
+		for mi: MeshInstance3D in root.find_children("*", "MeshInstance3D", true, false):
+			var b: AABB = mi.global_transform * mi.get_aabb()
+			box = b if first else box.merge(b)
+			first = false
+		return box
+	var ref := Node3D.new()
+	add_child_autofree(ref)
+	for i in 10:
+		var n := MachineModels.build(["centrifuge", "drill", "container", "crusher", "pipe"][i % 5], body)
+		n.position = Vector3(i * 2.0, 0, 0)
+		n.rotation.y = i * 0.7
+		ref.add_child(n)
+	var a: AABB = aabb.call(into)
+	var r: AABB = aabb.call(ref)
+	assert_almost_eq(a.position, r.position, Vector3.ONE * 0.01)
+	assert_almost_eq(a.size, r.size, Vector3.ONE * 0.01)
