@@ -23,6 +23,8 @@ extends Node3D
 ##   корпус чинится сам
 ##   --auto=sound — тот же маршрут без кадров, в конце бур у стены и выстрел кистью
 ##   (для проверки звука); --record=путь.wav — записать звук, --mute — без звука
+##   --auto=bench [--bench=отчёт.json] — бенчмарк: загрузка и время кадра на том же
+##   маршруте (ProtoBench; запускать с --fixed-fps 30); --deck — графика как на Steam Deck
 ##   --hud — HUD (груз, завод, стройка, кнопки; в --play он есть всегда), --pad —
 ##   подсказки для геймпада, --cargo — положить роботу образцы груза (для кадра)
 ##   В --play игра сохраняется (ProtoSave): сама раз в минуту и при выходе, F5 / R3 —
@@ -87,6 +89,11 @@ var _strike_seen = null
 var lab_desk: ProtoLabDesk   # знания о веществах (касание, пробы, догадки, лаборатория)
 var lab_panel: ProtoLabPanel
 var lab_demo := false        # --lab: карточка материала открыта с самого начала
+var bench_out := ""          # --bench=путь.json: куда записать отчёт --auto=bench
+var load_ms := {}            # время загрузки по этапам (для --auto=bench и лога)
+var _lap_t := 0
+var sun: DirectionalLight3D
+var deck: ProtoDeck           # облегчённая графика (Steam Deck или --deck)
 var health: ProtoHealth      # прочность корпуса робота: урон, починка, поломка
 var liquid_zones: Array = [] # жидкости для урона: {sub, temp, level, area}
 var hazard: Substance        # лава или кислота планеты (как клетки 2D), иначе null
@@ -140,6 +147,8 @@ func _ready() -> void:
 			open_win = a.substr(7)
 			want_run = true
 		elif a == "--lab": lab_demo = true
+		elif a.begins_with("--bench="): bench_out = a.substr(8)
+		elif a == "--deck": ProtoDeck.active = true
 		elif a == "--tutorial": tutorial_mode = "0"
 		elif a.begins_with("--tutorial="): tutorial_mode = a.substr(11)
 		elif a == "--no-tutorial": tutorial_mode = "off"
@@ -148,6 +157,9 @@ func _ready() -> void:
 		view = "cave"
 	if (auto == "sound" or play) and RobotDesigns.tool_r == "":
 		RobotDesigns.tool_r = "drill"          # играя, робот добывает: бур в предплечье
+	if OS.has_feature("steamdeck"):
+		ProtoDeck.active = true
+	_lap_t = Time.get_ticks_usec()
 	planet = PlanetGen.generate(seed_value)
 	lab_desk = ProtoLabDesk.new(ProtoLabDesk.for_planet(planet))
 	var t0 := Time.get_ticks_msec()
@@ -155,26 +167,37 @@ func _ready() -> void:
 	terrain = ProtoTerrain.new(seed_value, style)
 	print("Облик планеты: ", style.summary())
 	_palette()
+	_lap("planet")
 	terrain.build_field()
+	_lap("terrain_field")
 	# Основная сетка (1 м) без пещерной коробки и детальная сетка пещеры (0,5 м).
 	var mesh := terrain.build_mesh(Vector3.ZERO, Vector3i(-1, -1, -1), 1.0, terrain.coarse_skip())
+	_lap("terrain_mesh")
 	var cmesh := terrain.build_cave_mesh()
+	_lap("cave_mesh")
 	print("Рельеф %d×%d×%d: %d мс, вершин %d + пещера %d" % [terrain.sx, terrain.sy, terrain.sz, Time.get_ticks_msec() - t0,
 		mesh.surface_get_array_len(0), cmesh.surface_get_array_len(0)])
 	var tm := terrain.material()
 	for m in [mesh, cmesh]:
 		var ground := MeshInstance3D.new()
+		ground.name = "ground" if m == mesh else "ground_cave"
 		ground.mesh = m
 		ground.material_override = tm
 		add_child(ground)
 		RobotGround.add_collision(ground)
 	_environment()
+	_lap("environment")
 	_liquids()
+	_lap("liquids")
 	_cave_crystals()
+	_lap("cave_crystals")
 	_surface_features()
+	_lap("surface_features")
 	_factory()
+	_lap("factory")
 	_robot_and_camera()
 	_caption()
+	_lap("robot")
 	if play or auto != "":
 		var pl := ProtoPlayer.new()
 		pl.name = "player"
@@ -198,6 +221,9 @@ func _ready() -> void:
 			shot_path = ""
 		elif auto == "sound":
 			pl.auto_sound()
+		elif auto == "bench":
+			pl.auto_cave("")
+			pl.shots = []
 		elif auto == "bump":
 			pl.auto_bump(pneu_view, shot_path.get_basename() if shot_path != "" else "user://bump")
 			shot_path = ""
@@ -214,6 +240,14 @@ func _ready() -> void:
 			snd.record_path = record
 			snd.setup(robot, terrain, pl, planet)
 			add_child(snd)
+		_lap("player_sound")
+		if auto == "bench":
+			var b := ProtoBench.new()
+			b.name = "bench"
+			b.player = pl
+			b.out_path = bench_out
+			b.load_ms = load_ms
+			add_child(b)
 	if play or build:
 		_builder()
 	if play or auto != "" or show_hud:
@@ -231,6 +265,22 @@ func _ready() -> void:
 		_run()
 	# Настройки графики и звука (ProtoSettings): тени солнца, громкость шины мира.
 	ProtoSettings.apply()
+	_lap("hud_lab_save")
+	var total := 0
+	for k in load_ms:
+		total += load_ms[k]
+	load_ms["total"] = total
+	print("Загрузка: ", load_ms)
+	if ProtoDeck.active:
+		# Рельеф и робота не трогаем: сетка пещеры видна снаружи через вход.
+		deck = ProtoDeck.apply(self, terrain, cam, sun, [get_node("ground"), get_node("ground_cave"), robot])
+		print("Графика Steam Deck: слой пещеры — %d сеток" % deck.hidden)
+
+## Время этапа загрузки с прошлого вызова, мс.
+func _lap(what: String) -> void:
+	var now := Time.get_ticks_usec()
+	load_ms[what] = int(load_ms.get(what, 0) + (now - _lap_t) / 1000)
+	_lap_t = now
 
 ## Сохранение (ProtoSave) зовёт после постройки сцены: убрать выбуренные друзы.
 func restore_mined(ids: Array) -> void:
@@ -247,6 +297,7 @@ func _palette() -> void:
 func _environment() -> void:
 	var sky := ProtoSky.build(planet, self, view == "cave")
 	env = sky.env
+	sun = sky.sun
 	# Плотность дымки и ветер — по тегам (ProtoWorldStyle); под землёй не трогаем.
 	if view != "cave":
 		env.fog_density *= style.fog_mult
@@ -344,7 +395,8 @@ func _cave_crystals() -> void:
 		hard = drill_hard
 	mining.setup(cs_sub, hard, planet.ambient_temp, terrain, cmat)
 	print("Друзы: %s, твёрдость %.1f; бур %.1f" % [_label(cs_sub), cs_sub.hardness, hard])
-	# Натёки: сталактиты со свода, сталагмиты с пола.
+	# Натёки: сталактиты со свода, сталагмиты с пола — все одной сеткой.
+	var drips := []
 	var made := 0
 	for i in 300:
 		if made >= style.drips * (2 if style.icicles else 1):
@@ -375,12 +427,14 @@ func _cave_crystals() -> void:
 		c.bottom_radius = 0.02 if down else rng.randf_range(0.1, 0.26)
 		c.height = len
 		c.radial_segments = 7
-		var mi := MeshInstance3D.new()
-		mi.mesh = c
-		mi.material_override = rock
-		mi.position = p + Vector3(0, -len / 2.0 + 0.1 if down else len / 2.0 - 0.1, 0)
-		add_child(mi)
+		drips.append([c, Transform3D(Basis(), p + Vector3(0, -len / 2.0 + 0.1 if down else len / 2.0 - 0.1, 0))])
 		made += 1
+	if not drips.is_empty():
+		var di := MeshInstance3D.new()
+		di.name = "drips"
+		di.mesh = ProtoBatch.merged(drips)
+		di.material_override = rock
+		add_child(di)
 	# Друзы кристаллов на стенах там, где выходит жила; у крупных — свой свет.
 	var lights := 0
 	made = 0
@@ -432,18 +486,23 @@ func _cave_crystals() -> void:
 		# Щётка: мелкие кристаллики вокруг подножия, почти вровень с породой.
 		var fx := nrm.cross(Vector3.UP if absf(nrm.y) < 0.9 else Vector3.RIGHT).normalized()
 		var fz := nrm.cross(fx)
+		var brush := []
 		for m in rng.randi_range(8, 14):
 			var a := rng.randf() * TAU
 			var len := rng.randf_range(0.06, 0.2)
 			var tilt := (nrm + Vector3(rng.randf_range(-1, 1), rng.randf_range(-1, 1), rng.randf_range(-1, 1)) * 0.8).normalized()
-			var ci := MeshInstance3D.new()
-			ci.mesh = ProtoCrystal.mesh(len, len * rng.randf_range(0.14, 0.22), rng, style.habit)
-			ci.material_override = cmat
+			var bm := ProtoCrystal.mesh(len, len * rng.randf_range(0.14, 0.22), rng, style.habit)
 			var y := tilt
 			var x := y.cross(Vector3.UP if absf(y.y) < 0.9 else Vector3.RIGHT).normalized()
 			var at := base + (fx * cos(a) + fz * sin(a)) * rng.randf_range(0.2, 0.5) - nrm * 0.03
-			ci.transform = Transform3D(Basis(x, y, x.cross(y)), at)
-			druse.add_child(ci)
+			brush.append([bm, Transform3D(Basis(x, y, x.cross(y)), at)])
+		# Щётка не бурится по кристаллику — одна сетка на друзу, без тени (вровень с породой).
+		var bi := MeshInstance3D.new()
+		bi.name = "brush"
+		bi.mesh = ProtoBatch.merged(brush)
+		bi.material_override = cmat
+		bi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		druse.add_child(bi)
 		if lights < 4:
 			var l := OmniLight3D.new()
 			l.light_color = col
@@ -626,17 +685,20 @@ func _surface_features() -> void:
 
 ## Друза: главный кристалл и поросль вокруг, веером от поверхности.
 func _druze(base: Vector3, nrm: Vector3, main_len: float, cmat: Material, rng: RandomNumberGenerator) -> void:
+	# Друза на поверхности не бурится — одной сеткой.
+	var parts := []
 	for m in rng.randi_range(4, 8):
 		var spread := 0.15 if m == 0 else rng.randf_range(0.25, 0.7)
 		var y := (nrm + Vector3(rng.randf_range(-1, 1), rng.randf_range(-1, 1), rng.randf_range(-1, 1)) * spread).normalized()
 		var len := main_len if m == 0 else main_len * rng.randf_range(0.25, 0.7)
-		var ci := MeshInstance3D.new()
-		ci.mesh = ProtoCrystal.mesh(len, len * rng.randf_range(0.11, 0.16), rng, style.habit)
-		ci.material_override = cmat
+		var cm := ProtoCrystal.mesh(len, len * rng.randf_range(0.11, 0.16), rng, style.habit)
 		var x := y.cross(Vector3.UP if absf(y.y) < 0.9 else Vector3.RIGHT).normalized()
 		var off := Vector3.ZERO if m == 0 else (x * cos(m * 2.4) + x.cross(y) * sin(m * 2.4)) * rng.randf_range(0.1, 0.35)
-		ci.transform = Transform3D(Basis(x, y, x.cross(y)).rotated(y, rng.randf() * TAU), base + off - y * len * 0.12)
-		add_child(ci)
+		parts.append([cm, Transform3D(Basis(x, y, x.cross(y)).rotated(y, rng.randf() * TAU), base + off - y * len * 0.12)])
+	var ci := MeshInstance3D.new()
+	ci.mesh = ProtoBatch.merged(parts)
+	ci.material_override = cmat
+	add_child(ci)
 
 ## Гриб: изогнутая ножка и светящаяся снизу шляпка.
 func _mushroom(p: Vector3, h: float, rng: RandomNumberGenerator) -> void:
@@ -738,6 +800,8 @@ func _robot_and_camera() -> void:
 		# Идёт по планете; в пещере — стоит и светит глазом.
 		RobotAnim.default_mode = "idle" if view == "cave" else "walk"
 		robot = RobotDesigns.build(robot_design, drill.color if drill != null else Color(0, 0, 0, 0))
+		# Сотни мелких деталей — по сетке на шарнир и материал (ProtoBatch).
+		ProtoBatch.merge_children(robot)
 	else:
 		robot = ProtoRobot.new(Color(0.78, 0.8, 0.84), drill.color if drill != null else Color(0.6, 0.6, 0.65), Color(0.9, 0.55, 0.2))
 	add_child(robot)

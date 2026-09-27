@@ -60,6 +60,13 @@ jobs:
       - name: Gameplay autotest
         run: ~/godot/godot --headless --path . -- --autotest --seed=7
 
+      - name: 3D benchmark (load time and CPU frame time, headless)
+        run: |
+          set -euo pipefail
+          ~/godot/godot --headless --path . --fixed-fps 30 res://proto/preview.tscn -- \
+            --seed=14 --auto=bench --mute --bench="$PWD/bench3d.json" | tee bench3d.log
+          grep -q "^Загрузка .* мс; кадр" bench3d.log
+
       - name: UI test (fabricator window and mouse building)
         run: xvfb-run -a -s "-screen 0 1600x900x24" ~/godot/godot --path . --rendering-driver opengl3 -- --seed=5 --uitest
 
@@ -122,6 +129,11 @@ jobs:
           path: |
             steamdeck.png
             steamdeck_menu.png
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bench3d
+          path: bench3d.json
 
       - uses: actions/upload-artifact@v4
         with:
