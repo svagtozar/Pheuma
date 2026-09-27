@@ -8,6 +8,8 @@ extends RefCounted
 ##   RT / F (держать) — работать инструментом (бур)
 ##   LT / G — выстрелить кистью и подтянуться, ещё раз — отпустить
 ##   D-pad вверх-вниз / колесо мыши — дистанция камеры
+##   Start / Esc — меню рана (цель, прокачка, итоги); K — прокачка
+## Окна (ensure_ui): A — нажать кнопку, B — назад, D-pad и левый стик — выбор.
 ## Действия регистрируются кодом (ensure()), если их ещё нет в InputMap, —
 ## так их видят и прототип, и игра, и тесты без правки project.godot.
 
@@ -27,6 +29,8 @@ const CAM_ZOOM_OUT := &"cam_zoom_out"
 const SPRINT := &"sprint"
 const WORK := &"tool_work"
 const FIST := &"fist_fire"
+const MENU := &"run_menu"
+const SKILLS := &"run_skills"
 
 ## Действие → [мёртвая зона, события...]. Клавиши — физические (раскладка не важна).
 static func _layout() -> Dictionary:
@@ -44,6 +48,8 @@ static func _layout() -> Dictionary:
 		SPRINT: [0.5, _key(KEY_SHIFT), _button(JOY_BUTTON_LEFT_STICK)],
 		WORK: [TRIGGER_DEADZONE, _key(KEY_F), _axis(JOY_AXIS_TRIGGER_RIGHT, 1.0)],
 		FIST: [TRIGGER_DEADZONE, _key(KEY_G), _axis(JOY_AXIS_TRIGGER_LEFT, 1.0)],
+		MENU: [0.5, _key(KEY_ESCAPE), _button(JOY_BUTTON_START)],
+		SKILLS: [0.5, _key(KEY_K)],
 	}
 
 ## Добавляет недостающие действия. Уже заданные (в project.godot или раньше) не трогает.
@@ -56,6 +62,26 @@ static func ensure() -> void:
 		InputMap.add_action(action, spec[0])
 		for i in range(1, spec.size()):
 			InputMap.action_add_event(action, spec[i])
+
+## Окна интерфейса с геймпада: A нажимает кнопку в фокусе, B — назад.
+## Встроенные ui_accept и ui_cancel в Godot 4 знают только клавиатуру.
+static func ensure_ui() -> void:
+	for pair in [[&"ui_accept", JOY_BUTTON_A], [&"ui_cancel", JOY_BUTTON_B]]:
+		var has := InputMap.action_get_events(pair[0]).any(func(e): return e is InputEventJoypadButton and e.button_index == pair[1])
+		if not has:
+			InputMap.action_add_event(pair[0], _button(pair[1]))
+
+## Первая видимая доступная кнопка внутри узла (для фокуса геймпада).
+static func first_button(n: Node) -> Control:
+	for c in n.get_children():
+		if c is CanvasItem and not c.visible:
+			continue
+		if c is BaseButton and not c.disabled and c.focus_mode != Control.FOCUS_NONE:
+			return c
+		var b := first_button(c)
+		if b != null:
+			return b
+	return null
 
 ## Ходьба: x — вправо, y — вперёд; длина 0..1 (стик наполовину — полшага).
 static func move_vector() -> Vector2:

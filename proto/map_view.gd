@@ -385,12 +385,16 @@ func _place_cam() -> void:
 
 # ---------------------------------------------------------------- ввод
 
-## Можно ли открыть карту сейчас: не в стройке (там M — материал) и не в карточке.
+## Можно ли открыть карту сейчас: не в стройке (там M — материал), не в карточке
+## и не в окне рана.
 func _can_open() -> bool:
 	if robot == null:
 		return false
 	if bool(robot.get_meta("ui_busy", false)):
 		return false
+	var ru = get_parent().get("run_ui") if get_parent() else null
+	if ru != null and str(ru.get("modal")) != "":
+		return false                           # открыто окно рана (меню, цель, награда)
 	var b := get_parent().get_node_or_null("builder") if get_parent() else null
 	return b == null or not bool(b.get("active"))
 

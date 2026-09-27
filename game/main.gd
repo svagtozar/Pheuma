@@ -10,6 +10,10 @@ extends Node2D
 ##   --tutorial        — начать обучение (при первом запуске оно включается само)
 ##   --flow            — включить карту потоков (O)
 ##   --no-music        — без музыки (в headless она и так не сводится)
+##   --3d              — объёмный вид (F3); окна те же, геймпад работает и в нём
+##   --pad             — как будто играют с геймпада (фокус на кнопках окон)
+## Геймпад: левый стик — ход, RT — добыча, Menu — пауза, B — закрыть окно,
+## View — прокачка, Y — цель; в окнах D-pad — выбор, A — нажать.
 
 const T := 32.0
 const WorldView := preload("res://game/world_view.gd")
@@ -54,6 +58,7 @@ var _bench_frames := 0
 var _bench_us := {"draw": 0, "hud": 0, "sim": 0, "fx": 0}
 var sel_start = null
 var _autosave_t := 0.0
+var pad_used := false          # последний ввод — с геймпада (фокус кнопок в окнах)
 
 var mode := "none"            # none | build | remove | wire | link | macro_select | macro_place
 var build_kind := ""
@@ -101,6 +106,8 @@ func _ready() -> void:
 			flow_view = true
 		elif a == "--3d":
 			use_3d = true
+		elif a == "--pad":
+			pad_used = true
 		elif a == "--lab":
 			_lab_demo = true
 			use_3d = true
@@ -109,6 +116,7 @@ func _ready() -> void:
 			_demo = true
 	randomize()
 	ProtoControls.ensure()
+	ProtoControls.ensure_ui()
 	view = WorldView.new()
 	view.main = self
 	add_child(view)
@@ -382,7 +390,8 @@ func _process(dt: float) -> void:
 			dir = Vector2(stick.x, -stick.y)
 		if dir != Vector2.ZERO and not lab_open:   # карточке материала нужны стик и стрелки
 			world.move_robot(dir * world.robot_speed() * dt)
-		if Input.is_key_pressed(KEY_E):
+		# Добыча: E или правый курок (F — тоже клавиша бура в раскладке, но здесь это фабрикатор).
+		if Input.is_key_pressed(KEY_E) or (Input.is_action_pressed(ProtoControls.WORK) and not Input.is_physical_key_pressed(KEY_F)):
 			say(world.mine(_mine_target(), dt))
 		if Input.is_key_pressed(KEY_G):
 			world.refill_robot(dt)
@@ -406,6 +415,7 @@ func _process(dt: float) -> void:
 			SaveGame.save_file(world, "auto")
 	if not in_menu:
 		cam.position = cam.position.lerp(world.robot.pos * T, min(1.0, dt * 8.0))
+	_pad_focus()
 	var t_hud := Time.get_ticks_usec()
 	hud.refresh()
 	_bench_us.hud += Time.get_ticks_usec() - t_hud
@@ -431,8 +441,17 @@ func _mine_target() -> Vector2i:
 
 # ---------------------------------------------------------------- ввод
 
+func _input(event: InputEvent) -> void:
+	if event is InputEventJoypadButton or (event is InputEventJoypadMotion and absf(event.axis_value) > 0.5):
+		pad_used = true
+	elif event is InputEventKey or event is InputEventMouseButton:
+		pad_used = false
+
 func _unhandled_input(event: InputEvent) -> void:
 	if world == null:
+		return
+	if event is InputEventJoypadButton and event.pressed:
+		_on_pad(event)
 		return
 	if (in_menu or menus.any_open()) and not event is InputEventKey:
 		return
@@ -447,6 +466,71 @@ func _unhandled_input(event: InputEvent) -> void:
 	elif event is InputEventMouseMotion and not _drag.is_empty():
 		if world.logic.wires.has(_drag.wire):
 			world.logic.move_waypoint(_drag.wire, _drag.idx, mouse_world())
+
+# ---------------------------------------------------------------- геймпад
+
+## Открытое окно, где геймпаду нужна кнопка в фокусе: меню, выбор пути,
+## награда, высадка, прокачка и остальные окна HUD. null — окон нет.
+func pad_window() -> Control:
+	for k in menus.panels:
+		if menus.panels[k].visible:
+			return menus.panels[k]
+	for k in ["reward", "choice", "briefing"]:
+		if hud.windows[k].visible:
+			return hud.windows[k]
+	for k in hud.windows:
+		if hud.windows[k].visible and k != "help":
+			return hud.windows[k]
+	return null
+
+## С геймпада окна управляются фокусом: если он не в открытом окне — первая кнопка.
+func _pad_focus() -> void:
+	if not pad_used:
+		return
+	var w := pad_window()
+	if w == null:
+		return
+	var f := get_viewport().gui_get_focus_owner()
+	if f != null and w.is_ancestor_of(f) and f.is_visible_in_tree():
+		return
+	var b := ProtoControls.first_button(w)
+	if b != null:
+		b.grab_focus()
+
+## Кнопки геймпада вне окон (A — нажать кнопку в фокусе — делает сам интерфейс):
+##   Menu (Start) — пауза; B — закрыть окно; View (Back) — прокачка; Y — цель (высадка).
+func _on_pad(e: InputEventJoypadButton) -> void:
+	match e.button_index:
+		JOY_BUTTON_START:
+			if in_menu:
+				return
+			if menus.any_open():
+				menus.close_all()
+			elif pad_window() != null and not hud.windows.choice.visible and not hud.windows.reward.visible:
+				_pad_back()
+			else:
+				menus.show_panel("pause")
+		JOY_BUTTON_B:
+			_pad_back()
+		JOY_BUTTON_BACK:
+			if not menus.any_open() and not in_menu:
+				hud.toggle("skills")
+		JOY_BUTTON_Y:
+			if not menus.any_open() and not in_menu and pad_window() == null:
+				hud.show_briefing()
+
+## B: шаг назад — из настроек и слотов в меню, иначе закрыть окно.
+func _pad_back() -> void:
+	if menus.any_open():
+		if menus.panels.settings.visible or menus.panels.slots.visible:
+			menus.show_panel(menus._back)
+		elif not in_menu:
+			menus.close_all()
+		return
+	if hud.windows.briefing.visible:
+		hud.windows.briefing.visible = false
+		return
+	hud.close_all()
 
 func _on_key(e: InputEventKey) -> void:
 	if hud.handle_key(e):

@@ -7,6 +7,7 @@ extends Node
 ##   добытые друзы — мета "mined" корня сцены (id задаёт бурение; при загрузке
 ##   корень получает restore_mined(ids), если такой метод есть);
 ##   пневмозавод — детали, их груз, газ и капсулы (корень.pneu, если он есть);
+##   ран — цель, прокачка и события (корень.run — ProtoRun, если он есть).
 ##   знания о веществах — корень.lab_desk (известные и исключённые теги, догадки, баллон);
 ##   разведанное на карте и найденные метки — корень.map_data (ProtoMapData).
 ## Порции пишутся как в 2D-сохранении (SaveGame.p_to), производные материалы —
@@ -150,6 +151,9 @@ static func to_dict(r: Node3D) -> Dictionary:
 	var net = r.get("pneu")
 	if net != null:
 		d.pneumatics = _net_to(net)
+	var run = r.get("run")
+	if run != null:
+		d.run = run.to_dict()
 	var desk = r.get("lab_desk")
 	if desk != null:
 		d.knowledge = desk.save_dict()
@@ -186,6 +190,10 @@ static func apply(r: Node3D, d: Dictionary) -> void:
 	var net = r.get("pneu")
 	if net != null and d.has("pneumatics"):
 		_net_from(net, planet, d.pneumatics)
+	# Ран (цель, прокачка, события) — ProtoRun; счётчики сверяет по заводу.
+	var run = r.get("run")
+	if run != null and d.has("run"):
+		run.from_dict(d.run)
 	var desk = r.get("lab_desk")
 	if desk != null and d.has("knowledge"):
 		desk.load_dict(d.knowledge)
