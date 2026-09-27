@@ -19,6 +19,9 @@ var grid := {}                  # Vector2i → id
 var ground := {}                # Vector2i → Array[Portion]
 var projectiles: Array = []     # {from, to, t, dur, payload, orbit}
 var stats := {"shots": 0, "hits": 0, "processed": 0, "orbit": 0, "lost": 0}
+var flow := {}                  # "a>b" → кг/мин (сглаженно) — карта потоков
+var _flow_acc := {}             # "a>b" → кг за текущую секунду
+var _flow_t := 0.0
 var director: EventDirector
 var event_mods := {"scatter": 1.0, "corrosion": 1.0}
 var drones: Array = []          # {src, dst, pos, cargo, speed, cap}
@@ -151,7 +154,7 @@ func all_machines() -> Array:
 	var out: Array = []
 	for m in machines.values():
 		if m is MacroMachine:
-			out.append_array(m.inner.machines.values())
+			out.append_array(m.all_inner())
 		else:
 			out.append(m)
 	return out
@@ -537,7 +540,7 @@ func remove_at(c: Vector2i, refund: bool = true) -> void:
 	sound("clunk", c)
 	if refund:
 		if m is MacroMachine:
-			for im in m.inner.machines.values():
+			for im in m.all_inner():
 				robot.add_item(Portion.new(im.built_from, build_cost(im.kind) * 0.5, planet.ambient_temp))
 		else:
 			robot.add_item(Portion.new(m.built_from, build_cost(m.kind) * 0.5, planet.ambient_temp))
@@ -561,10 +564,7 @@ func _drop_contents(m: Machine) -> void:
 		if m.busy != null: all.append(m.busy)
 		if m.reagent != null: all.append(m.reagent)
 	if m is MacroMachine:
-		for im in m.inner.machines.values():
-			all.append_array(im.items)
-			for e in im.out_queue:
-				all.append(e[0])
+		all.append_array(m.all_contents())
 	drop_portions(m.cell, all)
 
 func _erase(m: Machine) -> void:
@@ -578,6 +578,7 @@ func _erase(m: Machine) -> void:
 		if c is Cannon and c.config.has("routes"):
 			c.config.routes = c.config.routes.filter(func(r): return int(r[1]) != m.id)
 	drones = drones.filter(func(d): return d.src != m.id and d.dst != m.id)
+	Machine.drop_shot_links(machines, m.id)
 
 func rotate_at(c: Vector2i) -> void:
 	var m = machine_at(c)
@@ -589,7 +590,32 @@ func push(src: Machine, p: Portion, c: Vector2i) -> bool:
 	var t = machine_at(c)
 	if t == null:
 		return false
-	return t.accept(p, src.cell)
+	var mass := p.mass
+	if not t.accept(p, src.cell):
+		return false
+	note_flow(src.id, t.id, mass)
+	return true
+
+## Учёт потока груза между машинами карты (для оверлея O).
+func note_flow(a: int, b: int, mass: float) -> void:
+	if a < 0 or not machines.has(a) or not machines.has(b):
+		return
+	var k := "%d>%d" % [a, b]
+	_flow_acc[k] = _flow_acc.get(k, 0.0) + mass
+
+func _tick_flow(dt: float) -> void:
+	_flow_t += dt
+	if _flow_t < 1.0:
+		return
+	_flow_t = 0.0
+	for k in flow.keys():
+		flow[k] *= 0.9
+	for k in _flow_acc:
+		flow[k] = flow.get(k, 0.0) + _flow_acc[k] * 6.0
+	_flow_acc.clear()
+	for k in flow.keys():
+		if flow[k] < 0.05:
+			flow.erase(k)
 
 func drop_portions(c: Vector2i, arr: Array) -> void:
 	for p in arr:
@@ -621,6 +647,44 @@ func link_cannon(cannon_cell: Vector2i, target_cell: Vector2i, tag: String = "")
 		c.add_route(tag, t.id)
 	else:
 		c.config.target = t.id
+	return ""
+
+## Выстрел выхода машины в цель (idx — номер выхода). Повторная связь с той же
+## целью снимает её. Для пушки — обычное наведение.
+func link_output(src_cell: Vector2i, dst_cell: Vector2i, idx: int = 0, tag: String = "") -> String:
+	var c = machine_at(src_cell)
+	var t = machine_at(dst_cell)
+	if c != null and c.master_id >= 0 and c.master != null and c.master.get_ref() != null:
+		c = c.master.get_ref()
+	if t != null and t.master_id >= 0 and t.master != null and t.master.get_ref() != null:
+		t = t.master.get_ref()
+	if c == null:
+		return "здесь нет машины"
+	if c is Cannon and not c.is_silo():
+		return link_cannon(src_cell, dst_cell, tag)
+	if c.outputs() <= idx:
+		return "у «%s» нет %s" % [c.display_name(), "второго выхода" if idx > 0 else "выхода"]
+	if t == null or t.capacity() <= 0.0 or t == c:
+		return "цель должна принимать груз (контейнер, машина обработки…)"
+	if tag != "":
+		var sr: Dictionary = c.config.get("shot_routes", {}).duplicate(true)
+		var routes: Array = sr.get(str(idx), [])
+		var had := routes.any(func(r): return r[0] == tag and int(r[1]) == t.id)
+		routes = routes.filter(func(r): return r[0] != tag)
+		if not had:
+			routes.append([tag, t.id])
+		if routes.is_empty():
+			sr.erase(str(idx))
+		else:
+			sr[str(idx)] = routes
+		c.config.shot_routes = sr
+		return ""
+	var s: Dictionary = c.config.get("shot", {}).duplicate()
+	if int(s.get(str(idx), -1)) == t.id:
+		s.erase(str(idx))
+	else:
+		s[str(idx)] = t.id
+	c.config.shot = s
 	return ""
 
 ## Провод от выхода одной машины ко входу другой.
@@ -851,9 +915,9 @@ func robot_die() -> void:
 
 # ---------------------------------------------------------------- капсулы
 
-func spawn_projectile(from: Vector2, to: Vector2, payload: Array, orbit: bool = false, kind: String = "capsule") -> void:
+func spawn_projectile(from: Vector2, to: Vector2, payload: Array, orbit: bool = false, kind: String = "capsule", src: int = -1) -> void:
 	var dist := from.distance_to(to)
-	projectiles.append({"from": from, "to": to, "t": 0.0, "dur": 0.4 + dist * 0.07, "payload": payload, "orbit": orbit, "kind": kind})
+	projectiles.append({"from": from, "to": to, "t": 0.0, "dur": 0.4 + dist * 0.07, "payload": payload, "orbit": orbit, "kind": kind, "src": src})
 
 func launch_orbit(payload: Array, c: Vector2i) -> void:
 	var total := 0.0
@@ -920,9 +984,15 @@ func _land(pr: Dictionary) -> void:
 	if m != null and m.capacity() > 0.0:
 		stats.hits += 1
 	var rest: Array = []
+	var got := 0.0
 	for p in payload:
+		var pm: float = p.mass
 		if m == null or not m.accept(p, m.cell + Machine.DIRS[(m.facing + 2) % 4]):
 			rest.append(p)
+		else:
+			got += pm
+	if m != null and got > 0.0:
+		note_flow(int(pr.get("src", -1)), m.id, got)
 	if not rest.is_empty():
 		drop_portions(c, rest)
 		if m == null:
@@ -936,6 +1006,7 @@ func tick(dt: float) -> void:
 	World.tick_machines(self, dt)
 	_tick_projectiles(dt)
 	_tick_drones(dt)
+	_tick_flow(dt)
 	_assembly_acc += dt
 	if _assembly_acc >= 1.0:
 		_assembly_acc = 0.0
@@ -1120,7 +1191,7 @@ func fx_cell(m: Machine) -> Vector2i:
 	if machines.has(m.id) and machines[m.id] == m:
 		return m.cell
 	for b in machines.values():
-		if b is MacroMachine and b.inner.machines.get(m.id) == m:
+		if b is MacroMachine and m in b.all_inner():
 			return b.cell
 	return m.cell
 
@@ -1132,7 +1203,7 @@ func handle_machines(grid, dt: float, event_cell = null) -> void:
 			m.hp = min(m.max_hp(), m.hp + m.stats.self_repair * dt)
 		if m is MacroMachine:
 			# Сигнал блока выставляет сам блок каждый тик — здесь его не сбрасываем.
-			handle_machines(m.inner, dt, m.cell)
+			handle_machines(m.inner, dt, event_cell if event_cell != null else m.cell)
 			continue
 		m.signal_out = false
 		if m.items.is_empty():

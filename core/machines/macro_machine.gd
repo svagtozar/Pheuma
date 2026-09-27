@@ -5,9 +5,12 @@ extends Machine
 ##   груз — входы и выходы по сторонам (порты одной стороны делят её);
 ##   газ  — внешний газовый узел блока обменивается газом с машинами-портами;
 ##   сигнал — провод в блок идёт во входы схемы, провод из блока — ИЛИ её выходов.
+## Внутри может стоять другой свёрнутый блок (до MAX_DEPTH уровней): он ведёт себя
+## как обычная машина схемы, его порты — стороны его клетки.
 
 const SIG_SOURCE := -1        # псевдоисточник внешнего сигнала внутри схемы
 const GAS_K := 2.0
+const MAX_DEPTH := 3          # блок в блоке в блоке
 
 var mb := {}
 var rot := 0
@@ -21,9 +24,72 @@ var _rr := {}          # круговой выбор входного порта
 ## Можно ли свернуть: внутри не должно быть того, что привязано к месту на карте.
 static func collapse_error(p_mb: Dictionary) -> String:
 	for p in p_mb.parts:
-		if p.kind in ["drill", "warehouse_section", "battery_section", "catch_net", "launch_silo", "fabricator", "dome", "beacon", "macro"]:
+		if p.kind in ["drill", "warehouse_section", "battery_section", "catch_net", "launch_silo", "fabricator", "dome", "beacon"]:
 			return "не сворачивается: «%s» привязан к месту" % Buildings.name_of(p.kind)
+		if p.kind == "macro":
+			if not p.has("mb"):
+				return "не сворачивается: у вложенного блока нет схемы"
+			var e := collapse_error(p.mb)
+			if e != "":
+				return e
+	if depth_of(p_mb) > MAX_DEPTH:
+		return "не сворачивается: вложенность больше %d уровней" % MAX_DEPTH
 	return ""
+
+## Сколько уровней блоков в схеме (схема без вложенных блоков — 1).
+static func depth_of(p_mb: Dictionary) -> int:
+	var d := 1
+	for p in p_mb.parts:
+		if p.kind == "macro" and p.has("mb"):
+			d = max(d, depth_of(p.mb) + 1)
+	return d
+
+## Все примитивы схемы по порядку, с раскрытием вложенных блоков.
+## В этом же порядке идут материалы для setup().
+static func flat_kinds(p_mb: Dictionary) -> Array:
+	var out: Array = []
+	for p in p_mb.parts:
+		if p.kind == "macro":
+			out.append_array(flat_kinds(p.get("mb", {"parts": []})))
+		else:
+			out.append(p.kind)
+	return out
+
+## Все примитивы внутри, включая спрятанные во вложенных блоках.
+func all_inner() -> Array:
+	var out: Array = []
+	for m in inner.machines.values():
+		if m is MacroMachine:
+			out.append_array(m.all_inner())
+		else:
+			out.append(m)
+	return out
+
+## Весь груз внутри (для разрушения и сноса).
+func all_contents() -> Array:
+	var all: Array = []
+	for m in inner.machines.values():
+		all.append_array(m.items)
+		for e in m.out_queue:
+			all.append(e[0])
+		if m is Processor:
+			if m.busy != null: all.append(m.busy)
+			if m.reagent != null: all.append(m.reagent)
+		if m is MacroMachine:
+			all.append_array(m.all_contents())
+	return all
+
+## Шаблон по текущему состоянию схемы (с настройками, изменёнными внутри).
+func template() -> Dictionary:
+	var size := Vector2i(int(mb.size[0]), int(mb.size[1]))
+	var t := Macroblocks.capture(inner, Rect2i(Vector2i.ZERO, size), display_name())
+	t.size = [size.x, size.y]
+	t.sig_out = mb.get("sig_out", []).duplicate(true)
+	t.ports = Macroblocks.compute_ports(t)
+	return t
+
+func _root():
+	return inner.world
 
 func display_name() -> String:
 	return mb.get("name", "Макроблок")
@@ -34,37 +100,52 @@ func has_gas() -> bool:
 func has_sig_in() -> bool:
 	return not mb.get("sig_in", []).is_empty()
 
-func _begin(w: World, p_mb: Dictionary, p_rot: int) -> void:
+func _begin(w, p_mb: Dictionary, p_rot: int) -> void:
 	mb = p_mb
 	rot = p_rot
 	facing = p_rot
 	ports = mb.ports
 	inner = InnerGrid.new(w, self, Vector2i(int(mb.size[0]), int(mb.size[1])))
 
-## Собрать схему из шаблона (новые машины из материалов subs).
-func setup(w: World, p_mb: Dictionary, p_rot: int, subs: Array) -> void:
+## Собрать схему из шаблона. subs — материалы примитивов в порядке flat_kinds(),
+## w — мир или внутренность блока, где стоит этот.
+func setup(w, p_mb: Dictionary, p_rot: int, subs: Array) -> void:
 	_begin(w, p_mb, p_rot)
 	var by_off := {}
+	var k := 0
 	for i in mb.parts.size():
 		var p: Dictionary = mb.parts[i]
 		var off := Vector2i(int(p.off[0]), int(p.off[1]))
-		by_off[off] = inner.place(p.kind, off, int(p.facing), subs[i], quality)
+		if p.kind == "macro":
+			var n: int = flat_kinds(p.mb).size()
+			var sub_subs: Array = subs.slice(k, k + n)
+			k += n
+			var nm: MacroMachine = inner.place("macro", off, int(p.facing), sub_subs[0], quality)
+			nm.setup(inner, p.mb, int(p.facing), sub_subs)
+			by_off[off] = nm
+			continue
+		by_off[off] = inner.place(p.kind, off, int(p.facing), subs[k], quality)
+		k += 1
 	for i in mb.parts.size():
 		var p: Dictionary = mb.parts[i]
 		var m: Machine = by_off[Vector2i(int(p.off[0]), int(p.off[1]))]
-		for k in p.config:
-			var v = p.config[k]
-			if k == "target":
+		for key in p.config:
+			var v = p.config[key]
+			if key == "target":
 				var t = by_off.get(Vector2i(int(v[0]), int(v[1]))) if v != null else null
 				m.config.target = t.id if t != null else -1
-			elif k == "routes":
+			elif key == "routes":
 				m.config.routes = []
 				for r in v:
 					var t = by_off.get(Vector2i(int(r[1][0]), int(r[1][1])))
 					if t != null:
 						m.config.routes.append([r[0], t.id])
+			elif key == "shot":
+				m.config.shot = Macroblocks.shot_from_offsets(v, by_off)
+			elif key == "shot_routes":
+				m.config.shot_routes = Macroblocks.routes_from_offsets(v, by_off)
 			else:
-				m.config[k] = v
+				m.config[key] = v
 	for wr in mb.wires:
 		var a = by_off.get(Vector2i(int(wr.from[0]), int(wr.from[1])))
 		var b = by_off.get(Vector2i(int(wr.to[0]), int(wr.to[1])))
@@ -74,14 +155,14 @@ func setup(w: World, p_mb: Dictionary, p_rot: int, subs: Array) -> void:
 
 ## Собрать схему из живых машин мира со всем их состоянием (свёртка на месте).
 ## parts — [SaveGame.machine_to(m) + "loc" (смещение в схеме)], wires — провода между ними (id мира).
-func setup_live(w: World, p_mb: Dictionary, parts: Array, wires: Array) -> Dictionary:
+func setup_live(w, p_mb: Dictionary, parts: Array, wires: Array) -> Dictionary:
 	_begin(w, p_mb, 0)
 	var idmap := {}
 	for d in parts:
 		var sub: Substance = w.db.get_sub(d.sub)
 		var m := inner.place(d.kind, SaveGame.v2i(d.loc), int(d.facing), sub, float(d.q))
 		idmap[int(d.id)] = m.id
-		SaveGame.machine_restore(w, m, d, inner.gas)
+		SaveGame.machine_restore(_root(), m, d, inner.gas, inner)
 	for m in inner.machines.values():
 		m.config = Macroblocks.remap_config(m.config, idmap)
 	for wr in wires:
@@ -90,7 +171,7 @@ func setup_live(w: World, p_mb: Dictionary, parts: Array, wires: Array) -> Dicti
 	return idmap
 
 ## Привязать газовые и сигнальные порты к внутренним машинам; завести внешний газовый узел.
-func _bind_ports(w: World) -> void:
+func _bind_ports(w) -> void:
 	gas_port_ids = []
 	for q in ports:
 		if q.type == "gas":
@@ -152,7 +233,7 @@ func accept(p: Portion, from_cell: Vector2i) -> bool:
 	return false
 
 ## Выход внутренней машины за границу блока — наружу через сторону хоста.
-func push_out(w: World, src: Machine, p: Portion, c: Vector2i) -> bool:
+func push_out(w, src: Machine, p: Portion, c: Vector2i) -> bool:
 	var ld := Machine.DIRS.find(c - src.cell)
 	var ok := false
 	for q in ports:
@@ -228,7 +309,7 @@ func load_extra(w, d: Dictionary) -> void:
 	for md in d.parts:
 		var sub: Substance = w.db.get_sub(md.sub)
 		var m := inner.place(md.kind, SaveGame.v2i(md.cell), int(md.facing), sub, float(md.q), int(md.id))
-		SaveGame.machine_restore(w, m, md, inner.gas)
+		SaveGame.machine_restore(_root(), m, md, inner.gas, inner)
 	for x in d.wires:
 		inner.logic.add_wire(int(x.from), int(x.to), int(x.port), x.points.map(func(p): return Vector2(p[0], p[1])), x.material)
 	_bind_ports(w)

@@ -1,8 +1,10 @@
 class_name InnerGrid
 extends RefCounted
 ## Внутренность свёрнутого макроблока: своя сетка машин, газовая и логическая
-## сети, свои капсулы. Предоставляет машинам тот же интерфейс, что и World;
-## всё внешнее (робот, планета, события, звуки) — через слабую ссылку на мир.
+## сети, свои капсулы. Предоставляет машинам тот же интерфейс, что и World.
+## Родитель — мир или внутренность другого блока (блоки вкладываются).
+## Груз, газ, события и эффекты уходят к родителю от клетки блока-хозяина и так
+## всплывают до карты; робот, планета и база веществ — общие, от мира.
 
 var machines := {}
 var grid := {}
@@ -10,12 +12,16 @@ var gas := GasNet.new()
 var logic := LogicNet.new()
 var projectiles: Array = []
 var size := Vector2i.ONE
-var _outer: WeakRef
+var _parent: WeakRef
 var _host: WeakRef
 var _next_id := 1
 
+var parent:
+	get: return _parent.get_ref()
 var world: World:
-	get: return _outer.get_ref()
+	get:
+		var p = _parent.get_ref()
+		return p if p is World else p.world
 var host:
 	get: return _host.get_ref()
 var robot: RobotState:
@@ -31,12 +37,17 @@ var stats: Dictionary:
 var event_mods: Dictionary:
 	get: return world.event_mods
 
-func _init(w: World, h, p_size: Vector2i) -> void:
-	_outer = weakref(w)
+func _init(p_parent, h, p_size: Vector2i) -> void:
+	_parent = weakref(p_parent)
 	_host = weakref(h)
 	size = p_size
-	gas.atm_pressure = w.planet.atm_pressure
-	gas.ambient = w.planet.ambient_temp
+	gas.atm_pressure = p_parent.planet.atm_pressure
+	gas.ambient = p_parent.planet.ambient_temp
+
+## Глубина вложенности: 1 — блок стоит на карте.
+func depth() -> int:
+	var p = parent
+	return 1 if p is World else p.depth() + 1
 
 func inside(c: Vector2i) -> bool:
 	return Rect2i(Vector2i.ZERO, size).has_point(c)
@@ -81,19 +92,19 @@ func time_factor() -> float:
 	return world.time_factor()
 
 func log_event(_c: Vector2i, text: String) -> void:
-	world.log_event(host.cell, "[%s] %s" % [host.display_name(), text])
+	parent.log_event(host.cell, "[%s] %s" % [host.display_name(), text])
 
 func sound(name: String, _c: Vector2i) -> void:
-	world.sound(name, host.cell)
+	parent.sound(name, host.cell)
 
 func on_processed(m: Machine, input: Portion, res: Dictionary) -> void:
 	world.on_processed(m, input, res)
 
-func observe(res: Dictionary, sub: Substance) -> void:
-	world.observe(res, sub, host.cell)
+func observe(res: Dictionary, sub: Substance, _c = null) -> void:
+	parent.observe(res, sub, host.cell)
 
 func add_fx(kind: String, _c: Vector2i, col: Color = Color.WHITE, text: String = "") -> void:
-	world.add_fx(kind, host.cell, col, text)
+	parent.add_fx(kind, host.cell, col, text)
 
 func net_receiver(_c: Vector2i):
 	return null
@@ -110,7 +121,7 @@ func handling_env(m, _ctx: String) -> Dictionary:
 		"shield": robot.shield(), "safe_fire": robot.passive("safe_fire") > 0, "corrosion": world.event_mods.corrosion}
 
 func drop_portions(_c: Vector2i, arr: Array) -> void:
-	world.drop_portions(host.cell, arr)
+	parent.drop_portions(host.cell, arr)
 
 func destroy(m: Machine, reason: String) -> void:
 	if not machines.has(m.id):
@@ -119,16 +130,19 @@ func destroy(m: Machine, reason: String) -> void:
 	var all: Array = m.items.duplicate()
 	for e in m.out_queue:
 		all.append(e[0])
+	if m is MacroMachine:
+		all.append_array(m.all_contents())
 	drop_portions(m.cell, all)
 	machines.erase(m.id)
 	grid.erase(m.cell)
 	gas.remove_node(m.id)
 	logic.remove_machine(m.id)
+	Machine.drop_shot_links(machines, m.id)
 
 func launch_orbit(payload: Array, _c: Vector2i) -> void:
-	world.launch_orbit(payload, host.cell)
+	parent.launch_orbit(payload, host.cell)
 
-func spawn_projectile(from: Vector2, to: Vector2, payload: Array, _orbit: bool = false, _kind: String = "capsule") -> void:
+func spawn_projectile(from: Vector2, to: Vector2, payload: Array, _orbit: bool = false, _kind: String = "capsule", _src: int = -1) -> void:
 	projectiles.append({"to": to, "t": 0.0, "dur": 0.3 + from.distance_to(to) * 0.05, "payload": payload})
 
 ## Выход машины: внутрь блока — соседней машине, наружу — через порт хоста.
@@ -136,7 +150,7 @@ func push(src: Machine, p: Portion, c: Vector2i) -> bool:
 	if inside(c):
 		var t = machine_at(c)
 		return t != null and t.accept(p, src.cell)
-	return host.push_out(world, src, p, c)
+	return host.push_out(parent, src, p, c)
 
 func tick(dt: float) -> void:
 	# Внешний провод в блок: если у схемы есть сигнальные входы — идёт в них,

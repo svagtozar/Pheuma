@@ -79,6 +79,8 @@ func _draw() -> void:
 	_draw_structures()
 	_draw_links(vr)
 	_draw_wires(vr)
+	if main != null and main.flow_view:
+		_draw_flow(vr)
 	_draw_event()
 	_draw_drones()
 	_draw_fires()
@@ -87,7 +89,54 @@ func _draw() -> void:
 	_draw_projectiles()
 	_draw_tool_preview()
 	_draw_hover()
+	_draw_advice(vr)
 	prof_draw_us += Time.get_ticks_usec() - t0
+
+const FLOW_COL := {"work": Color(0.35, 0.95, 0.45), "idle": Color(0.6, 0.6, 0.65), "starved": Color(1.0, 0.85, 0.25), "blocked": Color(1.0, 0.3, 0.25)}
+
+## Карта потоков (O): линии между машинами по кг/мин и рамки состояния.
+func _draw_flow(vr: Rect2i) -> void:
+	var box := vr.grow(1)
+	var big := get_viewport().get_camera_2d() == null or get_viewport().get_camera_2d().zoom.x >= 0.7
+	for k in world.flow:
+		var ab: PackedStringArray = k.split(">")
+		var a = world.machines.get(int(ab[0]))
+		var b = world.machines.get(int(ab[1]))
+		if a == null or b == null or not (box.has_point(a.cell) or box.has_point(b.cell)):
+			continue
+		var v: float = world.flow[k]
+		var p0 := cell_center(a.cell)
+		var p1 := cell_center(b.cell)
+		var wdt: float = clampf(1.0 + v * 0.35, 1.0, 6.0)
+		var col := Color(0.55, 0.85, 1.0, 0.85)
+		draw_line(p0, p1, col, wdt)
+		var dir := (p1 - p0).normalized()
+		var mid := p0.lerp(p1, 0.5)
+		var side := Vector2(-dir.y, dir.x) * (4.0 + wdt)
+		draw_colored_polygon(PackedVector2Array([mid + dir * 7.0, mid - dir * 5.0 + side, mid - dir * 5.0 - side]), col)
+		if big:
+			# Плашка сбоку от связи, чтобы не закрывать корпуса соседних машин.
+			var off := Vector2(0, -T * 0.62) if abs(dir.x) >= abs(dir.y) else Vector2(T * 0.95, T * 0.2)
+			_plate_on(self, mid + off, "%.1f кг/мин" % v, 9, 1.0, Color(0.8, 0.93, 1.0))
+	for m in world.machines.values():
+		if not box.has_point(m.cell) or m.kind in ["pipe", "pump", "valve", "sensor", "gate_and", "gate_or", "gate_not"]:
+			continue
+		draw_rect(Rect2(Vector2(m.cell) * T, Vector2(T, T)).grow(1), FLOW_COL[m.flow_state()], false, 2.5)
+
+## Куда показывает совет: кольцо на клетке, а если она за краем экрана — стрелка у робота.
+func _draw_advice(vr: Rect2i) -> void:
+	if main == null or main.hud == null or main.hud.advice.is_empty() or main.hud.advice.cell == null:
+		return
+	var c: Vector2i = main.hud.advice.cell
+	var col := Color(0.6, 0.95, 0.75, 0.55 + 0.35 * sin(_t * 4.0))
+	if vr.has_point(c):
+		draw_arc(cell_center(c), T * (0.62 + 0.06 * sin(_t * 4.0)), 0.0, TAU, 24, col, 2.5)
+		return
+	var from := world.robot.pos * T
+	var dir := (cell_center(c) - from).normalized()
+	var tip := from + dir * T * 1.6
+	var side := Vector2(-dir.y, dir.x) * 7.0
+	draw_colored_polygon(PackedVector2Array([tip, tip - dir * 12.0 + side, tip - dir * 12.0 - side]), col)
 
 ## Чанки карты: создаются под мир, перезапекаются раз в 0,25 с, если изменились
 ## (видимые — сразу, остальные — по одному за проверку).
@@ -416,10 +465,17 @@ func _draw_structures() -> void:
 func _draw_links(vr: Rect2i) -> void:
 	var vr_links := vr.grow(1)
 	for m in world.machines.values():
-		if not m is Cannon:
-			continue
 		var links: Array = []
-		if world.machines.has(m.config.target):
+		var sh: Dictionary = m.config.get("shot", {})
+		for k in sh:
+			if world.machines.has(int(sh[k])):
+				links.append([int(sh[k]), Color(0.4, 1.0, 0.5, 0.45) if k == "0" else Color(0.6, 0.85, 1.0, 0.45)])
+		var sr: Dictionary = m.config.get("shot_routes", {})
+		for k in sr:
+			for r in sr[k]:
+				if world.machines.has(int(r[1])):
+					links.append([int(r[1]), Color(MaterialTags.TAGS[r[0]].col, 0.6)])
+		if m is Cannon and world.machines.has(m.config.target):
 			links.append([m.config.target, Color(1, 1, 1, 0.25)])
 		for r in m.config.get("routes", []):
 			if world.machines.has(int(r[1])):
@@ -628,6 +684,17 @@ func _draw_tool_preview() -> void:
 			draw_rect(r, Color(1, 0.9, 0.3, 0.8), false, 2.0)
 			if main.pending_cell != null:
 				draw_line(cell_center(main.pending_cell), get_global_mouse_position(), Color(1, 0.9, 0.3, 0.7), 2.0)
+				var src = world.machine_at(main.pending_cell)
+				if main.mode == "link" and src != null:
+					# Круг дальности при текущем давлении; цель за ним — красный крестик.
+					var reach: float = Cannon.reach(world, src)
+					draw_arc(cell_center(src.cell), reach * T, 0.0, TAU, 64, Color(1, 0.9, 0.3, 0.35), 1.5)
+					var dist: float = Vector2(mc - src.cell).length()
+					if dist > reach:
+						var q := cell_center(mc)
+						draw_line(q - Vector2(8, 8), q + Vector2(8, 8), Color(1, 0.35, 0.3), 2.5)
+						draw_line(q - Vector2(8, -8), q + Vector2(8, -8), Color(1, 0.35, 0.3), 2.5)
+						draw_string(font, q + Vector2(12, -10), "далеко: %.0f кл., дальность %.1f" % [dist, reach], HORIZONTAL_ALIGNMENT_LEFT, -1, 12, Color(1.0, 0.45, 0.4))
 		_:
 			draw_rect(r, Color(1, 1, 1, 0.25), false, 1.0)
 	if main.selected_cell != null and world.machine_at(main.selected_cell) != null:

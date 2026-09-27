@@ -36,7 +36,30 @@ func travel(c: Vector2i) -> void:
 
 # ---------------------------------------------------------------- материалы
 
+var _keep_free := {}   # пустые клетки между звеньями цепочки (выстрел через них)
+var _dump_boxes: Array = []   # контейнеры под второй выход разделяющих машин
+
+## Полный сброс останавливает всю цепочку — вынести груз и выбросить в стороне.
+func _empty_dumps() -> void:
+	for d in _dump_boxes:
+		if not w.machines.has(d.id) or d.free_space() > 8.0:
+			continue
+		travel(d.cell)
+		var before: Dictionary = {}
+		for p in d.items:
+			before[p.substance.id] = w.robot.mass_of(p.substance.id)
+		w.take_from(d.cell)
+		var away := _free_near(d.cell + Vector2i(0, 6))
+		travel(away)
+		for id in before:
+			var got: float = w.robot.mass_of(id) - before[id]
+			if got > 0.01:
+				w.drop_from_inventory(id, got)
+		note("сброс у %d,%d разгружен" % [d.cell.x, d.cell.y])
+
 func is_free(c: Vector2i) -> bool:
+	if _keep_free.has(c):
+		return false
 	return w.planet.buildable(c) and not w.grid.has(c) and not w.planet.deposits.has(c) and not w.tile_overrides.has(c)
 
 func minable(s: Substance) -> bool:
@@ -84,6 +107,17 @@ func material_for(kind: String, check: Callable = Callable()) -> Substance:
 			for st in Goals.options(raw):
 				if st.type.begins_with("launch") and w.machines_of("launch_silo").is_empty():
 					reserve = w.build_cost("launch_silo") + (0.0 if kind == "pump" else 3.0 * w.build_cost("pump"))
+	# Стартовый сплав — последняя надежда для машин, которые больше не из чего строить
+	# (компрессор, если на планете нет твёрдых материалов по зубам буру).
+	if not _starter_only(kind):
+		var r2 := 0.0
+		for k in _starter_kinds():
+			if w.machines_of(k).size() < 2:
+				r2 = max(r2, (2 - w.machines_of(k).size()) * w.build_cost(k))
+		# Прочный насос (с проверкой) сам и есть то, ради чего откладывали.
+		if not (kind == "pump" and not check.is_null()):
+			r2 += _strong_pump_reserve()
+		reserve = max(reserve, r2)
 	for id in w.robot.inventory:
 		var s: Substance = w.db.get_sub(id)
 		var spare: float = w.robot.mass_of(id) - (reserve if s == w.starter else 0.0)
@@ -100,6 +134,37 @@ func material_for(kind: String, check: Callable = Callable()) -> Substance:
 		if mine_mass(s, cost + w.robot.mass_of(s.id)):
 			return s
 	return null
+
+var _starter_cache := {}
+## Машину можно построить только из стартового сплава.
+func _starter_only(kind: String) -> bool:
+	if not _starter_cache.has(kind):
+		var amb: float = w.planet.ambient_temp
+		var other: bool = w.planet.materials.any(func(s): return minable(s) and Buildings.check_material(kind, s, amb) == "")
+		_starter_cache[kind] = not other and Buildings.check_material(kind, w.starter, amb) == ""
+	return _starter_cache[kind]
+
+## Машины обработки, которые понадобятся и строятся только из сплава.
+var _want := {}   # машины из найденных планов (ещё могут быть не открыты)
+
+func _starter_kinds() -> Array:
+	var out: Array = []
+	for k in Buildings.KINDS:
+		if Buildings.KINDS[k].has("process") and (w.robot.unlocked.has(k) or _want.has(k)) and _starter_only(k):
+			out.append(k)
+	return out
+
+## Компрессору в плане нужны насосы на 6.5 атм, а из местного их не сделать — сплав
+## на два таких насоса откладывается.
+func _strong_pump_reserve() -> float:
+	if not _want.has("compressor"):
+		return 0.0
+	var amb: float = w.planet.ambient_temp
+	for s in w.planet.materials:
+		if minable(s) and Buildings.check_material("pump", s, amb) == "" and ComponentStats.compute("pump", s).max_p * 0.95 >= 6.5:
+			return 0.0
+	var strong := w.machines_of("pump").filter(func(m): return m.stats.max_p * 0.95 >= 6.5).size()
+	return max(0, 2 - strong) * w.build_cost("pump")
 
 func build(kind: String, c: Vector2i, facing: int, check: Callable = Callable()) -> Machine:
 	# Вторая попытка — если материал потерялся в пути (летучее испаряется из рук).
@@ -135,7 +200,7 @@ func pump_for(m: Machine, target_p: float, count: int = 1, need: float = -1.0) -
 			var two_outs: bool = m.info.has("process") and Processes.PROCESSES[m.info.process].outs == 2
 			if c == m.out_cell(0) or (two_outs and c == m.out_cell(1)):
 				continue
-			var ok := is_free(c) if pass_i == 0 else (w.planet.buildable(c) and not w.grid.has(c) and not w.tile_overrides.has(c))
+			var ok := is_free(c) if pass_i == 0 else (w.planet.buildable(c) and not w.grid.has(c) and not w.tile_overrides.has(c) and not _keep_free.has(c))
 			if not ok:
 				continue
 			var p := build("pump", c, 0, strong)
@@ -160,9 +225,13 @@ func learn_what_we_can() -> void:
 
 ## Место у залежи: бур, затем путь машин по выходам (с поворотами для выхода 1).
 ## outs — выход каждой машины пути (последний элемент — конечная постройка).
-func find_site(mat: Substance, outs: Array, splits: Array = []) -> Dictionary:
+## gaps[k] — перед клеткой k пустая клетка: машина перед ней стреляет грузом через неё
+## (своя газовая сеть у следующей машины).
+func find_site(mat: Substance, outs: Array, splits: Array = [], gaps: Array = []) -> Dictionary:
 	while splits.size() < outs.size():
 		splits.append(false)
+	while gaps.size() < outs.size():
+		gaps.append(false)
 	var deps := deposits_of(mat, true).slice(0, 30)
 	deps.sort_custom(func(a, b): return w.planet.deposits[a].amount > w.planet.deposits[b].amount)
 	for dep in deps:
@@ -174,6 +243,7 @@ func find_site(mat: Substance, outs: Array, splits: Array = []) -> Dictionary:
 			var dir := f
 			var ok := true
 			var dumps: Array = []
+			var gapcells: Array = []
 			for k in outs.size():
 				var nd: int = (dir + (outs[k - 1] if k > 0 else 0)) % 4
 				# У разделяющей машины второй выход — под сброс.
@@ -183,14 +253,20 @@ func find_site(mat: Substance, outs: Array, splits: Array = []) -> Dictionary:
 						ok = false
 						break
 					dumps.append(other)
+				if gaps[k]:
+					cur = cur + Machine.DIRS[nd]
+					if not is_free(cur) or cur in cells.map(func(e): return e[0]) or cur in dumps:
+						ok = false
+						break
+					gapcells.append(cur)
 				cur = cur + Machine.DIRS[nd]
 				dir = nd
-				if not is_free(cur) or cur in cells.map(func(e): return e[0]) or cur in dumps:
+				if not is_free(cur) or cur in cells.map(func(e): return e[0]) or cur in dumps or cur in gapcells:
 					ok = false
 					break
 				cells.append([cur, dir])
 			if ok:
-				return {"dep": dep, "facing": f, "cells": cells, "dumps": dumps}
+				return {"dep": dep, "facing": f, "cells": cells, "dumps": dumps, "gaps": gapcells}
 	return {}
 
 ## Построить установку по плану; sink — вид конечной постройки или [вид, проверка материала].
@@ -198,18 +274,30 @@ func build_chain(pl: Dictionary, sink) -> Machine:
 	var steps: Array = pl.steps
 	var outs: Array = steps.map(func(st): return st.out) + [0]
 	var splits: Array = steps.map(func(st): return st.op == "process" and Processes.PROCESSES[st.pid].outs == 2) + [false]
-	var site := find_site(pl.mat, outs, splits)
+	# Компрессор не первым в цепочке — через пустую клетку: у него своя газовая сеть,
+	# и соседи из слабых материалов не ограничивают его давление.
+	var gaps: Array = []
+	for i in steps.size():
+		gaps.append(i > 0 and steps[i].op == "process" and steps[i].pid == "compressor" and steps[i - 1].get("pid", "") != "compressor")
+	var site := find_site(pl.mat, outs, splits, gaps)
+	if site.is_empty() and gaps.has(true):
+		gaps = []
+		site = find_site(pl.mat, outs, splits)
 	if site.is_empty():
 		note("нет места для установки у залежи %s" % pl.mat.name)
 		return null
+	for gc in site.get("gaps", []):
+		_keep_free[gc] = true
 	var drill := build("drill", site.dep, site.facing, func(s): return s.hardness + 0.5 >= pl.mat.hardness)
 	if drill == null:
 		return null
+	var prev_m: Machine = null
 	for i in steps.size():
 		var st: Dictionary = steps[i]
 		var e: Array = site.cells[i]
 		var fac: int = site.cells[i + 1][1] if st.out == 0 else (site.cells[i + 1][1] + 3) % 4
-		var chk := Callable()
+		# Едкий груз на входе разъест машину — стенки из стойкого материала.
+		var chk := sink_check(st.get("in"))
 		var stag: String = Processes.PROCESSES[st.pid].get("source", "") if st.op == "process" else ""
 		if st.has("source"):
 			var src: Substance = st.source
@@ -222,15 +310,24 @@ func build_chain(pl: Dictionary, sink) -> Machine:
 			m = build(st.kind, e[0], fac)
 		if m == null:
 			return null
+		if i < gaps.size() and gaps[i] and prev_m != null:
+			w.link_output(prev_m.cell, m.cell, int(steps[i - 1].out))
+			if not Advisor._has_pump(w, prev_m) and not (prev_m.shot_node(w) >= 0 and Advisor._has_pump(w, w.machines[prev_m.shot_node(w)])):
+				pump_for(prev_m, 3.0, 1, 2.5)
+			note("«%s» стреляет в «%s» через пустую клетку" % [prev_m.display_name(), m.display_name()])
+		prev_m = m
 		if st.op == "treat":
 			_feeders.append([st.reagent, m])
 		elif st.has("source") and not m.built_from.has(stag):
 			_feeders.append([st.source, m])
 		var gmin: float = Processes.PROCESSES[st.pid].get("gas_min", 0.0) if st.op == "process" else 0.0
 		if gmin > 0.0:
-			pump_for(m, 10.0 if st.pid == "compressor" else gmin + 1.5, 2 if st.pid == "compressor" else 1)
+			# Компрессору хватает насосов на 6.5 атм (правила от 6) — такие чаще найдутся.
+			pump_for(m, 10.0 if st.pid == "compressor" else gmin + 1.5, 2 if st.pid == "compressor" else 1, 6.5 if st.pid == "compressor" else -1.0)
 	for dc in site.dumps:
-		build("container", dc, 0)
+		var dm := build("container", dc, 0)
+		if dm != null:
+			_dump_boxes.append(dm)
 	var se: Array = site.cells[steps.size()]
 	# Летучее, жидкое и газ — только в закрытый бак, иначе улетит из контейнера.
 	if sink is String and sink == "container" and pl.has("final"):
@@ -288,11 +385,16 @@ func drillable(ore: Substance) -> bool:
 func safe_to_handle(s: Substance) -> bool:
 	return Handling.safe_to_carry(s, w.planet, w.robot.passive("safe_fire") > 0.0 or w.robot.has_module("cold_pack"))
 
-## Кислотный груз разъедает хранилище — нужен стойкий материал стенок.
+## Кислотный груз разъедает хранилище — нужен стойкий материал стенок;
+## фазирующий уходит сквозь стенки — нужен якорный.
 func sink_check(cargo: Substance) -> Callable:
-	if cargo == null or not cargo.has("acidic"):
+	if cargo == null:
 		return Callable()
-	return func(s): return Handling.CORROSION_PROOF.any(func(t): return s.has(t))
+	var acid := cargo.has("acidic")
+	var phase := cargo.has("phasing")
+	if not acid and not phase:
+		return Callable()
+	return func(s): return (not acid or Handling.CORROSION_PROOF.any(func(t): return s.has(t))) and (not phase or s.has("anchoring"))
 
 ## Установка, которая производит материал с тегом в конечную постройку.
 func produce(tag: String, sink = "container") -> Machine:
@@ -309,6 +411,8 @@ func produce(tag: String, sink = "container") -> Machine:
 		note("планировщик: «%s» не получить из материалов планеты" % MaterialTags.display(tag))
 		return null
 	note("план для «%s»: %s" % [MaterialTags.display(tag), Planner.describe(pl)])
+	for st in pl.steps:
+		_want[st.kind] = true
 	for k in pl.locked:
 		if not unlock(k):
 			note("не открыть «%s»" % Buildings.name_of(k))
@@ -327,7 +431,7 @@ var _stall := {}    # id машины → [с какого времени не �
 
 func maintain() -> void:
 	for m in w.machines.values():
-		var starving: bool = m.status.begins_with("мало давления") or (m.kind == "launch_silo" and not m.items.is_empty() and w.gas.pressure(m.id) < 6.0)
+		var starving: bool = m.status.begins_with("мало давления") or (m is Cannon and not m.items.is_empty() and w.gas.pressure(m.id) < m.fire_pressure(w))
 		if not starving:
 			_stall.erase(m.id)
 			continue
@@ -337,11 +441,14 @@ func maintain() -> void:
 			e[0] = w.time
 			e[1] += 1
 			var silo: bool = m.kind == "launch_silo"
-			if pump_for(m, 9.5 if silo else 3.0, 1, 6.5 if silo else 2.5) > 0:
+			var np: float = m.need_p if m is Processor else 0.0
+			var gun: bool = m is Cannon and not silo
+			var tp: float = 9.5 if silo or np > 0.0 else (5.0 if gun else 3.0)
+			if pump_for(m, tp, 1, 6.5 if silo else (np + 0.5 if np > 0.0 else (4.0 if gun else 2.5))) > 0:
 				note("добавлен насос к «%s»" % m.display_name())
 	# Приёмник на выходе разрушен (событие, кислота) — ставим новый.
 	for m in w.machines.values():
-		if m.out_queue.is_empty():
+		if m.out_queue.is_empty() or m.shot_target(int(m.out_queue[0][1])) >= 0:
 			continue
 		var oc: Vector2i = m.out_cell(int(m.out_queue[0][1]))
 		if w.machine_at(oc) != null or not w.planet.buildable(oc) or _rebuilt.get(oc, 0) >= 2:
@@ -352,7 +459,7 @@ func maintain() -> void:
 		var rec: Dictionary = _built.get(oc, {})
 		var kind: String = rec.get("kind", "tank" if sealed_needed else "container")
 		var fac: int = rec.get("facing", m.facing)
-		var chk := sink_check(cargo.substance) if kind in ["container", "tank"] else Callable()
+		var chk := sink_check(cargo.substance)
 		var rebuilt := build(kind, oc, fac, chk)
 		if rebuilt == null and not chk.is_null():
 			rebuilt = build(kind, oc, fac)
@@ -360,7 +467,21 @@ func maintain() -> void:
 			w.link_cannon(oc, rec.link)
 		if rebuilt != null:
 			note("восстановлен приёмник у «%s»" % m.display_name())
+	# Цель пушки разрушена — ставим приёмник (и контейнер за ним) заново и связываем.
+	for m in w.machines.values():
+		if not (m is Cannon) or m.is_silo() or not _built.has(m.cell) or not _built[m.cell].has("link"):
+			continue
+		var lc: Vector2i = _built[m.cell].link
+		if w.machine_at(lc) != null or not w.planet.buildable(lc) or _rebuilt.get(lc, 0) >= 3:
+			continue
+		_rebuilt[lc] = _rebuilt.get(lc, 0) + 1
+		var rr: Dictionary = _built.get(lc, {})
+		var nr := build(rr.get("kind", "receiver"), lc, rr.get("facing", m.facing))
+		if nr != null:
+			w.link_cannon(m.cell, lc)
+			note("восстановлена цель пушки %d,%d" % [m.cell.x, m.cell.y])
 	_relocate_exhausted()
+	_empty_dumps()
 	_maintain_feed()
 
 var _rebuilt := {}
@@ -854,9 +975,8 @@ func _deliveries() -> String:
 				var box := build("container", dep + d * 6, f)
 				if cannon == null or recv == null or box == null:
 					return "не собрать пушечную линию"
-				var p := build("pump", pc, 0)
-				if p != null:
-					p.config.target_p = 5.0
+				if pump_for(cannon, 5.0, 1, 4.0) == 0:
+					note("нет насоса к пушке")
 				w.link_cannon(cannon.cell, recv.cell)
 				_built[cannon.cell]["link"] = recv.cell
 				note("пушечная линия %d,%d → %d,%d" % [cannon.cell.x, cannon.cell.y, recv.cell.x, recv.cell.y])

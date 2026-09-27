@@ -7,6 +7,11 @@ var world: World
 
 var info_label: Label
 var goal_label: Label
+var advice_label: Label
+var flow_legend: Label
+var advice_on := true
+var advice := {}          # последний совет: {text, cell}
+var _adv_t := 0.0
 var log_label: Label
 var status_label: Label
 var msg_label: Label
@@ -39,6 +44,8 @@ var choice_box: VBoxContainer
 var reward_box: VBoxContainer
 var macro_box: VBoxContainer
 var insp_inner := -1          # id внутренней машины свёрнутого блока, открытой в инспекторе
+var insp_path: Array = []     # id вложенных блоков, в которые зашли (от внешнего к внутреннему)
+var _insp_mid := -1
 const MODAL := ["briefing", "choice", "reward"]
 
 var _placed: Array = []       # [Control, anchor, offset]
@@ -133,7 +140,19 @@ func _build() -> void:
 	var tl := _panel(Vector2(8, 8), Vector2(330, 0))
 	info_label = _label(tl, 12)
 	var tr := _panel(Vector2(-488, 8), Vector2(480, 0), Control.PRESET_TOP_RIGHT)
-	goal_label = _label(tr, 13)
+	var trv := VBoxContainer.new()
+	tr.add_child(trv)
+	goal_label = _label(trv, 13)
+	goal_label.custom_minimum_size = Vector2(464, 0)
+	advice_label = _label(trv, 12)
+	advice_label.add_theme_color_override("font_color", Color(0.6, 0.95, 0.75))
+	advice_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	advice_label.custom_minimum_size = Vector2(464, 0)
+	flow_legend = _label(trv, 11)
+	flow_legend.text = "Карта потоков (O): линия — кг/мин между машинами. Рамка: зелёная — работает, серая — ждёт груз, жёлтая — не хватает давления или реагента, красная — выход забит."
+	flow_legend.add_theme_color_override("font_color", Color(0.8, 0.85, 0.95))
+	flow_legend.custom_minimum_size = Vector2(464, 0)
+	flow_legend.visible = false
 
 	var invp := _panel(Vector2(8, 190), Vector2(330, 0))
 	var iv := VBoxContainer.new()
@@ -291,7 +310,11 @@ B — постройки. ЛКМ — поставить, R — повернут�
 X — снос (возврат половины материала). ЛКМ по машине — инспектор и настройки.
 Q — положить 1 кг выбранного в машину под курсором (Ctrl — 5 кг, Shift — в боковой вход: реагент/источник).
 T — забрать груз из машины под курсором.
-L — навести пневмопушку: клик по пушке, затем по приёмнику.
+L — навести пневмопушку: клик по пушке, затем по приёмнику. Любая машина с выходом тоже стреляет
+   грузом: L → клик по машине → по цели (Shift — второй выход). Нужно 2 атм в ней или в трубе рядом.
+   Так звенья цепочки можно разнести — у каждого своя газовая сеть и своё давление.
+   Маршруты по тегу есть у любого выхода (инспектор): груз с тегом летит в свою цель.
+O — карта потоков: сколько кг/мин идёт между машинами и какая машина работает, ждёт или забита.
 V — провод: клик по источнику сигнала, затем по приёмнику (Shift — во второй вход гейта).
    Провод делается из выбранного материала; проводящий дотягивается дальше.
    ЛКМ по проводу — добавить путевую точку, тянуть — двигать, ПКМ по точке — удалить.
@@ -686,6 +709,13 @@ func refresh() -> void:
 		p.name, p.seed_value, ", ".join(p.tags.map(func(t): return PlanetTags.display(t))),
 		p.ambient_temp, p.atm_pressure, p.gravity, r.knowledge, r.known_tags.size(), world.machines.size(), world.machine_limit()]
 	goal_label.text = world.goals.text()
+	_adv_t -= 0.1
+	if _adv_t <= 0.0:
+		_adv_t = 0.5
+		advice = Advisor.advise(world, main.flow_view) if advice_on and main.tutorial == null else {}
+		flow_legend.visible = main.flow_view
+		advice_label.text = ("Совет: " + advice.text) if not advice.is_empty() else ""
+		advice_label.visible = not advice.is_empty()
 	var ev: Array = world.events.slice(max(0, world.events.size() - 9))
 	log_label.text = "\n".join(ev.map(func(e): return e.text))
 	var abil: Array = []
@@ -1036,16 +1066,32 @@ func _refresh_inspector() -> void:
 			lines.append("  → %s: %s" % ["прямо" if o[1] == 0 else "вправо", world.sub_label(o[0].substance)])
 		if res.note != "":
 			lines.append("  " + res.note)
+	if m.id != _insp_mid:
+		_insp_mid = m.id
+		insp_path = []
 	var im = null
+	var level = m   # блок, внутренность которого сейчас открыта
 	if m is MacroMachine:
-		im = m.inner.machines.get(insp_inner)
+		var names: Array = [m.display_name()]
+		for i in insp_path.size():
+			var x = level.inner.machines.get(insp_path[i])
+			if not (x is MacroMachine):
+				insp_path = insp_path.slice(0, i)
+				break
+			level = x
+			names.append(x.display_name())
+		if not insp_path.is_empty():
+			lines.append("")
+			lines.append("Открыт: " + " › ".join(PackedStringArray(names)))
+			lines.append_array(level.describe(level.inner.parent))
+		im = level.inner.machines.get(insp_inner)
 		if im != null:
 			lines.append("")
-			lines.append("— Внутри: " + ", ".join(PackedStringArray(im.describe(m.inner).map(func(x): return str(x)))))
+			lines.append("— Внутри: " + ", ".join(PackedStringArray(im.describe(level.inner).map(func(x): return str(x)))))
 	inspector_label.text = "\n".join(lines)
 	inspector_panel.size = inspector_panel.get_combined_minimum_size()
-	var sig :="%d:%s:%s:%s:%d:%s:%s" % [m.id, str(m.config), m.manual_off, main.route_tag_pick, insp_inner,
-		str(im.config) if im != null else "", im.manual_off if im != null else false]
+	var sig :="%d:%s:%s:%s:%d:%s:%s:%s" % [m.id, str(m.config), m.manual_off, main.route_tag_pick, insp_inner,
+		str(im.config) if im != null else "", im.manual_off if im != null else false, str(insp_path)]
 	if sig == _insp_sig:
 		return
 	_insp_sig = sig
@@ -1059,16 +1105,25 @@ func _refresh_inspector() -> void:
 	if m.kind == "fabricator":
 		_btn("Открыть фабрикатор (F)", func(): if not windows.fabricator.visible: toggle("fabricator"))
 	if m is MacroMachine:
-		_btn("Развернуть", func(): main.unfold_macro(m))
-		var ids: Array = m.inner.machines.keys()
+		if insp_path.is_empty():
+			_btn("Развернуть", func(): main.unfold_macro(m))
+		else:
+			_btn("← Наверх", func():
+				self.insp_inner = self.insp_path.pop_back())
+		var ids: Array = level.inner.machines.keys()
 		ids.sort()
 		for iid in ids:
-			var x: Machine = m.inner.machines[iid]
+			var x: Machine = level.inner.machines[iid]
 			var mark := "▸ " if iid == insp_inner else ""
 			_btn("%s%s %d,%d" % [mark, x.display_name(), x.cell.x, x.cell.y], func(): self.insp_inner = -1 if self.insp_inner == iid else iid)
 		if im != null:
 			_btn("Выключить внутри" if not im.manual_off else "Включить внутри", func(): im.manual_off = not im.manual_off)
-			_config_buttons(im, m.inner)
+			if im is MacroMachine:
+				_btn("Открыть «%s»" % im.display_name(), func():
+					self.insp_path.append(im.id)
+					self.insp_inner = -1)
+			else:
+				_config_buttons(im, level.inner)
 		return
 	_config_buttons(m, world)
 
@@ -1079,6 +1134,52 @@ func _config_buttons(m: Machine, grid) -> void:
 		_btn("Выдача: %s" % ("да" if m.config.pass_through else "нет"), func(): m.config.pass_through = not m.config.pass_through)
 	if m.config.has("tag"):
 		_btn("Тег: %s ▶" % MaterialTags.display(m.config.tag), func(): m.config.tag = _next_tag(m.config.tag))
+	if not m is Cannon and not m is MacroMachine:
+		for idx in m.outputs():
+			var i: int = idx
+			var nm := "Выход" if m.outputs() == 1 else ("Выход прямо" if i == 0 else "Выход вправо")
+			var cur := m.shot_target(i)
+			var tgt = grid.machines.get(cur)
+			if inside:
+				_btn("%s: %s ▶" % [nm, ("выстрел → " + tgt.display_name()) if tgt != null else "соседу"], func():
+					var sh: Dictionary = m.config.get("shot", {}).duplicate()
+					var nxt := _next_receiver(m, grid, cur)
+					if nxt >= 0:
+						sh[str(i)] = nxt
+					else:
+						sh.erase(str(i))
+					m.config.shot = sh)
+			elif tgt != null:
+				_btn("%s: выстрел → %s %d,%d ✕" % [nm, tgt.display_name(), tgt.cell.x, tgt.cell.y], func():
+					var sh: Dictionary = m.config.get("shot", {}).duplicate()
+					sh.erase(str(i))
+					m.config.shot = sh)
+			else:
+				_btn("%s: выстрелом в цель (L)" % nm, func():
+					main.route_tag = ""
+					main.set_mode("link")
+					main.pending_cell = m.cell
+					main._link_idx = i)
+			# Маршруты по тегу: груз с тегом летит в свою цель.
+			if inside:
+				continue
+			if main.route_tag_pick == "":
+				main.route_tag_pick = _next_tag("")
+			_btn("Тег маршрута: %s ▶" % MaterialTags.display(main.route_tag_pick), func(): main.route_tag_pick = _next_tag(main.route_tag_pick))
+			_btn("%s: маршрут «%s» → цель (L)" % [nm, MaterialTags.display(main.route_tag_pick)], func():
+				main.route_tag = main.route_tag_pick
+				main.set_mode("link")
+				main.pending_cell = m.cell
+				main._link_idx = i)
+			for r in m.shot_routes(i):
+				var tag: String = r[0]
+				var rt = grid.machines.get(int(r[1]))
+				_btn("✕ «%s» → %s" % [MaterialTags.display(tag), rt.display_name() if rt != null else "?"], func():
+					var sr: Dictionary = m.config.get("shot_routes", {}).duplicate(true)
+					sr[str(i)] = sr.get(str(i), []).filter(func(x): return x[0] != tag)
+					if sr[str(i)].is_empty():
+						sr.erase(str(i))
+					m.config.shot_routes = sr)
 	if m.config.has("target_t"):
 		_btn("T −100", func(): m.config.target_t = max(100.0, m.config.target_t - 100.0))
 		_btn("T +100", func(): m.config.target_t += 100.0)

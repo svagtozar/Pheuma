@@ -8,6 +8,8 @@ extends Node2D
 ##   --open=окно       — открыть окно (palette, skills, fabricator, codex, help, briefing,
 ##                       pause, settings, slots, end, event, choice, reward)
 ##   --tutorial        — начать обучение (при первом запуске оно включается само)
+##   --flow            — включить карту потоков (O)
+##   --no-music        — без музыки (в headless она и так не сводится)
 
 const T := 32.0
 const WorldView := preload("res://game/world_view.gd")
@@ -34,6 +36,8 @@ var macro_rot := 0
 var macro_collapsed := false
 var pending_macro := {}        # выделенная рамкой схема, ждёт выбора действия
 var route_tag := ""
+var _link_idx := 0             # какой выход машины наводится в режиме L (Shift — второй)
+var flow_view := false         # O — карта потоков груза
 var route_tag_pick := ""
 var tutorial: Tutorial = null
 var _uitest := false
@@ -88,6 +92,8 @@ func _ready() -> void:
 			_demo = true
 			if a.begins_with("--demo="):
 				_demo_n = int(a.substr(7))
+		elif a == "--flow":
+			flow_view = true
 		elif a == "--bench":
 			_bench = true
 			_demo = true
@@ -206,9 +212,14 @@ func apply_settings() -> void:
 	var st := settings()
 	var vol: float = float(st.get("volume", 0.8))
 	AudioServer.set_bus_volume_db(0, linear_to_db(max(vol, 0.0001)))
+	Audio.ensure_buses()
+	AudioServer.set_bus_volume_db(AudioServer.get_bus_index("Music"), linear_to_db(max(float(st.get("music", 0.6)), 0.0001)))
+	AudioServer.set_bus_volume_db(AudioServer.get_bus_index("SFX"), linear_to_db(max(float(st.get("sfx", 0.8)), 0.0001)))
 	ui_scale = float(st.get("ui_scale", 1.0))
 	ui_layer.scale = Vector2(ui_scale, ui_scale)
 	autosave_every = float(st.get("autosave", 120.0))
+	if hud != null:
+		hud.advice_on = st.get("advice", true)
 	if DisplayServer.get_name() != "headless":
 		var full: bool = st.get("fullscreen", false)
 		var cur := DisplayServer.window_get_mode()
@@ -402,6 +413,9 @@ func _on_key(e: InputEventKey) -> void:
 		KEY_X: set_mode("remove" if mode != "remove" else "none")
 		KEY_V: set_mode("wire" if mode != "wire" else "none")
 		KEY_L: set_mode("link" if mode != "link" else "none")
+		KEY_O:
+			flow_view = not flow_view
+			say("Карта потоков: %s" % ("включена — толщина линий = кг/мин, рамка = состояние машины" if flow_view else "выключена"))
 		KEY_I:
 			hud.toggle_inventory()
 		KEY_M:
@@ -614,10 +628,30 @@ func _click(shift: bool) -> void:
 		"link":
 			if pending_cell == null:
 				var m = world.machine_at(c)
-				if m != null and m is Cannon and not m.is_silo():
+				if m != null and ((m is Cannon and not m.is_silo()) or m.outputs() > 0):
 					pending_cell = c
+					_link_idx = 1 if shift else 0
 				else:
-					say("выберите пневмопушку")
+					say("выберите пневмопушку или машину с выходом")
+			elif not world.machine_at(pending_cell) is Cannon:
+				var src = world.machine_at(pending_cell)
+				var dst = world.machine_at(c)
+				var far := ""
+				if src != null and dst != null:
+					var dist: float = Vector2(dst.cell - src.cell).length()
+					var reach: float = Cannon.reach(world, src)
+					if dist > reach:
+						far = " (далеко: %.0f кл., дальность сейчас %.1f — нужно больше давления)" % [dist, reach]
+				var err := world.link_output(pending_cell, c, _link_idx, route_tag)
+				if err != "":
+					say(err)
+				elif route_tag != "":
+					var on: bool = src.shot_routes(_link_idx).any(func(r): return r[0] == route_tag)
+					say(("маршрут «%s» задан" if on else "маршрут «%s» снят") % MaterialTags.display(route_tag) + far)
+				else:
+					say(("выход наведён — груз полетит выстрелом" if src.shot_target(_link_idx) >= 0 else "выстрел снят — выход снова отдаёт соседу") + far)
+				route_tag = ""
+				set_mode("none")
 			else:
 				var err := world.link_cannon(pending_cell, c, route_tag)
 				say(err if err != "" else ("маршрут «%s» задан" % MaterialTags.display(route_tag) if route_tag != "" else "пушка наведена"))
@@ -996,13 +1030,130 @@ func _uitest_macro(w: World) -> bool:
 	var tag1: String = ifl.config.tag
 	print("[uitest] тег внутреннего фильтра: ", tag0, " → ", tag1)
 	await get_tree().process_frame
+	if not await _uitest_nested(base):
+		return false
 	var unf := _find_button(hud.inspector_buttons, "Развернуть")
 	if unf: unf.pressed.emit()
 	await get_tree().process_frame
 	var back = world.machine_at(base + Vector2i(1, 0))
 	var unfolded: bool = back != null and back.kind == "filter" and back.config.tag == tag1
 	print("[uitest] развёрнуто: ", unfolded, " сообщение: ", message)
-	return tag1 != tag0 and unfolded
+	var shot_ok := await _uitest_shot(base)
+	return tag1 != tag0 and unfolded and shot_ok
+
+## Навести мышь на клетку и дождаться, пока курсор действительно окажется
+## над ней: под Xvfb warp_mouse и сдвиг камеры доходят не за один кадр.
+func _uitest_aim(cell: Vector2i) -> void:
+	for i in 30:
+		get_viewport().warp_mouse(get_viewport().get_canvas_transform() * ((Vector2(cell) + Vector2(0.5, 0.5)) * T))
+		await get_tree().process_frame
+		if mouse_cell() == cell:
+			return
+
+## Выстрел выхода: дробилка с насосом, в инспекторе «выстрелом в цель (L)», клик по
+## контейнеру в четырёх клетках — груз долетает.
+func _uitest_shot(base: Vector2i) -> bool:
+	var w := world
+	var row := Vector2i(-1, -1)
+	for dy in range(2, 12):
+		for dx in range(-6, 7):
+			var c := base + Vector2i(dx, dy)
+			var ok := true
+			for i in 5:
+				for j in 2:
+					var q := c + Vector2i(i, j)
+					if not w.planet.buildable(q) or w.grid.has(q) or w.tile_overrides.has(q):
+						ok = false
+			if ok and row == Vector2i(-1, -1):
+				row = c
+	if row == Vector2i(-1, -1):
+		print("[uitest] выстрел: нет места")
+		return false
+	var ore := w.db.add(Substance.new("uit_ore", "Руда пробы", ["brittle", "crystalline"]))
+	var cr := w.place("crusher", row, 0, w.starter, true)
+	w.place("pump", row + Vector2i(0, 1), 0, w.starter, true)
+	var box := w.place("container", row + Vector2i(4, 0), 0, w.starter, true)
+	cr.store(Portion.new(ore, 2.0))
+	selected_cell = cr.cell
+	hud.insp_inner = -1
+	hud._refresh_inspector()
+	await get_tree().process_frame
+	var b := _find_button(hud.inspector_buttons, "выстрелом в цель")
+	var found := b != null
+	if b: b.pressed.emit()
+	await get_tree().process_frame
+	cam.position = (Vector2(row) + Vector2(2.5, 0.5)) * T
+	cam.reset_smoothing()
+	await get_tree().process_frame
+	await _uitest_aim(box.cell)
+	_click(false)
+	var linked := cr.shot_target(0) == box.id
+	var t0 := w.time
+	while w.time - t0 < 20.0 and box.items.is_empty():
+		await get_tree().process_frame
+		sim.advance(0.5)
+	print("[uitest] выстрел выхода: кнопка=", found, " наведён=", linked, " груз в контейнере=", not box.items.is_empty(), " сообщение: ", message)
+	# Маршрут по тегу через инспектор и карта потоков.
+	var box2 := w.place("container", row + Vector2i(4, 1), 0, w.starter, true)
+	selected_cell = cr.cell
+	hud._insp_sig = ""
+	hud._refresh_inspector()
+	await get_tree().process_frame
+	var rb := _find_button(hud.inspector_buttons, "маршрут «")
+	if rb: rb.pressed.emit()
+	await get_tree().process_frame
+	await _uitest_aim(box2.cell)
+	_click(false)
+	var routed := not cr.shot_routes(0).is_empty() and int(cr.shot_routes(0)[0][1]) == box2.id
+	var ev := InputEventKey.new()
+	ev.keycode = KEY_O
+	ev.pressed = true
+	_unhandled_input(ev)
+	await get_tree().process_frame
+	await get_tree().process_frame
+	print("[uitest] маршрут по тегу: ", routed, ", карта потоков: ", flow_view, ", поток дробилка → контейнер: ", w.flow.has("%d>%d" % [cr.id, box.id]))
+	flow_view = false
+	return found and linked and not box.items.is_empty() and routed
+
+## Свёрнутый блок в (base) сворачивается вместе с соседом во внешний блок; в инспекторе
+## заходим во вложенный, видим его фильтр, выходим наверх и разворачиваем внешний.
+func _uitest_nested(base: Vector2i) -> bool:
+	world.place("container", base + Vector2i(1, 0), 0, world.starter, true)
+	var res := Macroblocks.collapse_region(world, Rect2i(base, Vector2i(2, 1)), "цех")
+	if res.err != "":
+		print("[uitest] вложенный блок: ", res.err)
+		return false
+	selected_cell = res.macro.cell
+	hud.insp_inner = -1
+	hud._refresh_inspector()
+	await get_tree().process_frame
+	var nb := _find_button(hud.inspector_buttons, " 0,0")
+	if nb: nb.pressed.emit()
+	await get_tree().process_frame
+	await get_tree().process_frame
+	var ob := _find_button(hud.inspector_buttons, "Открыть «")
+	var open_found := ob != null
+	if ob: ob.pressed.emit()
+	await get_tree().process_frame
+	await get_tree().process_frame
+	var inner_filter := _find_button(hud.inspector_buttons, "Фильтр") != null
+	var up := _find_button(hud.inspector_buttons, "← Наверх")
+	var up_found := up != null
+	if up: up.pressed.emit()
+	await get_tree().process_frame
+	await get_tree().process_frame
+	var ub := _find_button(hud.inspector_buttons, "Развернуть")
+	if ub: ub.pressed.emit()
+	await get_tree().process_frame
+	world.remove_at(base + Vector2i(1, 0), false)
+	var nested = world.machine_at(base)
+	selected_cell = base
+	hud.insp_inner = -1
+	hud._refresh_inspector()
+	await get_tree().process_frame
+	print("[uitest] вложенный блок: открыть=", open_found, " фильтр внутри=", inner_filter, " наверх=", up_found,
+		" после разворота снова блок=", nested is MacroMachine)
+	return open_found and inner_filter and up_found and nested is MacroMachine
 
 func _find_button(root: Node, text_part: String) -> Button:
 	for c in root.find_children("*", "Button", true, false):

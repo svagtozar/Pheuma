@@ -34,7 +34,7 @@ static func mod_from(w: World, d: Dictionary):
 
 static func machine_to(m: Machine, gas: GasNet) -> Dictionary:
 	var md := {"id": m.id, "kind": m.kind, "cell": [m.cell.x, m.cell.y], "facing": m.facing, "sub": m.built_from.id,
-		"q": m.quality, "hp": m.hp, "config": m.config, "off": m.manual_off,
+		"q": m.quality, "hp": m.hp, "config": m.config.duplicate(true), "off": m.manual_off,
 		"items": m.items.map(func(p): return p_to(p)),
 		"out": m.out_queue.map(func(e): return [p_to(e[0]), e[1]])}
 	if m.has_gas():
@@ -49,7 +49,8 @@ static func machine_to(m: Machine, gas: GasNet) -> Dictionary:
 		md.extra = m.save_extra()
 	return md
 
-static func machine_restore(w: World, m: Machine, md: Dictionary, gas: GasNet) -> void:
+## grid — сетка, где стоит машина (мир или внутренность блока); нужна вложенным блокам.
+static func machine_restore(w: World, m: Machine, md: Dictionary, gas: GasNet, grid = null) -> void:
 	var sub := w.db.get_sub(md.sub)
 	m.quality = float(md.q)
 	m.stats = ComponentStats.compute(m.kind, sub, m.quality)
@@ -61,6 +62,16 @@ static func machine_restore(w: World, m: Machine, md: Dictionary, gas: GasNet) -
 			v = int(v)
 		elif k == "routes":
 			v = v.map(func(r): return [r[0], int(r[1])])
+		elif k == "shot":
+			var sh := {}
+			for key in v:
+				sh[str(key)] = int(v[key])
+			v = sh
+		elif k == "shot_routes":
+			var sr := {}
+			for key in v:
+				sr[str(key)] = v[key].map(func(r): return [r[0], int(r[1])])
+			v = sr
 		m.config[k] = v
 	m.items = md.items.map(func(a): return p_from(w, a)).filter(func(p): return p != null)
 	m.out_queue = md.out.map(func(e): return [p_from(w, e[0]), int(e[1])]).filter(func(e): return e[0] != null)
@@ -72,7 +83,7 @@ static func machine_restore(w: World, m: Machine, md: Dictionary, gas: GasNet) -
 		m.temp = float(md.get("temp", w.planet.ambient_temp))
 	# Сначала extra: свёрнутый блок заводит в нём свой газовый узел, потом газ.
 	if md.has("extra"):
-		m.load_extra(w, md.extra)
+		m.load_extra(grid if grid != null else w, md.extra)
 	if md.has("gas") and gas.has_node(m.id):
 		gas.nodes[m.id].n = float(md.gas)
 

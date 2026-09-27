@@ -90,6 +90,10 @@ func fire(w, p: float) -> void:
 		if q.mass > 0.001:
 			keep.append(q)
 	items = keep
+	# Шахта отправляет материалы по очереди: остаток первого уходит в конец, иначе
+	# линия бура, которая всё время подкладывает своё, заслоняет остальные грузы.
+	if is_silo() and items.size() > 1 and items[0].substance == payload[0].substance:
+		items.push_back(items.pop_front())
 	var extra: Array = []
 	for q in payload:
 		var s0: Substance = q.substance
@@ -114,9 +118,13 @@ func fire(w, p: float) -> void:
 	if is_silo():
 		w.launch_orbit(payload, cell)
 		return
-	var target = w.machines[tid]
-	var from := Vector2(cell) + Vector2(0.5, 0.5)
-	var to := Vector2(target.cell) + Vector2(0.5, 0.5)
+	shoot(w, cell, w.machines[tid].cell, payload, p, range_mult(), id)
+
+## Полёт капсулы к цели (общий для пушек и выстрелов выхода машин): дальность от
+## давления, гравитации и груза, разброс от груза и бурь; не долетела — падает.
+static func shoot(w, from_cell: Vector2i, to_cell: Vector2i, payload: Array, p: float, mult: float, src: int = -1) -> void:
+	var from := Vector2(from_cell) + Vector2(0.5, 0.5)
+	var to := Vector2(to_cell) + Vector2(0.5, 0.5)
 	var factor := 0.0
 	var total := 0.0
 	var scatter := 0.0
@@ -127,13 +135,20 @@ func fire(w, p: float) -> void:
 	factor = factor / total if total > 0.0 else 1.0
 	var storm: float = w.event_mods.scatter
 	scatter = (scatter * storm + (2.0 if storm > 1.0 else 0.0)) * (1.0 - w.robot.passive("aim"))
-	var rng_tiles := range_for(p, w.planet) * factor * range_mult()
+	var rng_tiles := range_for(p, w.planet) * factor * mult
 	var dist := from.distance_to(to)
 	var dest := to
 	if dist > rng_tiles:
 		dest = from + (to - from).normalized() * rng_tiles
 	dest += Vector2(w.rng.range_f(-1, 1), w.rng.range_f(-1, 1)) * scatter * 0.5
-	w.spawn_projectile(from, dest, payload)
+	w.spawn_projectile(from, dest, payload, false, "capsule", src)
+
+## Дальность выстрела источника (пушка или выход машины) при текущем давлении, в клетках.
+static func reach(w, src: Machine) -> float:
+	if src is Cannon:
+		return range_for(src.fire_pressure(w), w.planet) * src.range_mult()
+	var node := src.shot_node(w)
+	return range_for(w.gas.pressure(node) if node >= 0 else 0.0, w.planet) * Machine.SHOT_MULT
 
 static func range_for(p: float, planet: Planet) -> float:
 	var r := 3.0 * p / planet.gravity
