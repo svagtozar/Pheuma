@@ -16,10 +16,19 @@ extends Node3D
 ##   подсказки для геймпада, --cargo — положить роботу образцы груза (для кадра)
 ##   В --play игра сохраняется (ProtoSave): сама раз в минуту и при выходе, F5 / R3 —
 ##   сейчас, F9 — вернуться к сохранённому; --fresh — начать планету заново
+##   Ран (ProtoRun, в --play всегда; --run — и без него): цель планеты из трёх
+##   этапов, награды, прокачка, события, советы и итоги; Esc / Menu — меню,
+##   K — прокачка; --open=briefing|choice|reward|menu|settings|skills|end|event — открыть
+##   окно или начать событие (для кадра)
+##   Разведка материалов (ProtoLabDesk, ProtoLabPanel): Z / A — коснуться друзы, машины
+##   или груза и открыть карточку (пробы, догадки), V / RB — анализатор; в линии
+##   завода — лаборатория. --lab — открыть карточку сразу (для кадра)
 ##   --robot=clean (по умолчанию; другой вариант из RobotDesigns или old — прежний
 ##   каркас; корпус — металл планеты)
-## Сборка для проверки (фича play3d в export_presets.cfg) стартует прямо сюда,
-## сразу с управлением: Select/View или Tab — другая планета, Start или Esc — выход.
+## Сборка для проверки (фича play3d в export_presets.cfg) стартует с главного
+## меню (ProtoMainMenu, proto/menu.tscn): продолжить, новая планета, настройки;
+## оттуда — сюда, сразу с управлением. Start или Esc — пауза (меню рана: настройки,
+## сохранить, новая планета, в главное меню, выход). С --screenshot меню пропускается.
 ## Планета — настоящий генератор: теги задают небо, свет и дымку, жидкие при её
 ## температуре материалы — реки и озёра, твёрдые — корпуса машин. Форма рельефа,
 ## тип пещеры, облик кристаллов и гравитация — по тегам (ProtoWorldStyle).
@@ -51,13 +60,29 @@ var build := false           # --build: режим стройки (с --play и�
 var fresh := false           # --fresh: не загружать сохранение
 var saves: ProtoSave
 var drill_form := ""         # --form=vein: --auto=drill бурит залежь этой формы
+var run: ProtoRun            # цель, награды, прокачка, события (ProtoRun)
+var run_ui: ProtoRunUi
+var want_run := false        # --run: ран и без --play (для кадра)
+var open_win := ""           # --open=окно
+var pneu_origin := Vector3.ZERO
+var _caption_layer: CanvasLayer
+var _zone: MeshInstance3D    # круг зоны события на земле
+var _fog_base := -1.0
+var _strike_seen = null
+var lab_desk: ProtoLabDesk   # знания о веществах (касание, пробы, догадки, лаборатория)
+var lab_panel: ProtoLabPanel
+var lab_demo := false        # --lab: карточка материала открыта с самого начала
 
 ## Сид следующей планеты в сборке для проверки (переживает перезагрузку сцены).
 static var build_seed := 14
 static var _booted := false
+## Главное меню: «Начать заново» — не загружать сохранение этой планеты.
+static var start_fresh := false
+## Запуск из главного меню (ProtoMainMenu.launch): играть на build_seed, как в сборке.
+static var from_menu := false
 
 func _ready() -> void:
-	if OS.has_feature("play3d"):
+	if OS.has_feature("play3d") or from_menu:
 		play = true
 		if not _booted:
 			# Первый запуск сборки — с планеты, где играли в прошлый раз.
@@ -66,6 +91,9 @@ func _ready() -> void:
 			if last >= 0:
 				build_seed = last
 		seed_value = build_seed
+	if start_fresh:
+		fresh = true
+		start_fresh = false
 	for a in OS.get_cmdline_user_args():
 		if a.begins_with("--seed="): seed_value = int(a.substr(7))
 		elif a.begins_with("--view="): view = a.substr(7)
@@ -83,12 +111,18 @@ func _ready() -> void:
 		elif a == "--build": build = true
 		elif a == "--fresh": fresh = true
 		elif a.begins_with("--form="): drill_form = a.substr(7)
+		elif a == "--run": want_run = true
+		elif a.begins_with("--open="):
+			open_win = a.substr(7)
+			want_run = true
+		elif a == "--lab": lab_demo = true
 	if auto == "drill":
 		RobotDesigns.tool_r = "drill"
 		view = "cave"
 	if auto == "sound" and RobotDesigns.tool_r == "":
 		RobotDesigns.tool_r = "drill"
 	planet = PlanetGen.generate(seed_value)
+	lab_desk = ProtoLabDesk.new(ProtoLabDesk.for_planet(planet))
 	var t0 := Time.get_ticks_msec()
 	style = ProtoWorldStyle.for_planet(planet)
 	terrain = ProtoTerrain.new(seed_value, style)
@@ -106,6 +140,7 @@ func _ready() -> void:
 		ground.mesh = m
 		ground.material_override = tm
 		add_child(ground)
+		RobotGround.add_collision(ground)
 	_environment()
 	_liquids()
 	_cave_crystals()
@@ -145,11 +180,16 @@ func _ready() -> void:
 		_builder()
 	if play or auto != "" or show_hud:
 		_hud()
+	_lab()
 	if play and auto == "":
 		saves = ProtoSave.new()
 		saves.name = "saves"
 		add_child(saves)
 		saves.setup(self, fresh)
+	if play or want_run:
+		_run()
+	# Настройки графики и звука (ProtoSettings): тени солнца, громкость шины мира.
+	ProtoSettings.apply()
 
 ## Сохранение (ProtoSave) зовёт после постройки сцены: убрать выбуренные друзы.
 func restore_mined(ids: Array) -> void:
@@ -612,12 +652,20 @@ func _factory() -> void:
 	add_child(slab)
 	pneu = ProtoPneumatics.new(planet)
 	pneu.build_demo(Vector2i(-3, 0), a)
+	# Вторая труба линии — лаборатория: груз из приёмника проходит пробы.
+	pneu.remove(Vector2i(-1, 0))
+	pneu.place("lab", Vector2i(-1, 0), 0, a)
 	pneu.feed(Vector2i(-3, 0), Portion.new(ore, 30.0, planet.ambient_temp))
 	pneu_view = ProtoPneumaticsView.new()
 	pneu_view.name = "pneumatics"
 	add_child(pneu_view)
-	pneu_view.setup(pneu, Vector3(pc.x, top, pc.z - 1.0))
+	pneu_origin = Vector3(pc.x, top, pc.z - 1.0)
+	pneu_view.setup(pneu, pneu_origin)
 	pneu_view.warm(9.0)
+	# Знания лаборатория пишет с начала игры (разогрев кадра их не трогает).
+	pneu.knowledge = lab_desk.world
+	lab_desk.net = pneu
+	lab_desk.origin = pneu_view.origin
 	print("Завод: корпуса из %s, в приёмнике %s" % [_label(a), _label(ore)])
 
 func _label(s: Substance) -> String:
@@ -763,6 +811,8 @@ func _dust() -> CPUParticles3D:
 
 func _caption() -> void:
 	var layer := CanvasLayer.new()
+	_caption_layer = layer
+	layer.name = "caption"
 	add_child(layer)
 	var l := Label.new()
 	l.position = Vector2(16, 12)
@@ -793,30 +843,220 @@ func _hud() -> void:
 	if hud_pad:
 		hud.pad = true
 	if OS.has_feature("play3d"):
-		hud.extra_hints = [["Сохранить", "F5", "R3"], ["Другая планета", "Tab", "View"], ["Выход", "Esc", "Menu"]]
+		# Выход — из меню рана (Esc / Menu, строка «Меню» в HUD).
+		hud.extra_hints = [["Сохранить", "F5", "R3"]]
 	add_child(hud)
 
-## Сборка для проверки: другая планета и выход с геймпада или клавиатуры.
-func _unhandled_input(e: InputEvent) -> void:
-	if not OS.has_feature("play3d") or not e.is_pressed() or e.is_echo():
+## Разведка материалов: карточка с пробами и догадками, анализатор, лента находок.
+func _lab() -> void:
+	lab_desk.robot = robot
+	lab_desk.mining = mining
+	if not (play or auto != "" or show_hud or lab_demo):
 		return
-	var next: bool = (e is InputEventJoypadButton and e.button_index == JOY_BUTTON_BACK) \
-		or (e is InputEventKey and e.physical_keycode == KEY_TAB)
-	var quit: bool = (e is InputEventJoypadButton and e.button_index == JOY_BUTTON_START) \
-		or (e is InputEventKey and e.physical_keycode == KEY_ESCAPE)
-	if (next or quit) and saves != null:
-		saves.save_now(true)
-	if next:
-		build_seed = seed_value + 1
-		get_tree().reload_current_scene()
-	elif quit:
-		get_tree().quit()
+	lab_panel = ProtoLabPanel.new()
+	lab_panel.name = "lab"
+	add_child(lab_panel)
+	lab_panel.setup(lab_desk, robot)
+	lab_panel.builder = get_node_or_null("builder")
+	if hud_pad:
+		lab_panel.pad = true
+	if hud != null:
+		hud.knowledge = lab_desk
+	if lab_demo:
+		_lab_demo.call_deferred()
+
+## Кадр карточки: коснуться, одна проба и одна догадка — видно, как сужается поиск.
+func _lab_demo() -> void:
+	if not robot.has_meta("cargo") or (robot.get_meta("cargo") as Array).is_empty():
+		var solids: Array = _solid_mats().duplicate()
+		solids.sort_custom(func(a, b): return a.tags.size() > b.tags.size())
+		var cargo: Array = []
+		for i in mini(3, solids.size()):
+			cargo.append(Portion.new(solids[i], 4.0, planet.ambient_temp))
+		robot.set_meta("cargo", cargo)
+	var w := lab_desk.world
+	if view == "cave" and mining != null and lab_desk.druse_near() == null:
+		# Кадр в пещере: робот встаёт вплотную к ближайшей друзе и смотрит на неё.
+		var best: Node3D = null
+		for c in mining.crystals():
+			if best == null or c.global_position.distance_to(robot.global_position) < best.global_position.distance_to(robot.global_position):
+				best = c
+		if best != null:
+			var d: Node3D = best.get_parent()
+			var nrm: Vector3 = d.get_meta("normal", Vector3.UP)
+			var flat := Vector3(nrm.x, 0, nrm.z)
+			if flat.length() < 0.2:
+				flat = (robot.global_position - best.global_position) * Vector3(1, 0, 1)
+			var p := best.global_position + flat.normalized() * 1.5
+			p.y = _floor_at(p + Vector3(0, 1.0, 0))
+			robot.global_position = p
+			robot.look_at(Vector3(best.global_position.x, p.y, best.global_position.z), Vector3.UP, true)
+			var pl := get_node_or_null("player")
+			if pl != null:
+				pl.cam_yaw = robot.rotation.y + 0.5
+	# Самое загадочное вещество — первым: так видно, как сужается поиск.
+	var cg: Array = robot.get_meta("cargo")
+	cg.sort_custom(func(a, b): return a.substance.tags.size() > b.substance.tags.size())
+	if not lab_panel.touch_open():
+		return
+	var s: Substance = lab_panel.current()
+	for pid in Probes.ORDER:
+		if w.unknown_count(s) > 1 and lab_desk.probe_error(s, pid) == "" and Probes.PROBES[pid].tags.any(func(t): return t in s.tags) \
+				and Probes.PROBES[pid].tags.filter(func(t): return t in s.tags).size() < w.unknown_count(s):
+			lab_desk.probe(s, pid)
+			break
+	var pos: Array = w.possible_of(s)
+	if not pos.is_empty():
+		lab_desk.toggle_guess(s, pos[0])
+	lab_panel._sig = ""
 
 func _process(dt: float) -> void:
 	_t += dt
+	if run != null:
+		_run_visuals(dt)
+	if lab_panel != null:
+		# Подпись планеты — под карточкой материала; пока та открыта, прячем.
+		var cap := get_node_or_null("caption") as CanvasLayer
+		if cap:
+			cap.visible = not lab_panel.open and run == null   # в ране слева сверху — цель
 	if shot_path != "" and _t > 1.5:
 		var img := get_viewport().get_texture().get_image()
 		img.save_png(shot_path)
 		print("Кадров в секунду: ", Engine.get_frames_per_second(), " — скриншот: ", shot_path)
 		shot_path = ""
 		get_tree().quit(0)
+
+# ---------------------------------------------------------------- ран
+
+## Ран: цель, награды, прокачка, события — логика общая с 2D (ProtoRun).
+func _run() -> void:
+	run = ProtoRun.new(planet, _solid_mats())
+	if lab_desk != null:
+		# Знания о веществах — у лаборатории (пробы, догадки): робот рана тот же,
+		# теги сами от добычи не открываются.
+		run.robot = lab_desk.world.robot
+		run.auto_tags = false
+	run.pneu_origin_v = pneu_origin
+	var pc := terrain.plateau()
+	run.attach(pneu, mining, robot, mining.sub if mining != null else null, Vector3(pc.x, pc.y, pc.z))
+	run.robot_pos = robot.global_position
+	if _caption_layer != null:
+		_caption_layer.visible = false        # место слева сверху — панели цели
+	run_ui = ProtoRunUi.new()
+	run_ui.name = "run_ui"
+	run_ui.setup(run, robot, hud)
+	run_ui.on_new_planet = _next_planet
+	run_ui.on_resume = _recapture
+	if saves != null:
+		run_ui.on_save = func() -> String: return ProtoSave.write(self)
+	if play:
+		run_ui.on_main_menu = _main_menu
+	run_ui.pause_game = shot_path == ""          # для кадра сцена не должна вставать
+	if play:
+		run_ui.on_quit = _quit
+	add_child(run_ui)
+	_zone = MeshInstance3D.new()
+	var ring := TorusMesh.new()
+	ring.inner_radius = 0.94
+	ring.outer_radius = 1.0
+	ring.rings = 48
+	ring.ring_segments = 4
+	_zone.mesh = ring
+	_zone.material_override = ProtoMachines.glow(Color(1.0, 0.25, 0.15), 1.5)
+	_zone.visible = false
+	add_child(_zone)
+	if open_win != "":
+		_open_for_shot()
+
+## --open: окно или событие сразу — для кадров.
+func _open_for_shot() -> void:
+	run.briefing_seen = open_win != "briefing"
+	match open_win:
+		"choice":
+			run.goals.stage = 1
+		"reward":
+			run.goals.reward_pending = Rewards.offer(run, 0)
+		"event":
+			run.start_event("meteors", robot.position + Vector3(1.5, 0, 1.0))
+			run.ev.t = 0.01
+			run.ev.strike = 0.3
+		"skills":
+			run.robot.knowledge = 5
+			run.robot.xp.gatherer = 22.0
+			run.robot.xp.crafter = 9.0
+			run.learn("g1")
+			run_ui.open.call_deferred("skills")
+		"end":
+			run.goals.completed = true
+			run.mined = 42.0
+			run.stats.hits = 21
+		"menu", "settings":
+			run_ui.open.call_deferred(open_win)
+
+## «Новая планета» — выбор в главном меню (сид по умолчанию — следующий).
+func _next_planet() -> void:
+	if saves != null:
+		saves.save_now(true)
+	ProtoMainMenu.goto_picker(get_tree(), seed_value + 1)
+
+func _main_menu() -> void:
+	if saves != null:
+		saves.save_now(true)
+	ProtoMainMenu.goto_menu(get_tree())
+
+## После паузы — снова захватить мышь для камеры (если игрок это умеет).
+func _recapture() -> void:
+	var pl := get_node_or_null("player")
+	if pl != null and pl.has_method("recapture"):
+		pl.recapture()
+
+func _quit() -> void:
+	if saves != null:
+		saves.save_now(true)
+	get_tree().quit()
+
+## Круг зоны события, удары метеоритов, дымка бури.
+func _run_visuals(dt: float) -> void:
+	var zoned: bool = not run.ev.is_empty() and float(run.ev.radius) > 0.0
+	_zone.visible = zoned
+	if zoned:
+		var c: Vector3 = run.ev.center
+		var r: float = run.ev.radius
+		_zone.position = Vector3(c.x, terrain.floor_at(Vector3(c.x, terrain.sy, c.z)) + 0.15, c.z)
+		_zone.scale = Vector3(r, 3.0, r)
+		var pulse := 0.6 + 0.4 * sin(_t * (6.0 if run.ev.phase == "warn" else 3.0))
+		(_zone.material_override as StandardMaterial3D).emission_energy_multiplier = 1.5 * pulse
+	var at = run.ev.get("last_strike")
+	if at != null and at != _strike_seen:
+		_strike_seen = at
+		_meteor(at)
+	if env != null:
+		if _fog_base < 0.0:
+			_fog_base = env.fog_density
+		var thick: bool = run.active_event() in ["storm", "acid", "spore_bloom", "flare"]
+		env.fog_density = lerpf(env.fog_density, _fog_base * (2.5 if thick else 1.0), minf(1.0, dt))
+
+## Метеорит: светящийся камень падает в точку и вспыхивает.
+func _meteor(at: Vector3) -> void:
+	var ground := Vector3(at.x, terrain.floor_at(Vector3(at.x, terrain.sy, at.z)), at.z)
+	var rock := MeshInstance3D.new()
+	var sm := SphereMesh.new()
+	sm.radius = 0.35
+	sm.height = 0.7
+	rock.mesh = sm
+	rock.material_override = ProtoMachines.glow(Color(1.0, 0.5, 0.15), 4.0)
+	add_child(rock)
+	rock.position = ground + Vector3(6.0, 22.0, 3.0)
+	var light := OmniLight3D.new()
+	light.light_color = Color(1.0, 0.55, 0.2)
+	light.omni_range = 7.0
+	light.light_energy = 0.0
+	add_child(light)
+	light.position = ground + Vector3(0, 1.0, 0)
+	var tw := create_tween()
+	tw.tween_property(rock, "position", ground, 0.55).set_ease(Tween.EASE_IN)
+	tw.tween_callback(func(): light.light_energy = 6.0)
+	tw.tween_property(light, "light_energy", 0.0, 0.7)
+	tw.tween_callback(func():
+		rock.queue_free()
+		light.queue_free())

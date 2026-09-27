@@ -30,6 +30,7 @@ var aim_target := Vector3.ZERO   # в пространстве робота
 var work_target := Vector3.INF   # точка работы бура (пространство робота); INF — просто вперёд
 var fill_drop := 0.0         # просадка давления после выстрела (затухает)
 var ap_kick := 0.0           # «щелчок» диафрагмой (затухает)
+var ground: RobotGround      # стопы по рельефу (RobotGround.attach), если есть
 var bit: Node3D              # сверло бура, если есть
 var drill: Node3D            # бур в предплечье (выдвигается), если есть
 var drill_rest := Transform3D()
@@ -146,6 +147,8 @@ func _apply() -> void:
 		pa.pole_l = Vector3(-0.3, -1, -0.2)
 		pa.head_rot = Vector3(-0.05, clampf(atan2(d.x, d.z), -0.8, 0.8) * 0.6, 0.0)
 		p = _blend(p, pa, aim_w)
+	if ground:
+		ground.fit(p)
 	p.fill -= fill_drop
 	p.ap -= 0.3 * sin(ap_kick * PI)
 	_apply_pose(p)

@@ -11,12 +11,13 @@ extends Node
 ##   Геймпад: левый стик — ходьба, правый — камера, L3 — быстрее, RT — бур,
 ##   LT — кисть, D-pad вверх/вниз — дистанция (раскладка — ProtoControls).
 ## Скорость хода и высота уступа зависят от гравитации планеты.
-## Высота под ногами — по полю плотности (снаружи и в пещере), в породу и на
-## слишком крутые уступы не заходит. Камера на пружинной штанге. Под сводом сама
+## Высота под ногами — по видимой сетке рельефа (RobotGround: стопы по склону,
+## корпус с лёгким наклоном), в породу и на слишком крутые уступы не заходит. Камера на пружинной штанге. Под сводом сама
 ## включает фару и сгущает тёмный туман.
 
 var robot: Node3D
 var anim: RobotAnim
+var ground: RobotGround      # стопы и наклон по сетке рельефа
 var cam: Camera3D
 var terrain: ProtoTerrain
 var env: Environment
@@ -61,6 +62,7 @@ func setup(r: Node3D, c: Camera3D, t: ProtoTerrain, e: Environment) -> void:
 	anim = robot.get_node_or_null("anim")
 	if anim:
 		anim.mode = "play"
+	ground = RobotGround.attach(robot)
 	cam_yaw = robot.rotation.y
 	fist = robot.get_node_or_null("fist")
 	ProtoControls.ensure()
@@ -131,7 +133,11 @@ func _process(dt: float) -> void:
 	var want := Vector3.ZERO
 	# Тяжёлая планета — шаг медленнее, лёгкая — быстрее (ProtoWorldStyle).
 	var top_speed := RobotAnim.WALK_SPEED * terrain.style.walk_mult()
-	if route.is_empty():
+	# Открыта карточка материала (ProtoLabPanel): стик и D-pad заняты ею.
+	var busy: bool = robot.get_meta("ui_busy", false)
+	if route.is_empty() and busy:
+		pass
+	elif route.is_empty():
 		var inp := ProtoControls.move_vector()
 		var look := ProtoControls.look_vector()
 		cam_yaw -= look.x * dt * 2.4
@@ -356,9 +362,14 @@ func _move(d: Vector3) -> void:
 	robot.position.z = np.z
 	_settle()
 
+## Высота и наклон — по видимой сетке рельефа (RobotGround); поле плотности —
+## запасной вариант, если сетки под роботом нет.
 func _settle() -> void:
 	var g := terrain.floor_at(robot.position + Vector3(0, 0.6, 0))
-	robot.position.y = lerpf(robot.position.y, g, 0.5)
+	if ground:
+		ground.place(g)
+	else:
+		robot.position.y = lerpf(robot.position.y, g, 0.5)
 
 func _follow_route() -> Vector3:
 	if route_i >= route.size():

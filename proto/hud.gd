@@ -36,6 +36,9 @@ const HINTS_WALK := [
 	["Бур", &"tool_work"],
 	["Кисть", &"fist_fire"],
 	["Стройка", &"build_mode"],
+	["Меню", &"run_menu"],
+	["Изучить", &"lab_touch"],
+	["Анализатор", &"lab_analyze"],
 ]
 const HINTS_BUILD := [
 	["Деталь", &"build_prev", &"build_next"],
@@ -51,6 +54,7 @@ var robot: Node3D
 var factory: Object              # ProtoPneumatics или null
 var builder: Object              # ProtoBuilder или null
 var pad := false                 # подсказки для геймпада
+var knowledge: Object = null     # ProtoLabDesk: в грузе видно, что известно о веществе
 var extra_hints: Array = []      # [[подпись, клавиша, кнопка]] — вне InputMap (сборка для проверки)
 
 var _root: Control
@@ -146,11 +150,18 @@ func refresh() -> void:
 	var building: bool = builder != null and bool(builder.get("active"))
 	var part := _part_info() if building else {}
 	var note: String = builder.note if builder != null and float(builder.get("_note_t")) > 0.0 else ""
-	var key := str([cg, fs, part, note, pad, building])
+	var kn := ""
+	if knowledge != null:
+		for r in cg.rows:
+			kn += knowledge.short_label(r.sub)
+	var busy: bool = robot != null and bool(robot.get_meta("ui_busy", false))
+	var key := str([cg, fs, part, note, pad, building, kn, busy])
 	if key == _key:
 		return
 	_key = key
 	_fill_cargo(cg)
+	# Открыта карточка материала (ProtoLabPanel) — груз виден в ней, панель прячем.
+	_cargo_box.get_parent().visible = not (robot != null and bool(robot.get_meta("ui_busy", false)))
 	_fill_factory(fs)
 	_fill_build(part)
 	_fill_hints(building, cg.kg > 0.0)
@@ -174,7 +185,7 @@ static func cargo_summary(cargo: Array) -> Dictionary:
 		total += p.mass
 		var n: String = p.substance.name
 		if not by.has(n):
-			by[n] = {"name": n, "kg": 0.0, "color": p.substance.color}
+			by[n] = {"name": n, "kg": 0.0, "color": p.substance.color, "sub": p.substance}
 		by[n].kg += p.mass
 	var rows: Array = by.values()
 	rows.sort_custom(func(a, b): return a.kg > b.kg)
@@ -338,7 +349,7 @@ func _fill_cargo(cg: Dictionary) -> void:
 		sw.custom_minimum_size = Vector2(14, 14)
 		sw.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 		line.add_child(sw)
-		var nm := _label(r.name, FONT_SMALL, TEXT)
+		var nm := _label(knowledge.short_label(r.sub) if knowledge != null else r.name, FONT_SMALL, TEXT)
 		nm.custom_minimum_size.x = 150
 		line.add_child(nm)
 		line.add_child(_label("%.1f кг" % r.kg, FONT_SMALL, DIM))
