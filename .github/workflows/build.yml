@@ -77,6 +77,14 @@ jobs:
           grep -q "Рельеф" steamdeck.log
           test -s steamdeck.png
 
+      - name: Smoke-test Steam Deck main menu
+        run: |
+          set -euo pipefail
+          timeout 120 xvfb-run -a -s "-screen 0 1280x800x24" build/steamdeck/Pneuma.x86_64 \
+            --rendering-driver opengl3 -- --menu --page=picker --screenshot="$PWD/steamdeck_menu.png" | tee menu.log
+          grep -q "Меню: скриншот" menu.log
+          test -s steamdeck_menu.png
+
       - name: Package
         run: |
           set -euo pipefail
@@ -111,7 +119,9 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: steamdeck-screenshot
-          path: steamdeck.png
+          path: |
+            steamdeck.png
+            steamdeck_menu.png
 
       - uses: actions/upload-artifact@v4
         with:

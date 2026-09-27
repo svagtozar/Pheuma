@@ -20,8 +20,10 @@ extends Node3D
 ##   завода — лаборатория. --lab — открыть карточку сразу (для кадра)
 ##   --robot=clean (по умолчанию; другой вариант из RobotDesigns или old — прежний
 ##   каркас; корпус — металл планеты)
-## Сборка для проверки (фича play3d в export_presets.cfg) стартует прямо сюда,
-## сразу с управлением: Select/View или Tab — другая планета, Start или Esc — выход.
+## Сборка для проверки (фича play3d в export_presets.cfg) стартует с главного
+## меню (ProtoMainMenu, proto/menu.tscn): продолжить, новая планета, настройки;
+## оттуда — сюда, сразу с управлением: Select/View или Tab — другая планета,
+## Start или Esc — выход. С --screenshot меню пропускается.
 ## Планета — настоящий генератор: теги задают небо, свет и дымку, жидкие при её
 ## температуре материалы — реки и озёра, твёрдые — корпуса машин. Форма рельефа,
 ## тип пещеры, облик кристаллов и гравитация — по тегам (ProtoWorldStyle).
@@ -59,9 +61,13 @@ var lab_demo := false        # --lab: карточка материала отк
 ## Сид следующей планеты в сборке для проверки (переживает перезагрузку сцены).
 static var build_seed := 14
 static var _booted := false
+## Главное меню: «Начать заново» — не загружать сохранение этой планеты.
+static var start_fresh := false
+## Запуск из главного меню (ProtoMainMenu.launch): играть на build_seed, как в сборке.
+static var from_menu := false
 
 func _ready() -> void:
-	if OS.has_feature("play3d"):
+	if OS.has_feature("play3d") or from_menu:
 		play = true
 		if not _booted:
 			# Первый запуск сборки — с планеты, где играли в прошлый раз.
@@ -70,6 +76,9 @@ func _ready() -> void:
 			if last >= 0:
 				build_seed = last
 		seed_value = build_seed
+	if start_fresh:
+		fresh = true
+		start_fresh = false
 	for a in OS.get_cmdline_user_args():
 		if a.begins_with("--seed="): seed_value = int(a.substr(7))
 		elif a.begins_with("--view="): view = a.substr(7)
@@ -148,6 +157,8 @@ func _ready() -> void:
 		saves.name = "saves"
 		add_child(saves)
 		saves.setup(self, fresh)
+	# Настройки графики и звука (ProtoSettings): тени солнца, громкость шины мира.
+	ProtoSettings.apply()
 
 ## Сохранение (ProtoSave) зовёт после постройки сцены: убрать выбуренные друзы.
 func restore_mined(ids: Array) -> void:
