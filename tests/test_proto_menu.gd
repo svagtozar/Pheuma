@@ -120,3 +120,37 @@ func test_binding_rows_have_keys_and_pad():
 	assert_gt(rows.size(), 3)
 	for r in rows:
 		assert_true(r[1] != "" or r[2] != "", r[0])
+
+func test_pause_menu_has_settings_save_and_main_menu():
+	var planet := PlanetGen.generate(14)
+	var steel := TestHelpers.sub(planet, ["metallic", "dense"], "Сталь")
+	var crystal := TestHelpers.sub(planet, ["crystalline", "luminous"], "Кварц")
+	var net := ProtoPneumatics.new(planet)
+	net.build_demo(Vector2i.ZERO, steel)
+	var run := ProtoRun.new(planet, [steel])
+	run.attach(net, autofree(ProtoMining.new()), autofree(Node3D.new()), crystal, Vector3.ZERO)
+	run.briefing_seen = true
+	var ui := ProtoRunUi.new()
+	ui.setup(run, null, null)
+	ui.pause_game = false
+	var saved := [0]
+	ui.on_save = func() -> String:
+		saved[0] += 1
+		return ""
+	ui.on_main_menu = func(): pass
+	add_child_autofree(ui)
+	await wait_process_frames(1)
+	ui.open("menu")
+	var texts: Array = ui._body.find_children("*", "Button", true, false).map(func(b): return b.text)
+	for t in ["Продолжить", "Настройки", "Сохранить", "В меню"]:
+		assert_has(texts, t)
+	var save_btn: Button = ui._body.find_children("*", "Button", true, false).filter(func(b): return b.text == "Сохранить")[0]
+	save_btn.pressed.emit()
+	assert_eq(saved[0], 1)
+	assert_eq(save_btn.text, "Сохранено")
+	ui.open("settings")
+	var panel := ui._body.get_child(0) as ProtoSettingsPanel
+	assert_not_null(panel)
+	panel.closed.emit()
+	assert_eq(ui.modal, "menu", "«Назад» из настроек — снова пауза")
+	ui.close()

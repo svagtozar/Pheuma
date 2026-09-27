@@ -150,7 +150,8 @@ static func binding_rows() -> Array:
 		var p := ProtoHud.glyph(acts, true)
 		if k != "" or p != "":
 			rows.append([h[0], k, p])
-	rows.append(["Пауза", "Esc", "Menu"])
+	if not rows.any(func(r): return r[1] == "Esc"):
+		rows.append(["Пауза", "Esc", "Menu"])
 	return rows
 
 func _graphics_page() -> Control:

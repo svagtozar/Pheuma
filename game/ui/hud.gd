@@ -131,6 +131,7 @@ func _window(name: String, size: Vector2, title: String) -> VBoxContainer:
 	var close := Button.new()
 	close.text = "✕"
 	close.pressed.connect(func(): p.visible = false)
+	close.focus_mode = Control.FOCUS_NONE        # с геймпада закрывает B; фокус — на содержимом
 	head.add_child(close)
 	close.visible = not name in ["choice", "reward"]
 	windows[name] = p
