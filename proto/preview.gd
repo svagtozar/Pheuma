@@ -224,6 +224,7 @@ func _cave_crystals() -> void:
 	rock.albedo_color = terrain.cliff.lerp(terrain.ground, 0.3).darkened(0.1)
 	rock.roughness = 0.95
 	var glow := ProtoMachines.glow(col, 0.75)
+	var cmat := ProtoCrystal.material(col)
 	var cc: Vector3 = terrain.cave_c
 	# Натёки: сталактиты со свода, сталагмиты с пола.
 	var made := 0
@@ -281,22 +282,23 @@ func _cave_crystals() -> void:
 			continue
 		var nrm := _normal_at(p)
 		var base := p - dir * 0.05
-		var cnt := rng.randi_range(3, 6)
+		# Друза: главный кристалл и поросль вокруг, все растут веером от стены,
+		# основания утоплены в породу, у подножия — мелкие «щётки».
+		var cnt := rng.randi_range(5, 9)
+		var main_len := rng.randf_range(0.7, 1.3)
 		for m in cnt:
-			var tilt := (nrm + Vector3(rng.randf_range(-0.5, 0.5), rng.randf_range(-0.5, 0.5), rng.randf_range(-0.5, 0.5))).normalized()
-			var len := rng.randf_range(0.4, 1.1) * (1.5 if m == 0 else 1.0)
-			var pr := CylinderMesh.new()
-			pr.top_radius = 0.0
-			pr.bottom_radius = rng.randf_range(0.07, 0.17)
-			pr.height = len
-			pr.radial_segments = 6
+			var spread := 0.15 if m == 0 else rng.randf_range(0.25, 0.7)
+			var tilt := (nrm + Vector3(rng.randf_range(-1, 1), rng.randf_range(-1, 1), rng.randf_range(-1, 1)) * spread).normalized()
+			var len := main_len if m == 0 else main_len * rng.randf_range(0.25, 0.7)
+			var r := len * rng.randf_range(0.11, 0.16)
 			var ci := MeshInstance3D.new()
-			ci.mesh = pr
-			ci.material_override = glow
+			ci.mesh = ProtoCrystal.mesh(len, r, rng)
+			ci.material_override = cmat
 			var y := tilt
 			var ref := Vector3.UP if absf(y.dot(Vector3.UP)) < 0.9 else Vector3.RIGHT
 			var x := y.cross(ref).normalized()
-			ci.transform = Transform3D(Basis(x, y, x.cross(y)), base + tilt * len * 0.45 + Vector3(rng.randf_range(-0.12, 0.12), rng.randf_range(-0.12, 0.12), rng.randf_range(-0.12, 0.12)))
+			var off := Vector3.ZERO if m == 0 else (x * cos(m * 2.4) + x.cross(y) * sin(m * 2.4)) * rng.randf_range(0.08, 0.28)
+			ci.transform = Transform3D(Basis(x, y, x.cross(y)).rotated(y, rng.randf() * TAU), base + off - tilt * len * 0.12)
 			add_child(ci)
 		if lights < 4:
 			var l := OmniLight3D.new()
