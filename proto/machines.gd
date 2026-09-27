@@ -141,7 +141,7 @@ static func pump(body: Material) -> Node3D:
 	var n := Node3D.new()
 	_mi(n, _box(Vector3(1.2, 0.4, 0.9)), body, Vector3(0, 0.2, 0))
 	_mi(n, _cyl(0.28, 1.0), body, Vector3(-0.25, 0.9, 0))
-	_mi(n, _cyl(0.08, 0.6), glow(Color(0.8, 0.9, 1.0), 0.3), Vector3(-0.25, 1.6, 0))
+	_mi(n, _cyl(0.08, 0.6), glow(Color(0.8, 0.9, 1.0), 0.3), Vector3(-0.25, 1.6, 0)).name = "piston"
 	var t := TorusMesh.new()
 	t.inner_radius = 0.28
 	t.outer_radius = 0.38
@@ -157,6 +157,9 @@ static func cannon(body: Material) -> Node3D:
 	return n
 
 ## Труба между двумя точками, с бусинами газа.
+## Один материал на все бусины: так их склеивает ProtoBatch.
+static var _bead_mat := glow(Color(0.7, 0.8, 1.0), 1.5)
+
 static func pipe(parent: Node3D, a: Vector3, b: Vector3, body: Material, beads: int = 3) -> void:
 	var mid := (a + b) / 2.0
 	var len := a.distance_to(b)
@@ -177,7 +180,7 @@ static func pipe(parent: Node3D, a: Vector3, b: Vector3, body: Material, beads: 
 	for i in beads:
 		var bead := MeshInstance3D.new()
 		bead.mesh = s
-		bead.material_override = glow(Color(0.7, 0.8, 1.0), 1.5)
+		bead.material_override = _bead_mat
 		parent.add_child(bead)
 		bead.global_position = a.lerp(b, (i + 0.5) / beads) + Vector3(0, 0.14, 0)
 
