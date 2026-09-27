@@ -41,14 +41,15 @@ func _complete_stage() -> void:
 		"deliveries": net.delivered += int(st.n)
 		"p_parts": net.placed += int(st.n)
 		"p_process": net.processed += int(st.n)
-		"p_pressure": run.goals.hold = float(st.hold)
+		"p_launch": net.launched_kg += float(st.kg) + 1.0
+		"p_pressure", "p_beacon", "p_dome": run.goals.hold = float(st.hold)
 	_tick(1.2)
-	if st.type == "p_pressure" and run.goals.stage == stage:
+	if st.type in ["p_pressure", "p_beacon", "p_dome"] and run.goals.stage == stage:
 		run.goals.progress = 1.0
 		run.goals.advance()
 
 func test_every_goal_template_adapts_to_3d_stages():
-	var known := ["p_mine", "p_store", "deliveries", "p_parts", "p_process", "p_pressure"]
+	var known := ProtoRun.STAGE_TYPES
 	for id in Goals.TEMPLATES:
 		var g := ProtoRun.adapt_goal(Goals.TEMPLATES[id])
 		assert_eq(g.stages.size(), 3, id)

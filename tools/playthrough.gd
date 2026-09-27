@@ -451,9 +451,10 @@ func _complete_stage(i: int) -> void:
 		"deliveries": game.pneu.delivered += int(st.n)
 		"p_parts": game.pneu.placed += int(st.n)
 		"p_process": game.pneu.processed += int(st.n)
-		"p_pressure": g.hold = float(st.hold)
+		"p_launch": game.pneu.launched_kg += float(st.kg) + 1.0
+		"p_pressure", "p_beacon", "p_dome": g.hold = float(st.hold)
 	await secs(0.6)
-	if st.type == "p_pressure" and g.stage == stage:
+	if st.type in ["p_pressure", "p_beacon", "p_dome"] and g.stage == stage:
 		g.progress = 1.0
 		g.advance()
 	end = Time.get_ticks_msec() + 4000

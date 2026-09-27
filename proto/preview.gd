@@ -12,6 +12,7 @@ extends Node3D
 ##   кадры путь_1..4.png; в --play бур по действию tool_work (F / правый курок);
 ##   --form=vein — бурить залежь этой формы (ProtoDeposit: vein, nodules, strata…)
 ##   --view=factory — пневмозавод крупно; --build — режим стройки (призрак детали)
+##   --view=goals — ряд сооружений целей планеты: маяк, купол с печью, пусковая шахта
 ##   В --play: B — стройка, T — деталь, R — повернуть, Пробел — поставить,
 ##   X — разобрать, C — выгрузить груз в приёмник (подробно — ProtoBuilder)
 ##   --auto=bump --screenshot=путь.png — упереться в дробилку и перешагнуть трубу
@@ -785,8 +786,9 @@ func _factory() -> void:
 	var ore: Substance = cryst if cryst != null else (_solid_mats()[0] if not _solid_mats().is_empty() else a)
 	var pc := terrain.plateau()
 	var top := pc.y + 0.1
-	var slab := ProtoMachines.slab(Vector3(17, 0.6, 15), terrain.ground.lerp(Color(0.5, 0.5, 0.52), 0.6))
-	slab.position = Vector3(pc.x, top - 0.28, pc.z + 2.5)
+	var goals_row := view == "goals"
+	var slab := ProtoMachines.slab(Vector3(17, 0.6, 21 if goals_row else 15), terrain.ground.lerp(Color(0.5, 0.5, 0.52), 0.6))
+	slab.position = Vector3(pc.x, top - 0.28, pc.z + (5.5 if goals_row else 2.5))
 	add_child(slab)
 	ProtoMachines.add_box_collider(slab, ProtoMachines.LAYER_GROUND)
 	pneu = ProtoPneumatics.new(planet)
@@ -798,6 +800,8 @@ func _factory() -> void:
 	var cannon := pneu.build_logistics(Vector2i(-4, 3), a)
 	for i in 3:
 		cannon.items.append(Portion.new(ore, 2.0, planet.ambient_temp))
+	if goals_row:
+		pneu.build_goals(Vector2i(-4, 7), a, ore)
 	pneu_view = ProtoPneumaticsView.new()
 	pneu_view.name = "pneumatics"
 	add_child(pneu_view)
@@ -838,6 +842,12 @@ func _robot_and_camera() -> void:
 			robot.rotation.y = PI
 			cam.position = Vector3(pc.x + 4.5, top + 6.5, pc.z + 10.5)
 			cam.look_at(Vector3(pc.x - 0.5, top + 0.6, pc.z - 1.0))
+		"goals":
+			# Ряд сооружений целей (клетки y = 7) с южной стороны площадки.
+			robot.position = Vector3(pc.x + 3.5, top, pc.z + 15.5)
+			robot.rotation.y = PI * 0.8
+			cam.position = Vector3(pc.x + 1.0, top + 6.0, pc.z + 22.5)
+			cam.look_at(Vector3(pc.x + 1.0, top + 1.0, pc.z + 12.0))
 		"plan":
 			robot.position = Vector3(pc.x - 1.0, top, pc.z + 5.0)
 			robot.rotation.y = PI

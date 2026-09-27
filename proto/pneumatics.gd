@@ -41,11 +41,16 @@ const KINDS := {
 	"loom": {"n": "Ткацкий станок", "vol": 1.0, "stat": "loom", "process": "loom"},
 	"tank": {"n": "Бак", "vol": 2.0, "stat": "tank", "cap": 40.0},
 	"lab": {"n": "Лаборатория", "vol": 0.8, "stat": "lab"},
+	# Сооружения целей планеты (как в 2D): финал колонии, маяка, орбитальной верфи.
+	"launch_silo": {"n": "Пусковая шахта", "vol": 3.0, "stat": "launch_silo", "cap": 20.0},
+	"beacon": {"n": "Маяк", "vol": 0.6, "stat": "beacon", "any": ["conductive", "crystalline"]},
+	"dome": {"n": "Купол", "vol": 4.0, "stat": "dome"},
 }
-## Порядок в меню стройки: пневматика, все 16 машин обработки 2D-игры, бак, лаборатория.
+## Порядок в меню стройки: пневматика, все 16 машин обработки 2D-игры, бак, лаборатория,
+## сооружения целей (шахта, маяк, купол).
 const ORDER := ["pipe", "pump", "intake", "cannon", "crusher", "furnace", "filter", "condenser", "treater",
 	"compressor", "decompressor", "distiller", "centrifuge", "magnet_sep", "electrolyzer", "sinter",
-	"irradiator", "cryochamber", "resonator", "loom", "tank", "lab"]
+	"irradiator", "cryochamber", "resonator", "loom", "tank", "lab", "launch_silo", "beacon", "dome"]
 
 const PUMP_RATE := 1.6          # газа в секунду при 1 атм снаружи
 const PUMP_SAFE := 0.9          # насос не качает выше этой доли своего предела
@@ -61,6 +66,15 @@ const CANNON_RANGE := 12         # клеток: пушка бьёт в ближ
 const CANNON_GAS := 0.6          # газа на выстрел
 const CANNON_CD := 1.2
 const LAB_DUR := 4.0            # с на порцию в лаборатории
+const LAUNCH_KG := 3.0          # шахта стартует, когда накопит столько груза
+const LAUNCH_GAS := 2.5         # газа на старт
+const LAUNCH_CD := 5.0
+const BEACON_P := 2.0           # маяк горит от этого давления
+const BEACON_GAS := 0.08        # газа в секунду, пока горит
+const DOME_HEAT := 30.0         # °C, на которые печь рядом греет купол (конденсатор — остужает); = ширине «жилых» 5–35 °C
+const AROUND := [Vector2i(1, 0), Vector2i(1, -1), Vector2i(1, 1), Vector2i(0, -1), Vector2i(0, 1),
+	Vector2i(-1, -1), Vector2i(-1, 1), Vector2i(-1, 0)]   # соседи купола, вместе с диагональными
+const DOME_COMFORT := 20.0      # к чему тянет изолирующий купол
 
 var planet: Planet
 var gas := GasNet.new()
@@ -77,6 +91,10 @@ var burst_log: Array = []       # лопнувшие детали: [kind, cell, 
 var pump_mult := 1.0            # скорость насосов
 var speed_mult := 1.0           # скорость машин обработки
 var knowledge: World = null     # чьи знания пополняет лаборатория (ProtoLabDesk.world)
+var launch_p := 3.0             # давление старта шахты (ProtoRun ставит по прочности материалов;
+                                # слабой шахте хватает 70% её предела — silo_p)
+var launched_kg := 0.0          # сколько улетело на орбиту за всё время
+var launched_subs := {}         # id вещества → кг, улетевших на орбиту
 var _next_id := 1
 
 func _init(p: Planet) -> void:
@@ -98,6 +116,8 @@ func place(kind: String, c: Vector2i, dir: int, sub: Substance) -> Dictionary:
 	var part := {"id": _next_id, "kind": kind, "cell": c, "dir": posmod(dir, 4), "sub": sub,
 		"stats": stats, "items": [], "busy": null, "progress": 0.0, "status": "",
 		"cap": null, "cd": 0.0, "hot": false, "work": false, "out_q": []}
+	if kind == "dome":
+		part.temp = planet.ambient_temp
 	_next_id += 1
 	placed += 1
 	parts[c] = part
@@ -173,6 +193,9 @@ func step(dt: float) -> void:
 			"intake": _intake(part, dt)
 			"cannon": _cannon(part, dt)
 			"lab": _lab(part, dt)
+			"launch_silo": _silo(part, dt)
+			"beacon": _beacon(part, dt)
+			"dome": _dome(part, dt)
 			"tank": part.status = "%.1f / %.0f кг" % [mass_in(part.cell), KINDS.tank.cap] + ("\n" + part.items[-1].substance.name if not part.items.is_empty() else "")
 			_:
 				if KINDS[part.kind].has("process"):
@@ -308,6 +331,84 @@ func _lab(part: Dictionary, dt: float) -> void:
 	part.busy = null
 	part.progress = 0.0
 
+## Пусковая шахта: принимает груз с любой стороны; накопив LAUNCH_KG и давление
+## launch_p, отправляет всё на орбиту (как 2D launch_silo → World.launch_orbit).
+func _silo(part: Dictionary, dt: float) -> void:
+	part.cd = maxf(0.0, part.cd - dt)
+	part.work = part.cd > LAUNCH_CD - 1.2
+	var m := mass_in(part.cell)
+	var p := gas.pressure(part.id)
+	if m < LAUNCH_KG:
+		part.status = "груз %.1f / %.0f кг до старта" % [m, LAUNCH_KG]
+		return
+	if p < silo_p(part):
+		part.status = "копит давление: %.1f / %.1f атм" % [p, silo_p(part)]
+		return
+	if part.cd > 0.0:
+		part.status = "готовит старт"
+		return
+	gas.take_gas(part.id, LAUNCH_GAS)
+	var top: Substance = part.items[0].substance
+	for it in part.items:
+		launched_subs[it.substance.id] = launched_subs.get(it.substance.id, 0.0) + it.mass
+	launched_kg += m
+	part.items.clear()
+	part.cd = LAUNCH_CD
+	part.work = true
+	part.status = "старт! %.1f кг на орбите" % m
+	events.append({"kind": "launch", "cell": part.cell, "mass": m, "sub": top})
+
+## Маяк горит под давлением BEACON_P и тратит газ; как в 2D — только из
+## проводящего или кристаллического материала.
+func _beacon(part: Dictionary, _dt: float) -> void:
+	part.hot = false
+	part.work = false
+	if not beacon_ok(part.sub):
+		part.status = "не светит: нужен проводящий или кристаллический материал"
+		return
+	var p := gas.pressure(part.id)
+	if p < BEACON_P:
+		part.status = "мало давления: %.1f / %.1f атм" % [p, BEACON_P]
+		return
+	gas.take_gas(part.id, BEACON_GAS * _dt)
+	part.work = true
+	part.status = "светит · %.1f атм" % p
+
+## Давление старта шахты: launch_p, но не выше 70% предела её материала.
+func silo_p(part: Dictionary) -> float:
+	return minf(launch_p, part.stats.max_p * 0.7)
+
+static func beacon_ok(sub: Substance) -> bool:
+	for t in KINDS.beacon.any:
+		if sub.has(t):
+			return true
+	return false
+
+## Купол: воздух — давление сети, температура тянется к среде (изолирующий
+## материал — ближе к комнатной); каждая печь рядом (и по диагонали) греет,
+## конденсатор остужает.
+func _dome(part: Dictionary, dt: float) -> void:
+	part.temp = float(part.get("temp", planet.ambient_temp))
+	part.temp += (dome_target(part.cell) - part.temp) * minf(1.0, 0.04 * dt)
+	part.status = "%.0f °C · %.1f атм" % [part.temp, gas.pressure(part.id)]
+
+## К какой температуре тянется купол в клетке c.
+func dome_target(c: Vector2i) -> float:
+	var part: Dictionary = parts.get(c, {})
+	var amb := gas.ambient
+	var t := amb
+	if not part.is_empty() and part.sub.has("insulating"):
+		t = lerpf(amb, DOME_COMFORT, 0.6)
+	for d in AROUND:
+		var n: Dictionary = parts.get(c + d, {})
+		if n.is_empty():
+			continue
+		if n.kind == "furnace":
+			t += DOME_HEAT
+		elif n.kind == "condenser":
+			t -= DOME_HEAT
+	return t
+
 ## Капсула в клетке едет от входной стороны к выходной; на t=1 — в следующую деталь.
 func _move_capsules(dt: float) -> void:
 	for part in parts.values().duplicate():
@@ -343,6 +444,13 @@ func _accept(part: Dictionary, p: Portion, from: Vector2i) -> bool:
 				return false
 			part.cap = {"p": p, "cell": part.cell, "from": from, "t": 0.0}
 			return true
+		"launch_silo":
+			if mass_in(part.cell) + p.mass > KINDS.launch_silo.cap + 0.001:
+				return false
+			part.items.append(p)
+			return true
+		"beacon", "dome":
+			return false
 		"tank":
 			if mass_in(part.cell) + p.mass > KINDS.tank.cap + 0.001:
 				part.status = "полон"
@@ -459,3 +567,38 @@ func build_logistics(start: Vector2i, body: Substance) -> Dictionary:
 		place(line[i], start + Vector2i(4 + i, 0), 0, body)
 	place("pump", start + Vector2i(4, 1), 3, body)
 	return cannon
+
+## Ряд сооружений целей планеты (для кадров): маяк с насосом; купол с насосом
+## и печами рядом (на жаркой планете — конденсаторами); приёмник → пусковая
+## шахта с насосом. start — клетка первого насоса, линия идёт по +X; между
+## группами — пустые клетки (разные сети). Ряды start.y ± 1 тоже заняты.
+func build_goals(start: Vector2i, body: Substance, ore: Substance) -> void:
+	# Маяк — из самого прочного подходящего материала (слабый лопнет от насоса),
+	# купол — из изолирующего, если такой есть.
+	var beacon_sub := body
+	var dome_sub := body
+	var best := -1.0
+	for s in ProtoSky.solid_mats(planet):
+		var mp: float = ComponentStats.compute("beacon", s).max_p
+		if beacon_ok(s) and mp > best:
+			best = mp
+			beacon_sub = s
+		if s.has("insulating") and dome_sub == body:
+			dome_sub = s
+	place("pump", start, 0, beacon_sub)
+	place("beacon", start + Vector2i(1, 0), 0, beacon_sub)
+	place("pump", start + Vector2i(3, 0), 0, body)
+	var dc := start + Vector2i(4, 0)
+	var dome := place("dome", dc, 0, dome_sub)
+	var amb := planet.ambient_temp
+	var t0 := lerpf(amb, DOME_COMFORT, 0.6) if dome_sub.has("insulating") else amb
+	if t0 < 5.0 or t0 > 35.0:
+		var k := "furnace" if t0 < 5.0 else "condenser"
+		var need := clampi(roundi(absf(20.0 - t0) / DOME_HEAT), 1, 7)
+		for i in need:
+			place(k, dc + AROUND[i], 0, body)
+	dome.temp = dome_target(dc)
+	var intake := place("intake", start + Vector2i(7, 0), 0, body)
+	place("launch_silo", start + Vector2i(8, 0), 0, body)
+	place("pump", start + Vector2i(9, 0), 2, body)
+	feed(intake.cell, Portion.new(ore, 12.0, planet.ambient_temp))
