@@ -794,10 +794,10 @@ func _factory() -> void:
 	# Вторая труба линии — лаборатория: груз из приёмника проходит пробы.
 	pneu.remove(Vector2i(-1, 0))
 	pneu.place("lab", Vector2i(-1, 0), 0, a)
-	pneu.feed(Vector2i(-3, 0), Portion.new(ore, 30.0, planet.ambient_temp))
+	# Приёмник пуст: сырьё для завода добывает робот (с 30 кг на старте первый
+	# этап цели выполнялся сам за 20 с). Пушке — одна капсула: видно, как она бьёт.
 	var cannon := pneu.build_logistics(Vector2i(-4, 3), a)
-	for i in 3:
-		cannon.items.append(Portion.new(ore, 2.0, planet.ambient_temp))
+	cannon.items.append(Portion.new(ore, 2.0, planet.ambient_temp))
 	pneu_view = ProtoPneumaticsView.new()
 	pneu_view.name = "pneumatics"
 	add_child(pneu_view)

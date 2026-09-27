@@ -146,11 +146,16 @@ static func cargo_of(r: Node3D) -> Array:
 		r.set_meta("cargo", [])
 	return r.get_meta("cargo")
 
+const SOFT_KG := 5.0          # до этой массы кусок весит по объёму, дальше — всё медленнее
+
 static func mass_of(c: MeshInstance3D, s: Substance) -> float:
 	var l: float = c.get_meta("len")
 	var r: float = c.get_meta("r")
 	# Шестигранная призма ≈ 2,6·r²·l; плотность в т/м³, масштаб прототипа — десятая.
-	return 2.6 * r * r * l * s.density * 100.0
+	var m := 2.6 * r * r * l * s.density * 100.0
+	# Крупный кристалл тяжелее мелкого, но не в десятки раз: иначе один главный
+	# кристалл друзы (по объёму до 200 кг) закрывает весь этап добычи (15–35 кг).
+	return m if m <= SOFT_KG else SOFT_KG + 4.0 * log(1.0 + (m - SOFT_KG) / SOFT_KG)
 
 ## Кристалл под прицелом: в досягаемости от правого плеча и перед роботом.
 func pick(r: Node3D) -> MeshInstance3D:

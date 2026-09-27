@@ -139,6 +139,18 @@ func test_meteors_knock_cargo_unless_robot_leaves():
 	assert_gt(run.robot.xp.hunter, hunter)
 	assert_eq(run.ev_count, 1)
 
+## Разбитая событием деталь: подсказка просит поставить её на место, пока пусто.
+func test_advise_asks_to_rebuild_broken_part():
+	assert_eq(run.goals.current().type, "p_store", "первый этап сида 14 — завод")
+	net.feed(Vector2i.ZERO, Portion.new(crystal, 4.0))
+	net._burst(Vector2i(1, 0))
+	assert_eq(run.broken_parts().size(), 1)
+	var tip := run.advise(func(_a): return "X")
+	assert_true(tip.contains("Разбита") and tip.contains("Труба"), tip)
+	net.place("pipe", Vector2i(1, 0), 0, steel)
+	assert_true(run.broken_parts().is_empty(), "деталь на месте")
+	assert_false(run.advise(func(_a): return "X").contains("Разбита"))
+
 func test_storm_slows_pumps_and_events_come_by_themselves():
 	run.start_event("storm", Vector3.ZERO)
 	run.ev.t = 0.0

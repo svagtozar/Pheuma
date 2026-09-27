@@ -107,6 +107,26 @@ func test_liquid_zone_lookup():
 	assert_true(h.liquid_at(Vector3(0, 3.0, 0)).is_empty(), "над гладью — сухо")
 	assert_true(h.liquid_at(Vector3(9, 1.0, 0)).is_empty(), "вне озера — сухо")
 
+## Зона русла по x, z накрывает и пещеру под ним: под сводом робот сухой.
+func test_cave_under_river_is_dry():
+	var h := _health()
+	var planet := PlanetGen.generate(14)
+	var tr := ProtoTerrain.new(14, ProtoWorldStyle.for_planet(planet))
+	tr.build_field()
+	h.terrain = tr
+	var water := _sub("вода")
+	h.zones = [{"sub": water, "temp": 20.0, "level": func(x, _z): return tr.river_level_at(x),
+		"area": func(x, z): return abs(z - tr.river_z(x)) < 6.0}]
+	# Зал пещеры под руслом: над роботом — свод, выше него — вода.
+	var p := Vector3(50.6, 3.5, 55.4)
+	assert_false(tr.solid(p.x, p.y, p.z), "точка — в зале")
+	assert_lt(p.y, tr.river_level_at(p.x), "ниже зеркала реки")
+	assert_true(h.liquid_at(p).is_empty(), "под сводом — сухо")
+	# Там же, но в русле на поверхности — мокро.
+	var q := Vector3(50.6, tr.river_level_at(50.6) - 0.5, tr.river_z(50.6))
+	if not tr.solid(q.x, q.y, q.z):
+		assert_false(h.liquid_at(q).is_empty(), "в русле — мокро")
+
 func test_repair_from_cargo_prefers_metal_and_spends_it():
 	var h := _health()
 	h.hp = 10.0

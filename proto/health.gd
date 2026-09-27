@@ -196,9 +196,21 @@ func liquid_at(p: Vector3) -> Dictionary:
 		if not z.area.call(p.x, p.z):
 			continue
 		var lv: float = z.level.call(p.x, p.z)
-		if lv > p.y + 0.05:
+		if lv > p.y + 0.05 and not _rock_between(p, lv):
 			return {"sub": z.sub, "temp": z.temp, "depth": lv - p.y}
 	return {}
+
+## Между роботом и зеркалом жидкости — порода: робот в пещере под руслом,
+## а не в воде (зона русла по x, z накрывает и пещеру под ним).
+func _rock_between(p: Vector3, level: float) -> bool:
+	if terrain == null:
+		return false
+	var y := p.y + 0.6
+	while y < level:
+		if terrain.solid(p.x, y, p.z):
+			return true
+		y += 0.5
+	return false
 
 func is_wrecked() -> bool:
 	return wreck_t >= 0.0
