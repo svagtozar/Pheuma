@@ -25,6 +25,7 @@ var sim: Sim
 var view: Node2D
 var view3d: Node3D = null      # объёмный вид (F3); создаётся при первом включении
 var use_3d := false
+var _show_deposits := false      # --deposits: все залежи разведаны, робот у ближайшей (кадр форм)
 var cam: Camera2D
 var hud: Control
 var menus: Control
@@ -99,6 +100,8 @@ func _ready() -> void:
 			flow_view = true
 		elif a == "--3d":
 			use_3d = true
+		elif a == "--deposits":
+			_show_deposits = true
 		elif a == "--bench":
 			_bench = true
 			_demo = true
@@ -261,6 +264,8 @@ func new_world(s: int, loaded: World = null) -> void:
 	audio.set_world(world)
 	_autosave_t = 0.0
 	view.world = world
+	if _show_deposits:
+		_reveal_deposits()
 	set_3d(use_3d)
 	cam.position = world.robot.pos * T
 	cam.reset_smoothing()
@@ -714,6 +719,16 @@ func _wire_ends(w: Dictionary) -> Array:
 # ---------------------------------------------------------------- автотест и скриншот
 
 ## Демо-завод у робота (--demo=N): для скриншотов и замеров.
+## Кадр форм залежей: всё разведано, робот стоит южнее ближайшей к старту залежи.
+func _reveal_deposits() -> void:
+	var best = null
+	for c in world.planet.deposits:
+		world.revealed[c] = true
+		if best == null or Vector2(c).distance_to(world.robot.pos) < Vector2(best).distance_to(world.robot.pos):
+			best = c
+	if best != null:
+		world.robot.pos = Vector2(best) + Vector2(0.5, 3.5)
+
 func _build_demo() -> void:
 	var w := world
 	var c := DemoFactory.build(w, w.planet.spawn + Vector2i(2, -3), _demo_n)

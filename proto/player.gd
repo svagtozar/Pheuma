@@ -242,7 +242,7 @@ func auto_drill(prefix: String) -> void:
 			var sh := sp + Vector3(0, 1.4, 0)
 			var near := INF
 			for k: MeshInstance3D in d.crystals:
-				near = minf(near, sh.distance_to(ProtoMining.nearest_on(k, sh)))
+				near = minf(near, ProtoMining.reach_dist(k, sh))
 			if near > ProtoMining.REACH - 0.1:
 				continue
 			# Крупная друза смотрится лучше мелкой.

@@ -178,47 +178,28 @@ func _ruins() -> void:
 			mi.material_override = stone
 			_content.add_child(mi)
 
-## Залежи: у разведанных и тех, что рядом с роботом, — самородки или друзы
-## кристаллов цвета вещества; у прочих — серый камешек, как метка в 2D.
+## Залежи: у разведанных и тех, что рядом с роботом, — форма по тегам вещества
+## (ProtoDeposit: друза, жила, конкреции, пласт, корка…), облик — по планете;
+## у прочих — серый камешек, как метка в 2D.
 func _build_deposits() -> void:
 	var rng := RandomNumberGenerator.new()
 	var mats := {}
+	var look := ProtoDeposit.planet_look(world.planet, ProtoWorldStyle.for_planet(world.planet).habit)
 	for c in world.planet.deposits:
 		var dep: Dictionary = world.planet.deposits[c]
 		var s: Substance = world.db.get_sub(dep.sub)
 		if s == null:
 			continue
+		var form := ProtoDeposit.form_for(s)
 		if not mats.has(s.id):
-			mats[s.id] = ProtoCrystal.material(s.color) if s.has("crystalline") else ProtoMachines.surface(s)
+			mats[s.id] = ProtoDeposit.material(s, form, look)
 		rng.seed = hash(c) ^ world.planet.seed_value
 		var base := terrain.cell_pos(c)
-		var n := Node3D.new()
-		n.position = base
 		var k: float = clampf(0.5 + dep.amount / 150.0, 0.6, 1.5)
-		if s.has("crystalline"):
-			for i in rng.randi_range(4, 7):
-				var len := rng.randf_range(0.35, 0.9) * k
-				var ci := MeshInstance3D.new()
-				ci.mesh = ProtoCrystal.mesh(len, len * rng.randf_range(0.12, 0.17), rng)
-				ci.material_override = mats[s.id]
-				var off := Vector3(rng.randf_range(-0.55, 0.55), -len * 0.1, rng.randf_range(-0.55, 0.55))
-				ci.position = off
-				ci.rotation = Vector3(rng.randf_range(-0.5, 0.5), rng.randf() * TAU, rng.randf_range(-0.5, 0.5))
-				n.add_child(ci)
-		else:
-			for i in rng.randi_range(3, 6):
-				var r := rng.randf_range(0.14, 0.32) * k
-				var sp := SphereMesh.new()
-				sp.radius = r
-				sp.height = r * 1.4
-				sp.radial_segments = 6
-				sp.rings = 3
-				var mi := MeshInstance3D.new()
-				mi.mesh = sp
-				mi.material_override = mats[s.id]
-				mi.position = Vector3(rng.randf_range(-0.6, 0.6), r * 0.35, rng.randf_range(-0.6, 0.6))
-				mi.rotation = Vector3(rng.randf(), rng.randf() * TAU, rng.randf())
-				n.add_child(mi)
+		# Клетка — 2 м: залежь чуть меньше клетки, жила — поперёк неё.
+		var n := ProtoDeposit.build(s, form, k * 0.7, rng, look, mats[s.id])
+		n.position = base
+		n.rotation.y = rng.randf() * TAU
 		_content.add_child(n)
 		var pebble := MeshInstance3D.new()
 		var ps := SphereMesh.new()
