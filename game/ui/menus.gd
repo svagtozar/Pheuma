@@ -217,6 +217,7 @@ func _rebuild_slots() -> void:
 # ---------------------------------------------------------------- настройки
 
 var vol_slider: HSlider
+var bus_sliders := {}          # music, sfx → HSlider
 var scale_slider: HSlider
 var scale_label: Label
 var full_check: CheckBox
@@ -245,6 +246,17 @@ func _build_settings() -> void:
 	vol_slider.custom_minimum_size = Vector2(240, 24)
 	vol_slider.value_changed.connect(func(x): main.set_setting("volume", x); main.apply_settings())
 	g.add_child(vol_slider)
+	for key in ["music", "sfx"]:
+		add_label.call("Музыка" if key == "music" else "Звуки")
+		var sl := HSlider.new()
+		sl.min_value = 0.0
+		sl.max_value = 1.0
+		sl.step = 0.05
+		sl.custom_minimum_size = Vector2(240, 24)
+		var k: String = key
+		sl.value_changed.connect(func(x): main.set_setting(k, x); main.apply_settings())
+		g.add_child(sl)
+		bus_sliders[key] = sl
 	scale_label = Label.new()
 	scale_label.add_theme_font_size_override("font_size", 15)
 	g.add_child(scale_label)
@@ -278,6 +290,8 @@ func open_settings(back: String) -> void:
 	_back = back
 	var st: Dictionary = main.settings()
 	vol_slider.set_value_no_signal(float(st.get("volume", 0.8)))
+	bus_sliders.music.set_value_no_signal(float(st.get("music", 0.6)))
+	bus_sliders.sfx.set_value_no_signal(float(st.get("sfx", 0.8)))
 	scale_slider.value = float(st.get("ui_scale", 1.0))
 	full_check.set_pressed_no_signal(st.get("fullscreen", false))
 	advice_check.set_pressed_no_signal(st.get("advice", true))

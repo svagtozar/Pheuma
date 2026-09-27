@@ -9,6 +9,7 @@ extends Node2D
 ##                       pause, settings, slots, end, event, choice, reward)
 ##   --tutorial        — начать обучение (при первом запуске оно включается само)
 ##   --flow            — включить карту потоков (O)
+##   --no-music        — без музыки (в headless она и так не сводится)
 
 const T := 32.0
 const WorldView := preload("res://game/world_view.gd")
@@ -211,6 +212,9 @@ func apply_settings() -> void:
 	var st := settings()
 	var vol: float = float(st.get("volume", 0.8))
 	AudioServer.set_bus_volume_db(0, linear_to_db(max(vol, 0.0001)))
+	Audio.ensure_buses()
+	AudioServer.set_bus_volume_db(AudioServer.get_bus_index("Music"), linear_to_db(max(float(st.get("music", 0.6)), 0.0001)))
+	AudioServer.set_bus_volume_db(AudioServer.get_bus_index("SFX"), linear_to_db(max(float(st.get("sfx", 0.8)), 0.0001)))
 	ui_scale = float(st.get("ui_scale", 1.0))
 	ui_layer.scale = Vector2(ui_scale, ui_scale)
 	autosave_every = float(st.get("autosave", 120.0))

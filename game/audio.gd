@@ -2,6 +2,8 @@ extends Node
 ## Звук без ассетов: все эффекты синтезируются при запуске (AudioStreamWAV).
 ## Мир складывает события в world.sfx, этот узел их проигрывает с громкостью
 ## по расстоянию до робота. Фоновый ветер зависит от атмосферы планеты.
+## Музыка — тема планеты из core/music.gd: четыре петли (pad, bass, arp, tension)
+## сводятся в фоне и смешиваются по обстановке. Эффекты — шина SFX, музыка — Music.
 
 const RATE := 22050
 const MAX_DIST := 30.0
@@ -14,13 +16,43 @@ var _rng := RandomNumberGenerator.new()
 var _last := {}
 var _alarm_t := 0.0
 var _crackle_t := 0.0
+var music_enabled := true
+var theme := {}
+var music: Dictionary = {}        # слой → AudioStreamPlayer
+var _music_task := -1
+var _music_bufs := {}
+var _mix_t := 0.0
+var _targets := {"pad": -80.0, "bass": -80.0, "arp": -80.0, "tension": -80.0}
+var _last_stage := -1
+var _celebrate_t := 0.0
+const LAYERS := ["pad", "bass", "arp", "tension"]
+const MUSIC_RATE := 22050
+
+## Шины Music и SFX (выход в Master); создаются один раз.
+static func ensure_buses() -> void:
+	for n in ["Music", "SFX"]:
+		if AudioServer.get_bus_index(n) < 0:
+			AudioServer.add_bus()
+			var i := AudioServer.bus_count - 1
+			AudioServer.set_bus_name(i, n)
+			AudioServer.set_bus_send(i, "Master")
 
 func _ready() -> void:
 	_rng.seed = 1234
+	ensure_buses()
+	if DisplayServer.get_name() == "headless" or "--no-music" in OS.get_cmdline_user_args():
+		music_enabled = false
 	for i in 14:
 		var p := AudioStreamPlayer.new()
+		p.bus = "SFX"
 		add_child(p)
 		players.append(p)
+	for l in LAYERS:
+		var mp := AudioStreamPlayer.new()
+		mp.bus = "Music"
+		mp.volume_db = -80.0
+		add_child(mp)
+		music[l] = mp
 	streams = {
 		"click": _mix([_tone(1500, 1500, 0.05, "sine", 50.0, 0.35)]),
 		"clunk": _mix([_tone(260, 190, 0.09, "square", 30.0, 0.25)]),
@@ -41,6 +73,7 @@ func _ready() -> void:
 	}
 	ambient = AudioStreamPlayer.new()
 	ambient.stream = _to_wav(_noise(4.0, 0.0, 0.025, 0.6), true)
+	ambient.bus = "SFX"
 	add_child(ambient)
 
 func set_world(w: World) -> void:
@@ -52,9 +85,72 @@ func set_world(w: World) -> void:
 	ambient.volume_db = db
 	if not ambient.playing:
 		ambient.play()
+	_start_music(w)
+
+# ---------------------------------------------------------------- музыка
+
+## Тема планеты сводится в фоне; до готовности играет прежняя (или тишина).
+func _start_music(w: World) -> void:
+	if not music_enabled:
+		return
+	_wait_music_task()
+	theme = Music.compose(w.planet.seed_value, w.planet.tags)
+	print("Музыка: ", Music.describe(theme))
+	_last_stage = w.goals.stage
+	_celebrate_t = 0.0
+	_music_bufs = {}
+	var th := theme
+	_music_task = WorkerThreadPool.add_task(func():
+		var out := {}
+		for l in LAYERS:
+			out[l] = Music.render(th.layers[l], Music.instrument_of(l), th.length, MUSIC_RATE)
+		_music_bufs = out)
+
+func _wait_music_task() -> void:
+	if _music_task >= 0:
+		WorkerThreadPool.wait_for_task_completion(_music_task)
+		_music_task = -1
+
+## Сведённые петли — в плееры, все вместе с тишины, чтобы шли в такт.
+func _music_ready() -> void:
+	_wait_music_task()
+	for l in LAYERS:
+		var mp: AudioStreamPlayer = music[l]
+		mp.stop()
+		mp.stream = _to_wav(_music_bufs[l], true, MUSIC_RATE)
+		mp.volume_db = -80.0
+	for l in LAYERS:
+		music[l].play()
+	_music_bufs = {}
+
+## Какие слои звучат: pad всегда, bass — когда завод пошёл, arp — когда машины
+## работают (или цель выполнена), tension — опасность; при тревоге остальное тише.
+func _update_mix() -> void:
+	if world == null:
+		return
+	var working := 0
+	for m in world.machines.values():
+		if m is Processor and m.busy != null:
+			working += 1
+	var danger: bool = not world.director.current.is_empty() or world.robot.hp < world.robot.max_hp() * 0.5 \
+		or world.fires.has(world.robot_cell())
+	if world.goals.stage != _last_stage:
+		if world.goals.stage > _last_stage or world.goals.completed:
+			_celebrate_t = 20.0
+		_last_stage = world.goals.stage
+	var duck := -4.0 if danger else 0.0
+	_targets.pad = -12.0 + duck
+	_targets.bass = (-14.0 + duck) if world.time > 60.0 or world.machines.size() >= 3 else -80.0
+	_targets.arp = -8.0 if _celebrate_t > 0.0 else ((-16.0 + duck) if working >= 3 else -80.0)
+	_targets.tension = -10.0 if danger else -80.0
 
 func stop_all() -> void:
 	world = null
+	_wait_music_task()
+	for l in LAYERS:
+		if music.has(l):
+			music[l].stop()
+			music[l].stream = null
 	for p in players:
 		p.stop()
 		p.stream = null
@@ -82,6 +178,16 @@ func play(name: String, dist: float = 0.0) -> void:
 			return
 
 func _process(dt: float) -> void:
+	if music_enabled and _music_task >= 0 and WorkerThreadPool.is_task_completed(_music_task):
+		_music_ready()
+	_mix_t -= dt
+	if _mix_t <= 0.0:
+		_mix_t = 0.5
+		_update_mix()
+	_celebrate_t = max(0.0, _celebrate_t - dt)
+	for l in LAYERS:
+		if music.has(l) and music[l].playing:
+			music[l].volume_db = move_toward(music[l].volume_db, _targets[l], 35.0 * dt)
 	if world == null:
 		return
 	for e in world.sfx:
@@ -158,14 +264,14 @@ func _mix(parts: Array) -> AudioStreamWAV:
 			out[i] += p[i]
 	return _to_wav(out)
 
-func _to_wav(samples: PackedFloat32Array, loop: bool = false) -> AudioStreamWAV:
+func _to_wav(samples: PackedFloat32Array, loop: bool = false, rate: int = RATE) -> AudioStreamWAV:
 	var bytes := PackedByteArray()
 	bytes.resize(samples.size() * 2)
 	for i in samples.size():
 		bytes.encode_s16(i * 2, int(clamp(samples[i], -1.0, 1.0) * 32767.0))
 	var s := AudioStreamWAV.new()
 	s.format = AudioStreamWAV.FORMAT_16_BITS
-	s.mix_rate = RATE
+	s.mix_rate = rate
 	s.stereo = false
 	s.data = bytes
 	if loop:
