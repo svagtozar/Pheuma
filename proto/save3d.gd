@@ -136,6 +136,9 @@ static func to_dict(r: Node3D) -> Dictionary:
 	var robot: Node3D = r.robot
 	var d := {"version": VERSION, "seed": int(r.seed_value), "time": Time.get_datetime_string_from_system(false, true)}
 	d.robot = {"pos": _v3(robot.position), "yaw": robot.rotation.y}
+	var h = robot.get_meta("health", null)
+	if h != null:
+		d.robot.hp = h.hp
 	var pl := r.get_node_or_null("player")
 	if pl != null:
 		d.camera = {"yaw": pl.cam_yaw, "pitch": pl.cam_pitch, "dist": pl.cam_dist}
@@ -162,6 +165,9 @@ static func apply(r: Node3D, d: Dictionary) -> void:
 	if d.has("robot"):
 		robot.position = _to_v3(d.robot.pos)
 		robot.rotation.y = float(d.robot.yaw)
+		var h = robot.get_meta("health", null)
+		if h != null and d.robot.has("hp"):
+			h.hp = clampf(float(d.robot.hp), 1.0, h.max_hp)
 	var pl := r.get_node_or_null("player")
 	if pl != null:
 		pl.vel = Vector3.ZERO

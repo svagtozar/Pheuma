@@ -7,6 +7,8 @@ extends Node3D
 ## Камеру можно крутить вокруг робота: мышь с зажатым колесом (средней
 ## кнопкой) или правый стик; WASD тогда идут относительно камеры (main.gd
 ## поворачивает ввод на cam_yaw). Курсор не захватывается — он нужен стройке.
+## Урон робота (правила World) виден и здесь: полоса прочности, кромка экрана,
+## искры и звук (ProtoHurtFx) — по падению World.robot.hp.
 
 const S := 2.0                   # метров на клетку игры, как TileTerrain.S
 const CAM_BACK := 6.5            # камера сзади-сверху, смотрит на север карты (−z), как 2D
@@ -36,6 +38,11 @@ var _yaw := PI
 var cam_yaw := 0.0               # 0 — камера смотрит на север, как 2D
 var cam_tilt := 0.0              # -1..1 — ниже/выше обычного
 var build_ms := 0
+var hurt: ProtoHurtFx
+var _hp_last := -1.0
+var _hurt_acc := 0.0
+var _hurt_dps := 0.0
+var _cell_last := Vector2i.ZERO
 
 func set_world(w: World) -> void:
 	world = w
@@ -69,6 +76,13 @@ func set_world(w: World) -> void:
 	cam.fov = 55.0
 	cam.far = 400.0
 	_content.add_child(cam)
+	if hurt == null:
+		hurt = ProtoHurtFx.new()
+		hurt.bar = true
+		add_child(hurt)
+	hurt.cam = cam
+	hurt.visible = visible
+	_hp_last = -1.0
 	_last_pos = world.robot.pos
 	robot.position = terrain.world_pos(world.robot.pos)
 	_sync(0.0, true)
@@ -79,6 +93,8 @@ func set_world(w: World) -> void:
 ## Включить или спрятать: спрятанный вид не рисуется и не держит камеру и небо.
 func activate(on: bool) -> void:
 	visible = on
+	if hurt != null:
+		hurt.visible = on
 	if cam != null:
 		if on:
 			cam.make_current()
@@ -384,12 +400,51 @@ func _process(dt: float) -> void:
 		# Скорость игры рассчитана на 2D (клеток в секунду) — шаг ограничен бегом.
 		anim.speed = minf(speed, RobotAnim.WALK_SPEED * 2.6)
 	robot.position = terrain.world_pos(world.robot.pos)
+	_hurt(dt, moved)
 	_sync(dt)
 	_follow(dt)
 	if main != null and cursor != null:
 		var mc: Vector2i = main.mouse_cell()
 		cursor.visible = world.planet.in_bounds(mc)
 		cursor.position = terrain.cell_pos(mc) + Vector3(0, 0.05, 0)
+
+## Урон по правилам World: вспышки на падении прочности, поломка — надпись.
+func _hurt(dt: float, moved: Vector2) -> void:
+	if hurt == null:
+		return
+	var r := world.robot
+	var mx := r.max_hp()
+	var cell := world.robot_cell()
+	if _hp_last >= 0.0:
+		var d := _hp_last - r.hp
+		if r.hp >= mx - 0.01 and _hp_last < mx * 0.5 and moved.length() > 3.0:
+			# World.robot_die: робот уже в капсуле с полной прочностью.
+			hurt.hit(40.0, "impact", robot)
+			hurt.show_banner("КОРПУС РАЗРУШЕН", "Восстановление в капсуле · половина груза потеряна", 3.0)
+		elif d > 0.0:
+			_hurt_acc += d
+			_hurt_dps = lerpf(_hurt_dps, d / maxf(dt, 0.001), minf(1.0, dt * 3.0))
+			if _hurt_acc >= ProtoHealth.HIT_STEP or d >= ProtoHealth.HIT_STEP:
+				hurt.hit(_hurt_acc, _hurt_kind(d), robot)
+				_hurt_acc = 0.0
+		else:
+			_hurt_dps = lerpf(_hurt_dps, 0.0, minf(1.0, dt * 3.0))
+	_hp_last = r.hp
+	_cell_last = cell
+	hurt.set_state(r.hp / maxf(mx, 1.0), _hurt_dps, _hurt_kind(0.0), "Корпус %d / %d" % [roundi(maxf(r.hp, 0.0)), roundi(mx)])
+
+## Вид урона: лава и кислота под роботом (World выталкивает на безопасную клетку),
+## огонь, удар (провал льда) или среда планеты.
+func _hurt_kind(d: float) -> String:
+	for c: Vector2i in [_cell_last, world.robot_cell()]:
+		match world.tile(c):
+			Planet.Tile.LAVA: return "heat"
+			Planet.Tile.ACID: return "acid"
+		if world.fires.has(c):
+			return "heat"
+	if d >= 8.0:
+		return "impact"
+	return ProtoHealth.ambient_rate(world.planet, world.robot.shield(), 1.0).kind
 
 func _unhandled_input(e: InputEvent) -> void:
 	if not visible or cam == null:

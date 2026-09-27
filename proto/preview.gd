@@ -12,6 +12,10 @@ extends Node3D
 ##   В --play: B — стройка, T — деталь, R — повернуть, Пробел — поставить,
 ##   X — разобрать, C — выгрузить груз в приёмник (подробно — ProtoBuilder)
 ##   --auto=jump --screenshot=путь.png — разбег и прыжок, кадры путь_1..4.png
+##   --auto=hurt --screenshot=путь.png — прочность корпуса (ProtoHealth): падение с
+##   высоты, шаг в лаву или кислоту, поломка, сборка на базе; кадры путь_1..4.png.
+##   В --play: H / D-pad ← (держать) — починить корпус материалом из груза, у завода
+##   корпус чинится сам
 ##   --auto=sound — тот же маршрут без кадров, в конце бур у стены и выстрел кистью
 ##   (для проверки звука); --record=путь.wav — записать звук, --mute — без звука
 ##   --hud — HUD (груз, завод, стройка, кнопки; в --play он есть всегда), --pad —
@@ -58,6 +62,13 @@ var saves: ProtoSave
 var lab_desk: ProtoLabDesk   # знания о веществах (касание, пробы, догадки, лаборатория)
 var lab_panel: ProtoLabPanel
 var lab_demo := false        # --lab: карточка материала открыта с самого начала
+var health: ProtoHealth      # прочность корпуса робота: урон, починка, поломка
+var liquid_zones: Array = [] # жидкости для урона: {sub, temp, level, area}
+var hazard: Substance        # лава или кислота планеты (как клетки 2D), иначе null
+var hurt_prefix := ""        # --auto=hurt: кадры прочности
+var hurt_t := 0.0
+var hurt_step := 0
+var hurt_mark := -1.0
 
 ## Сид следующей планеты в сборке для проверки (переживает перезагрузку сцены).
 static var build_seed := 14
@@ -141,6 +152,10 @@ func _ready() -> void:
 		elif auto == "jump":
 			pl.auto_jump(shot_path.get_basename() if shot_path != "" else "user://jump")
 			shot_path = ""
+		elif auto == "hurt":
+			hurt_prefix = shot_path.get_basename() if shot_path != "" else "user://hurt"
+			shot_path = ""
+		_health(pl)
 		if not mute:
 			var snd := ProtoSound.new()
 			snd.name = "sound"
@@ -188,12 +203,15 @@ func _liquid_mats() -> Array:
 
 func _liquids() -> void:
 	var liq := _liquid_mats()
-	if liq.is_empty():
+	# Лава вулканических и кислота кислотных планет (как клетки 2D) — в озере;
+	# если своих жидкостей нет, то и в русле, и в пещерной луже.
+	hazard = ProtoHealth.hazard_liquid(planet)
+	if liq.is_empty() and hazard == null:
 		print("Жидких материалов нет — русла сухие")
 		return
-	var river_mat: Substance = liq[0]
-	var lake_mat: Substance = liq[1] if liq.size() > 1 else liq[0]
-	var cave_mat: Substance = liq[-1]
+	var river_mat: Substance = liq[0] if not liq.is_empty() else hazard
+	var lake_mat: Substance = hazard if hazard != null else (liq[1] if liq.size() > 1 else liq[0])
+	var cave_mat: Substance = liq[-1] if not liq.is_empty() else hazard
 	var rv := MeshInstance3D.new()
 	rv.mesh = ProtoLiquids.sloped_mesh(terrain, func(x, z): return terrain.river_level_at(x, z),
 		func(x, z): return abs(z - terrain.river_z(x)) < 6.0 and x > terrain.lake_c.x + 2.0)
@@ -202,12 +220,22 @@ func _liquids() -> void:
 	var rl := ProtoLiquids.look(river_mat, planet.ambient_temp)
 	if rl.vapor or rl.haze:
 		add_child(ProtoLiquids.vapor(Vector3(40, terrain.river_level_at(40) + 0.8, 58), Vector3(38, 0.5, 5), river_mat.color, rl.haze))
-	_liquid_surface(lake_mat, terrain.lake_level, func(x, z): return Vector2(x, z).distance_to(terrain.lake_c) < terrain.lake_r + 4.5,
+	var in_lake := func(x, z): return Vector2(x, z).distance_to(terrain.lake_c) < terrain.lake_r + 4.5
+	_liquid_surface(lake_mat, terrain.lake_level, in_lake,
 		Vector3(terrain.lake_c.x, terrain.lake_level + 0.8, terrain.lake_c.y), Vector3(10, 0.5, 10))
+	var ll: float = terrain.lake_level
+	_zone(lake_mat, func(_x, _z): return ll, in_lake)
 	var pc: Vector3 = terrain.pool_c()
 	var lv: float = terrain.pool_level()
-	_liquid_surface(cave_mat, lv, func(x, z): return Vector2(x, z).distance_to(Vector2(pc.x, pc.z)) < terrain.pool_r + 1.0,
-		Vector3(pc.x, lv + 0.6, pc.z), Vector3(2.5, 0.3, 2.5))
+	var in_pool := func(x, z): return Vector2(x, z).distance_to(Vector2(pc.x, pc.z)) < terrain.pool_r + 1.0
+	_liquid_surface(cave_mat, lv, in_pool, Vector3(pc.x, lv + 0.6, pc.z), Vector3(2.5, 0.3, 2.5))
+	_zone(cave_mat, func(_x, _z): return lv, in_pool)
+	# Русло — последним: у устья озеро важнее.
+	var in_river := func(x, z): return abs(z - terrain.river_z(x)) < 6.0 and x > terrain.lake_c.x + 2.0
+	_zone(river_mat, func(x, z): return terrain.river_level_at(x, z), in_river)
+
+func _zone(s: Substance, level: Callable, area: Callable) -> void:
+	liquid_zones.append({"sub": s, "temp": ProtoHealth.liquid_temp(s, planet.ambient_temp), "level": level, "area": area})
 
 func _liquid_surface(s: Substance, level: float, area: Callable, vpos: Vector3, vext: Vector3) -> void:
 	var mi := MeshInstance3D.new()
@@ -726,7 +754,112 @@ func _caption() -> void:
 	l.text = "%s (seed %d) — %s\n%.0f °C, %.2f атм, %.1f g, вид: %s\n%s\nЖидкости: %s" % [planet.name, seed_value,
 		", ".join(PackedStringArray(planet.tags.map(func(t): return PlanetTags.display(t)))), planet.ambient_temp, planet.atm_pressure, planet.gravity, view, style.summary(),
 		"; ".join(PackedStringArray(liq)) if not liq.is_empty() else "нет"]
+	if hazard != null:
+		l.text += "; %s в озере" % hazard.name.to_lower()
 	layer.add_child(l)
+
+## Прочность корпуса: корпус — из металла планеты (как и цвет робота), урон от
+## жидкостей, среды и падений; ремонт у завода; поломка — возврат к заводу.
+func _health(pl: ProtoPlayer) -> void:
+	var hull = _mat_with("metallic")
+	if hull == null:
+		var solids := _solid_mats()
+		solids.sort_custom(func(a, b): return a.hardness > b.hardness)
+		hull = solids[0] if not solids.is_empty() else null
+	health = ProtoHealth.new()
+	health.name = "health"
+	health.setup(robot, terrain, planet, hull)
+	health.player = pl
+	health.zones = liquid_zones
+	health.active = (play and auto == "") or auto == "hurt"
+	health.input_enabled = play and auto == ""
+	var pc := terrain.plateau()
+	health.base = Vector3(pc.x + 5.0, terrain.surface_h(pc.x + 5.0, pc.z + 4.0), pc.z + 4.0)
+	health.factory_at = pc
+	pl.health = health
+	add_child(health)
+	var fx := ProtoHurtFx.new()
+	fx.name = "hurt_fx"
+	fx.cam = cam
+	fx.mute = mute
+	add_child(fx)
+	health.fx = fx
+	if auto == "hurt":
+		health.wrecked.connect(func(): pl.route = [])
+		_hurt_start(pl)
+
+## --auto=hurt: сброс с высоты у озера, шаг в жидкость, поломка, сборка на базе.
+func _hurt_start(pl: ProtoPlayer) -> void:
+	var pc := terrain.plateau()
+	var lc := Vector3(terrain.lake_c.x, 0, terrain.lake_c.y)
+	var dir := Vector3(pc.x - lc.x, 0, pc.z - lc.z).normalized()
+	var st := lc + dir * (terrain.lake_r + 5.0)
+	st.y = terrain.surface_h(st.x, st.z)
+	# Высота, с которой удар снимет около трети прочности на этой гравитации.
+	var v := ProtoHealth.SAFE_FALL_V + sqrt(health.max_hp * 0.3 * float(health.stats.get("flex", 1.0)) / ProtoHealth.FALL_K)
+	var h := v * v / (2.0 * ProtoPlayer.G * style.gravity)
+	robot.position = st + Vector3(0, h, 0)
+	robot.rotation.y = atan2(-dir.x, -dir.z)
+	pl.cam_yaw = robot.rotation.y
+	pl.cam_pitch = 0.35
+	pl.cam_dist = 5.5
+	pl.air = true
+	pl.vy = 0.0
+	print("Прочность: корпус %s, %.0f ед, защита %s; падение с %.1f м" % [health.hull.name if health.hull else "—", health.max_hp, health.shield, h])
+
+func _hurt_demo(dt: float) -> void:
+	var pl := get_node("player") as ProtoPlayer
+	hurt_t += dt
+	var shot := ""
+	match hurt_step:
+		0:
+			if not pl.air and health.hp < health.max_hp:
+				hurt_mark = hurt_mark if hurt_mark >= 0.0 else hurt_t
+				if hurt_t - hurt_mark > 0.15:
+					shot = "удар"
+					var lc := Vector3(terrain.lake_c.x, 0, terrain.lake_c.y)
+					var to := (robot.position - lc) * Vector3(1, 0, 1)
+					pl.route = [robot.position, lc + to.normalized() * terrain.lake_r * 0.45]
+					pl.route_i = 1
+					hurt_mark = -1.0
+					if liquid_zones.is_empty():
+						health.damage(health.hp + 1.0, "impact")
+		1:
+			if health.is_wrecked():
+				hurt_step = 2        # жидкости нет — сразу к поломке
+				hurt_mark = hurt_t
+			elif health.liquid != null and health.dps > 0.5:
+				hurt_mark = hurt_mark if hurt_mark >= 0.0 else hurt_t
+				if hurt_t - hurt_mark > 1.0:
+					shot = "в жидкости"
+					hurt_mark = hurt_t
+			elif pl.route_i >= pl.route.size() and health.liquid != null:
+				# Безвредная жидкость: поломку показываем ударом.
+				health.damage(health.hp + 1.0, "impact")
+		2:
+			if health.is_wrecked():
+				if ProtoHealth.WRECK_TIME - health.wreck_t > 1.2:
+					shot = "поломка"
+			elif hurt_t - hurt_mark > 2.5:
+				# Не доломался в жидкости (кислота медленная) — добить.
+				health.damage(health.hp + 1.0, "impact")
+		3:
+			if health.is_wrecked():
+				hurt_mark = -1.0
+			else:
+				hurt_mark = hurt_mark if hurt_mark >= 0.0 else hurt_t
+				if hurt_t - hurt_mark > 1.6:
+					shot = "на базе"
+	if shot != "":
+		hurt_step += 1
+		var path := "%s_%d.png" % [hurt_prefix, hurt_step]
+		get_viewport().get_texture().get_image().save_png(path)
+		print("кадр прочности (%s): %s — прочность %.0f/%.0f" % [shot, path, health.hp, health.max_hp])
+		if hurt_step >= 4:
+			get_tree().quit(0)
+	if hurt_t > 45.0:
+		print("Прочность: время вышло на шаге ", hurt_step)
+		get_tree().quit(1)
 
 ## HUD: груз робота, завод и стройка (когда они есть), подсказки кнопок.
 func _hud() -> void:
@@ -827,6 +960,8 @@ func _unhandled_input(e: InputEvent) -> void:
 
 func _process(dt: float) -> void:
 	_t += dt
+	if hurt_prefix != "" and health != null:
+		_hurt_demo(dt)
 	if lab_panel != null:
 		# Подпись планеты — под карточкой материала; пока та открыта, прячем.
 		var cap := get_node_or_null("caption") as CanvasLayer
