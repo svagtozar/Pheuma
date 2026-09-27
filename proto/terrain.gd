@@ -222,18 +222,21 @@ func density(x: float, y: float, z: float, h := NAN) -> float:
 		if dist < 3.0 and y > h - fs[3] - 1.0:
 			var w: float = fs[2] * clampf((y - (h - fs[3])) / fs[3], 0.0, 1.0)
 			d = min(d, dist - w + noise.get_noise_2d(x * 4.0, z * 4.0) * 0.25)
-	# Пещерный зал — эллипсоид, форма по тегам.
-	d = min(d, cave_dist(Vector3(x, y, z)))
-	# Чаша подземного озерца в дальней части зала.
-	var pq := Vector3(x, y, z) - pool_c()
-	pq.y *= 2.6
-	d = min(d, pq.length() - pool_r)
-	# Ход от склона к залу: капсула с извилиной.
-	var a := cave_entry
-	var b := cave_c + Vector3(0, 1, 0)
-	var t: float = clamp((Vector3(x, y, z) - a).dot(b - a) / (b - a).length_squared(), 0.0, 1.0)
-	var p := a.lerp(b, t) + Vector3(sin(t * 6.0) * 2.0, 0, 0)
-	d = min(d, Vector3(x, y, z).distance_to(p) - 2.4)
+	# Зал, озерцо и ход — только рядом с ними: дальше они всё равно не ближе
+	# поверхности (до build_field коробки нет — считаем всегда).
+	if cave_near.size == Vector3.ZERO or cave_near.has_point(Vector3(x, y, z)):
+		# Пещерный зал — эллипсоид, форма по тегам.
+		d = min(d, cave_dist(Vector3(x, y, z)))
+		# Чаша подземного озерца в дальней части зала.
+		var pq := Vector3(x, y, z) - (_pool_c if cave_near.size != Vector3.ZERO else pool_c())
+		pq.y *= 2.6
+		d = min(d, pq.length() - pool_r)
+		# Ход от склона к залу: капсула с извилиной.
+		var a := cave_entry
+		var b := cave_c + Vector3(0, 1, 0)
+		var t: float = clamp((Vector3(x, y, z) - a).dot(b - a) / (b - a).length_squared(), 0.0, 1.0)
+		var p := a.lerp(b, t) + Vector3(sin(t * 6.0) * 2.0, 0, 0)
+		d = min(d, Vector3(x, y, z).distance_to(p) - 2.4)
 	# Редкие гладкие червоточины глубже поверхности — но не у пещеры.
 	if style.worms > 0.0 and y < h - 4.0 and not cave_box.has_point(Vector3(x, y, z)):
 		var w := absf(noise3.get_noise_3d(x, y * 1.4, z))
@@ -283,6 +286,10 @@ func pool_level() -> float:
 
 ## Коробка вокруг зала и хода: там сетка мельче, а червоточин нет.
 var cave_box := AABB()
+## Где density вообще считает зал, озерцо и ход (коробка с запасом: ход виляет
+## на 2 м вбок, а за запасом их расстояние больше, чем у поверхности рядом).
+var cave_near := AABB()
+var _pool_c := Vector3.ZERO
 
 func build_field() -> void:
 	# Зал всегда под толщей породы: опускаем его ниже самой низкой точки поверхности над ним.
@@ -297,14 +304,36 @@ func build_field() -> void:
 	var tun := AABB(cave_entry, Vector3.ZERO).expand(cave_c + Vector3(0, 1, 0)).grow(3.5)
 	cave_box = cave_box.merge(tun)
 	cave_box.position.y = maxf(cave_box.position.y, 1.0)
-	var n := (sx + 1) * (sy + 1) * (sz + 1)
-	dens.resize(n)
-	for z in sz + 1:
-		for x in sx + 1:
-			var h := surface_h(x, z)
-			for y in sy + 1:
-				dens[_i(x, y, z)] = density(x, y, z, h)
+	_pool_c = pool_c()
+	cave_near = cave_box.grow(6.0)
+	_fill = PackedFloat32Array()
+	_fill.resize((sx + 1) * (sy + 1) * (sz + 1))
+	_parallel(_fill_slice.bind(Vector3.ZERO, Vector3i(sx, sy, sz), 1.0), sz + 1)
+	dens = _fill
+	_fill = PackedFloat32Array()
 	lake_level = lake_level_base()
+
+## Поле в узлах области (для build_field и детальной сетки) — по слоям z в потоках.
+## Пишем в член _fill: у локального массива, захваченного лямбдой, каждый поток
+## делал бы свою копию.
+var _fill := PackedFloat32Array()
+
+func _fill_slice(z: int, origin: Vector3, n: Vector3i, cell: float) -> void:
+	var base := (n.x + 1) * (n.y + 1) * z
+	var pz := origin.z + z * cell
+	for x in n.x + 1:
+		var px := origin.x + x * cell
+		var h := surface_h(px, pz)
+		for y in n.y + 1:
+			_fill[base + x + (n.x + 1) * y] = density(px, origin.y + y * cell, pz, h)
+
+## count задач task(i) на пуле потоков; ждём все. Генерация читает только
+## шум и списки особых мест — это безопасно из нескольких потоков.
+func _parallel(task: Callable, count: int) -> void:
+	if count <= 0:
+		return
+	var id := WorkerThreadPool.add_group_task(task, count, -1, true, "рельеф")
+	WorkerThreadPool.wait_for_group_task_completion(id)
 
 func bed_at(x: float) -> float:
 	var i := clampi(int(floor(x)), 0, sx)
@@ -347,40 +376,46 @@ func build_mesh(origin := Vector3.ZERO, n := Vector3i(-1, -1, -1), cell := 1.0, 
 	var f := dens
 	var reuse := origin == Vector3.ZERO and cell == 1.0 and n == Vector3i(sx, sy, sz)
 	if not reuse:
-		f = PackedFloat32Array()
-		f.resize((nx + 1) * (ny + 1) * (nz + 1))
-		for z in nz + 1:
-			for x in nx + 1:
-				var h := surface_h(origin.x + x * cell, origin.z + z * cell)
-				for y in ny + 1:
-					f[x + (nx + 1) * (y + (ny + 1) * z)] = density(origin.x + x * cell, origin.y + y * cell, origin.z + z * cell, h)
-	var fi := func(x: int, y: int, z: int) -> int: return x + (nx + 1) * (y + (ny + 1) * z)
+		_fill = PackedFloat32Array()
+		_fill.resize((nx + 1) * (ny + 1) * (nz + 1))
+		_parallel(_fill_slice.bind(origin, n, cell), nz + 1)
+		f = _fill
+		_fill = PackedFloat32Array()
+	var sxn := nx + 1
+	var syz := (nx + 1) * (ny + 1)
 	var use_skip := skip.size != Vector3.ZERO
 	var verts := PackedVector3Array()
 	var norms := PackedVector3Array()
-	var cols := PackedColorArray()
-	var uvs := PackedVector2Array()
-	var idx := PackedInt32Array()
 	var cell_v := PackedInt32Array()
 	cell_v.resize(nx * ny * nz)
 	cell_v.fill(-1)
 	var v := PackedFloat32Array()
 	v.resize(8)
+	# Смещения восьми углов клетки в поле.
+	var co := PackedInt32Array()
+	for k in 8:
+		var c: Vector3i = CORNERS[k]
+		co.append(c.x + sxn * c.y + syz * c.z)
+	# Сначала вершины и нормали (дёшево), цвет — потом в потоках.
 	for z in nz:
-		for y in ny:
-			for x in nx:
-				var cc := origin + (Vector3(x, y, z) + Vector3.ONE * 0.5) * cell
-				if use_skip and skip.has_point(cc) and surface_h(cc.x, cc.z) - cc.y > skip_depth:
-					continue
-				if shallow > -INF and surface_h(cc.x, cc.z) - cc.y < shallow:
-					continue
+		for x in nx:
+			# Высота поверхности над столбцом клеток — одна на столбец.
+			var ccx := origin.x + (x + 0.5) * cell
+			var ccz := origin.z + (z + 0.5) * cell
+			var col_h := surface_h(ccx, ccz) if use_skip or shallow > -INF else 0.0
+			for y in ny:
+				var i0 := x + sxn * y + syz * z
 				var inside := 0
 				for k in 8:
-					var c: Vector3i = CORNERS[k]
-					v[k] = f[x + c.x + (nx + 1) * (y + c.y + (ny + 1) * (z + c.z))]
+					v[k] = f[i0 + co[k]]
 					if v[k] > 0.0:
 						inside += 1
 				if inside == 0 or inside == 8:
+					continue
+				var ccy := origin.y + (y + 0.5) * cell
+				if use_skip and skip.has_point(Vector3(ccx, ccy, ccz)) and col_h - ccy > skip_depth:
+					continue
+				if shallow > -INF and col_h - ccy < shallow:
 					continue
 				var acc := Vector3.ZERO
 				var cnt := 0
@@ -391,44 +426,67 @@ func build_mesh(origin := Vector3.ZERO, n := Vector3i(-1, -1, -1), cell := 1.0, 
 						var t := a / (a - b)
 						acc += Vector3(CORNERS[e[0]]).lerp(Vector3(CORNERS[e[1]]), t)
 						cnt += 1
-				var pos := origin + (Vector3(x, y, z) + acc / cnt) * cell
 				var g := Vector3(
 					(v[1] + v[3] + v[5] + v[7]) - (v[0] + v[2] + v[4] + v[6]),
 					(v[2] + v[3] + v[6] + v[7]) - (v[0] + v[1] + v[4] + v[5]),
 					(v[4] + v[5] + v[6] + v[7]) - (v[0] + v[1] + v[2] + v[3]))
-				var nrm := (-g).normalized()
 				cell_v[x + nx * (y + ny * z)] = verts.size()
-				verts.append(pos)
-				norms.append(nrm)
-				var vein_m := _vein(pos)
-				var c4 := _color(pos, nrm, vein_m)
-				c4.a = sky_vis(pos)
-				cols.append(c4)
-				uvs.append(Vector2(vein_m, 0.0))
-	var cv := func(c: Vector3i) -> int:
-		if c.x < 0 or c.y < 0 or c.z < 0 or c.x >= nx or c.y >= ny or c.z >= nz:
-			return -1
-		return cell_v[c.x + nx * (c.y + ny * c.z)]
+				verts.append(origin + (Vector3(x, y, z) + acc / cnt) * cell)
+				norms.append((-g).normalized())
+	# Грани: на каждом ребре со сменой знака — четырёхугольник из вершин соседних клеток.
+	var idx := PackedInt32Array()
+	var cnx := nx
+	var cny := nx * ny
 	for z in range(1, nz):
 		for y in range(1, ny):
 			for x in range(1, nx):
-				var s0: bool = f[fi.call(x, y, z)] > 0.0
-				if (f[fi.call(x + 1, y, z)] > 0.0) != s0:
-					_quad(idx, cv, [Vector3i(x, y - 1, z - 1), Vector3i(x, y, z - 1), Vector3i(x, y, z), Vector3i(x, y - 1, z)], s0)
-				if (f[fi.call(x, y + 1, z)] > 0.0) != s0:
-					_quad(idx, cv, [Vector3i(x - 1, y, z - 1), Vector3i(x, y, z - 1), Vector3i(x, y, z), Vector3i(x - 1, y, z)], not s0)
-				if (f[fi.call(x, y, z + 1)] > 0.0) != s0:
-					_quad(idx, cv, [Vector3i(x - 1, y - 1, z), Vector3i(x, y - 1, z), Vector3i(x, y, z), Vector3i(x - 1, y, z)], s0)
+				var i0 := x + sxn * y + syz * z
+				var s0: bool = f[i0] > 0.0
+				var c0 := x + cnx * y + cny * z
+				if (f[i0 + 1] > 0.0) != s0:
+					_quad(idx, cell_v[c0 - cnx - cny], cell_v[c0 - cny], cell_v[c0], cell_v[c0 - cnx], s0)
+				if (f[i0 + sxn] > 0.0) != s0:
+					_quad(idx, cell_v[c0 - 1 - cny], cell_v[c0 - cny], cell_v[c0], cell_v[c0 - 1], not s0)
+				if (f[i0 + syz] > 0.0) != s0:
+					_quad(idx, cell_v[c0 - 1 - cnx], cell_v[c0 - cnx], cell_v[c0], cell_v[c0 - 1], s0)
+	# Цвет, видимость неба и маска жилы — по вершинам, кусками в потоках.
+	_attr_pos = verts
+	_attr_nrm = norms
+	_attr_col = PackedColorArray()
+	_attr_col.resize(verts.size())
+	_attr_uv = PackedVector2Array()
+	_attr_uv.resize(verts.size())
+	_parallel(_attr_chunk, ceili(verts.size() / float(ATTR_CHUNK)))
 	var arr := []
 	arr.resize(Mesh.ARRAY_MAX)
 	arr[Mesh.ARRAY_VERTEX] = verts
 	arr[Mesh.ARRAY_NORMAL] = norms
-	arr[Mesh.ARRAY_COLOR] = cols
-	arr[Mesh.ARRAY_TEX_UV] = uvs
+	arr[Mesh.ARRAY_COLOR] = _attr_col
+	arr[Mesh.ARRAY_TEX_UV] = _attr_uv
 	arr[Mesh.ARRAY_INDEX] = idx
+	_attr_pos = PackedVector3Array()
+	_attr_nrm = PackedVector3Array()
+	_attr_col = PackedColorArray()
+	_attr_uv = PackedVector2Array()
 	var mesh := ArrayMesh.new()
 	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arr)
 	return mesh
+
+const ATTR_CHUNK := 512
+var _attr_pos := PackedVector3Array()
+var _attr_nrm := PackedVector3Array()
+var _attr_col := PackedColorArray()
+var _attr_uv := PackedVector2Array()
+
+func _attr_chunk(k: int) -> void:
+	for i in range(k * ATTR_CHUNK, mini((k + 1) * ATTR_CHUNK, _attr_pos.size())):
+		var pos := _attr_pos[i]
+		var h := surface_h(pos.x, pos.z)
+		var vein_m := _vein_h(pos, h)
+		var c4 := _color_h(pos, _attr_nrm[i], vein_m, h)
+		c4.a = _sky_vis_h(pos, h)
+		_attr_col[i] = c4
+		_attr_uv[i] = Vector2(vein_m, 0.0)
 
 ## Детальная сетка пещеры (шаг 0,5 м) — в паре с основной, построенной с skip.
 func build_cave_mesh(cell := 0.5) -> ArrayMesh:
@@ -440,40 +498,65 @@ func build_cave_mesh(cell := 0.5) -> ArrayMesh:
 func coarse_skip() -> AABB:
 	return cave_box.grow(-1.0)
 
-func _quad(idx: PackedInt32Array, cv: Callable, cells: Array, flip: bool) -> void:
-	var q: Array = []
-	for c in cells:
-		var vi: int = cv.call(c)
-		if vi < 0:
-			return
-		q.append(vi)
+func _quad(idx: PackedInt32Array, a: int, b: int, c: int, d: int, flip: bool) -> void:
+	if a < 0 or b < 0 or c < 0 or d < 0:
+		return
 	if flip:
-		idx.append_array([q[0], q[2], q[1], q[0], q[3], q[2]])
+		idx.append_array([a, c, b, a, d, c])
 	else:
-		idx.append_array([q[0], q[1], q[2], q[0], q[2], q[3]])
+		idx.append_array([a, b, c, a, c, d])
 
 ## Видимость неба: под толщей породы темно; у входа в пещеру — полутень.
 func sky_vis(p: Vector3) -> float:
-	var depth := surface_h(p.x, p.z) - p.y
+	return _sky_vis_h(p, surface_h(p.x, p.z))
+
+## То же при известной высоте поверхности h над точкой.
+func _sky_vis_h(p: Vector3, h: float) -> float:
+	var depth := h - p.y
 	var v := clampf(1.0 - (depth - 0.4) / 2.2, 0.0, 1.0)
 	v = maxf(v, 0.85 * exp(-p.distance_to(cave_entry) / 3.5))
 	return v
 
 ## Маска жилы: в толще у пещеры, полосами по 3D-шуму.
 func _vein(p: Vector3) -> float:
-	if surface_h(p.x, p.z) - p.y < 1.5 or p.distance_to(cave_c) > cave_r + 3.5:
+	return _vein_h(p, surface_h(p.x, p.z))
+
+func _vein_h(p: Vector3, h: float) -> float:
+	if h - p.y < 1.5 or p.distance_to(cave_c) > cave_r + 3.5:
 		return 0.0
 	return smoothstep(0.27, 0.33, vein_noise.get_noise_3d(p.x, p.y * 1.3, p.z))
 
 ## Затенение впадин: доля породы вокруг точки (дёшево, по полю плотности).
+const CREVICE_DIRS := [Vector3(1, 0, 0), Vector3(-1, 0, 0), Vector3(0, 1, 0), Vector3(0, -1, 0), Vector3(0, 0, 1), Vector3(0, 0, -1)]
+
 func _crevice(p: Vector3, nrm: Vector3) -> float:
 	var solid_n := 0
-	for d in [Vector3(1, 0, 0), Vector3(-1, 0, 0), Vector3(0, 1, 0), Vector3(0, -1, 0), Vector3(0, 0, 1), Vector3(0, 0, -1)]:
-		if (d as Vector3).dot(nrm) < -0.3:
+	for d: Vector3 in CREVICE_DIRS:
+		if d.dot(nrm) < -0.3:
 			continue
-		if density(p.x + d.x * 1.3 + nrm.x * 0.5, p.y + d.y * 1.3 + nrm.y * 0.5, p.z + d.z * 1.3 + nrm.z * 0.5) > 0.0:
+		if field_at(p + d * 1.3 + nrm * 0.5) > 0.0:
 			solid_n += 1
 	return 1.0 - solid_n * 0.12
+
+## Плотность из готового поля (трилинейно по узлам 1 м) — в разы дешевле
+## density(); вне поля или до build_field — точная density().
+func field_at(p: Vector3) -> float:
+	if dens.is_empty() or p.x < 0.0 or p.y < 0.0 or p.z < 0.0 or p.x >= sx or p.y >= sy or p.z >= sz:
+		return density(p.x, p.y, p.z)
+	var x := int(p.x)
+	var y := int(p.y)
+	var z := int(p.z)
+	var fx := p.x - x
+	var fy := p.y - y
+	var fz := p.z - z
+	var sxn := sx + 1
+	var syz := (sx + 1) * (sy + 1)
+	var i := x + sxn * y + syz * z
+	var c00 := lerpf(dens[i], dens[i + 1], fx)
+	var c10 := lerpf(dens[i + sxn], dens[i + sxn + 1], fx)
+	var c01 := lerpf(dens[i + syz], dens[i + syz + 1], fx)
+	var c11 := lerpf(dens[i + syz + sxn], dens[i + syz + sxn + 1], fx)
+	return lerpf(lerpf(c00, c10, fy), lerpf(c01, c11, fy), fz)
 
 ## Пол под точкой: вниз по полю плотности до породы (снаружи и в пещере).
 func floor_at(p: Vector3) -> float:
@@ -487,7 +570,9 @@ func floor_at(p: Vector3) -> float:
 ## Под толщей (пещера): пол — светлый осадок, стены — порода с явными пластами,
 ## свод — темнее; жилы — цвет жилы. Впадины темнее.
 func _color(p: Vector3, n: Vector3, vein_m: float = 0.0) -> Color:
-	var h := surface_h(p.x, p.z)
+	return _color_h(p, n, vein_m, surface_h(p.x, p.z))
+
+func _color_h(p: Vector3, n: Vector3, vein_m: float, h: float) -> Color:
 	var under := h - p.y
 	var c := ground
 	var strata := 0.5 + 0.5 * sin(p.y * 1.7 + noise.get_noise_2d(p.x * 3.0, p.z * 3.0) * 2.0)

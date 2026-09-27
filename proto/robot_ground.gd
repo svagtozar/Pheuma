@@ -64,6 +64,11 @@ func ray(from: Vector3, to: Vector3) -> Dictionary:
 	var q := PhysicsRayQueryParameters3D.create(from, to, LAYER)
 	return root.get_world_3d().direct_space_state.intersect_ray(q)
 
+## Сразу поставить корпус на высоту y (приземление после прыжка — без сглаживания).
+func snap(y: float) -> void:
+	_y = y
+	_hips = 0.0
+
 ## Высота корпуса (fallback — если сетки под роботом нет) и наклон к склону.
 func place(fallback: float) -> void:
 	var dt := clampf(get_process_delta_time(), 0.001, 0.1)

@@ -284,7 +284,18 @@ func _build_settings() -> void:
 		autosave_opt.add_item(AUTOSAVE_NAMES[i], i)
 	autosave_opt.item_selected.connect(func(i): main.set_setting("autosave", AUTOSAVE[i]); main.apply_settings())
 	g.add_child(autosave_opt)
+	_button(v, "Управление…", _open_controls)
 	_button(v, "Назад", func(): show_panel(_back))
+
+## Экран «Управление» из 3D-прототипа: кнопки, мышь, стик (user://controls.cfg).
+func _open_controls() -> void:
+	var cm := get_node_or_null("controls") as ProtoControlsMenu
+	if cm == null:
+		cm = ProtoControlsMenu.new()
+		cm.name = "controls"
+		cm.pause_tree = false
+		add_child(cm)
+	cm.open()
 
 func open_settings(back: String) -> void:
 	_back = back

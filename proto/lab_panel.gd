@@ -2,7 +2,7 @@ class_name ProtoLabPanel
 extends CanvasLayer
 ## Карточка материала в 3D (прототип и F3 в игре): касание, пять проб, догадки
 ## и их проверка — поверх ProtoLabDesk. Всё делается с геймпада:
-##   A / Z        — коснуться того, что рядом, и открыть карточку
+##   B / Z        — коснуться того, что рядом, и открыть карточку
 ##   D-pad / ←→↑↓ — выбрать кнопку, A / Enter — нажать
 ##   LB RB / PgUp PgDn — другой образец (друза, машина, груз)
 ##   B / Esc / Z  — закрыть
@@ -47,19 +47,24 @@ var _hint: Label                 # что делает кнопка под фо�
 var _sig := ""
 var _focus_key := ""
 
-static func ensure_actions() -> void:
-	var layout := {
-		TOUCH: [ProtoControls._key(KEY_Z), ProtoControls._button(JOY_BUTTON_A)],
+## Раскладка по умолчанию. Коснуться — B: A на геймпаде — прыжок (ProtoControls),
+## а B вне карточки свободен и её же закрывает.
+static func layout() -> Dictionary:
+	return {
+		TOUCH: [ProtoControls._key(KEY_Z), ProtoControls._button(JOY_BUTTON_B)],
 		ANALYZE: [ProtoControls._key(KEY_V), ProtoControls._button(JOY_BUTTON_RIGHT_SHOULDER)],
 		PREV: [ProtoControls._key(KEY_PAGEUP), ProtoControls._button(JOY_BUTTON_LEFT_SHOULDER)],
 		NEXT: [ProtoControls._key(KEY_PAGEDOWN), ProtoControls._button(JOY_BUTTON_RIGHT_SHOULDER)],
 		CLOSE: [ProtoControls._key(KEY_ESCAPE), ProtoControls._button(JOY_BUTTON_B)],
 	}
-	for a in layout:
+
+static func ensure_actions() -> void:
+	var lay := layout()
+	for a in lay:
 		if InputMap.has_action(a):
 			continue
 		InputMap.add_action(a, 0.5)
-		for e in layout[a]:
+		for e in lay[a]:
 			InputMap.action_add_event(a, e)
 
 func setup(d: ProtoLabDesk, r: Node3D = null) -> void:

@@ -117,12 +117,18 @@ var _mouse_mode := Input.MOUSE_MODE_VISIBLE
 var _t := 0.0
 var _sig := ""
 
+## Кнопки карты (переназначаются в экране «Управление», ProtoControls.REBIND).
+static func layout() -> Dictionary:
+	return {TOGGLE: [ProtoControls._key(KEY_M), ProtoControls._button(JOY_BUTTON_BACK)]}
+
 static func ensure_actions() -> void:
-	if InputMap.has_action(TOGGLE):
-		return
-	InputMap.add_action(TOGGLE, 0.5)
-	InputMap.action_add_event(TOGGLE, ProtoControls._key(KEY_M))
-	InputMap.action_add_event(TOGGLE, ProtoControls._button(JOY_BUTTON_BACK))
+	var lay := layout()
+	for a in lay:
+		if InputMap.has_action(a):
+			continue
+		InputMap.add_action(a, 0.5)
+		for e in lay[a]:
+			InputMap.action_add_event(a, e)
 
 ## terrain — сетки рельефа (цвет — в вершинах), caves — они же для рентгена,
 ## water — [[сетка, цвет]].

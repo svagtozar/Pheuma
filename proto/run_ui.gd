@@ -126,7 +126,7 @@ func _process(dt: float) -> void:
 
 ## Геймпаду нужна кнопка в фокусе: если фокус потерян — первая кнопка окна.
 func _keep_focus() -> void:
-	if modal == "":
+	if modal == "" or not get_tree().get_nodes_in_group(ProtoControlsMenu.GROUP).is_empty():
 		return
 	var f := get_viewport().gui_get_focus_owner()
 	if f != null and _win.is_ancestor_of(f) and f.is_visible_in_tree():

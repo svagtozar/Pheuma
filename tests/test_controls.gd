@@ -20,7 +20,7 @@ func _stick(axis: JoyAxis, v: float) -> void:
 	Input.flush_buffered_events()
 
 func test_actions_have_key_and_pad():
-	for a in [C.MOVE_FORWARD, C.CAM_LEFT, C.SPRINT, C.WORK, C.FIST]:
+	for a in [C.MOVE_FORWARD, C.CAM_LEFT, C.SPRINT, C.WORK, C.FIST, C.JUMP]:
 		var ev := InputMap.action_get_events(a)
 		assert_true(ev.any(func(e): return e is InputEventKey), "%s: клавиша" % a)
 		assert_true(ev.any(func(e): return e is InputEventJoypadMotion or e is InputEventJoypadButton), "%s: геймпад" % a)
@@ -52,3 +52,16 @@ func test_right_trigger_drives_drill():
 func test_keyboard_action_still_moves():
 	Input.action_press(C.MOVE_FORWARD)
 	assert_almost_eq(C.move_vector().y, 1.0, 0.01)
+
+func test_mouse_look_direction_and_sensitivity():
+	# Мышь вправо — камера вправо (рыскание убывает), мышь вверх — взгляд вверх
+	# (камера опускается: тангаж убывает).
+	var d := C.mouse_look(Vector2(10, -10))
+	assert_lt(d.x, 0.0)
+	assert_lt(d.y, 0.0)
+	C.mouse_sens = 2.0
+	assert_almost_eq(C.mouse_look(Vector2(10, 0)).x, d.x * 2.0, 0.0001)
+	C.mouse_sens = 1.0
+	C.mouse_invert_y = true
+	assert_gt(C.mouse_look(Vector2(0, -10)).y, 0.0)
+	C.mouse_invert_y = false

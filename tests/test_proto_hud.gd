@@ -76,3 +76,16 @@ func test_hint_rows_follow_last_device():
 	assert_false(hud.pad)
 	rows = hud.hint_rows(false, false)
 	assert_true(rows.any(func(r): return r[0] == "Бур" and r[1] == "F"))
+
+func test_hints_show_jump_run_and_mouse_camera():
+	ProtoControls.ensure()
+	var hud := ProtoHud.new()
+	add_child_autofree(hud)
+	hud.pad = false
+	var rows := hud.hint_rows(false, false)
+	assert_true(rows.any(func(r): return r[0] == "Прыжок" and r[1] == "Пробел"))
+	assert_true(rows.any(func(r): return r[0] == "Бег" and r[1] == "Shift"))
+	assert_true(rows.any(func(r): return r[0] == "Камера" and r[1].begins_with("Мышь")))
+	hud.pad = true
+	rows = hud.hint_rows(false, false)
+	assert_true(rows.any(func(r): return r[0] == "Прыжок" and r[1] == "A"))

@@ -1,6 +1,6 @@
 extends Node3D
 ## Витрина вариантов робота (к игре не подключена).
-##   godot --path . res://proto/robots.tscn -- --shot=front|back|top|close:N|closeback:N|head:N|hand:N|drill:N|far:N|tank:N|side:N|tools:N  [--anim=idle|walk|demo|drill|fist] [--tool=drill] [--t=сек] [--sheet=кадров] [--only=N] --screenshot=путь.png
+##   godot --path . res://proto/robots.tscn -- --shot=front|back|top|close:N|closeback:N|head:N|hand:N|drill:N|far:N|tank:N|side:N|tools:N  [--anim=idle|walk|run|jump|demo|drill|fist] [--tool=drill] [--t=сек] [--sheet=кадров] [--only=N] --screenshot=путь.png
 
 var shot := "front"
 var shot_path := ""
@@ -202,9 +202,13 @@ func _sheet_step() -> void:
 	var period := 8.0
 	match RobotAnim.default_mode:
 		"walk": period = RobotAnim.CYCLE / RobotAnim.WALK_SPEED
+		"run": period = RobotAnim.RUN_CYCLE / RobotAnim.RUN_SPEED
+		"jump": period = RobotAnim.JUMP_PERIOD
 		"demo": period = 4.8
 		"fist": period = 2.4
 		"drill": period = 3.0
-	RobotAnim.fixed_t = sheet_i * period / sheet
+	# Бег и прыжок — после разгона, с начала своего цикла.
+	var t0 := 2.0 * period if RobotAnim.default_mode in ["run", "jump"] else 0.0
+	RobotAnim.fixed_t = t0 + sheet_i * period / sheet
 	sheet_i += 1
 	sheet_wait = 2

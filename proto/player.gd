@@ -2,17 +2,20 @@ class_name ProtoPlayer
 extends Node
 ## Управление роботом от третьего лица в предпросмотре (--play) и скриптовый
 ## маршрут для проверки (--auto=cave).
-##   WASD — ходьба относительно камеры, Shift — быстрее, Q/E или мышь с правой
-##   кнопкой — поворот камеры, колесо — дистанция. F или правый курок (действие
+##   WASD — ходьба относительно камеры, Shift — бег, Пробел — прыжок (в режиме
+##   стройки Пробел ставит деталь). Камера — мышью: курсор захвачен, клик —
+##   захватить снова, Esc / Start — меню управления (без захвата крутит мышь с правой
+##   кнопкой, ещё Q/E), колесо — дистанция. F или правый курок (действие
 ##   tool_work, держать) — работать инструментом: бур выдвигается из правого
 ##   предплечья, отпустить — уходит. У друзы бур выбуривает кристаллы (ProtoMining).
 ##   G — выстрелить кистью туда, куда смотрит камера, и подтянуться (G ещё
 ##   раз — отпустить).
-##   Геймпад: левый стик — ходьба, правый — камера, L3 — быстрее, RT — бур,
+##   Геймпад: левый стик — ходьба, правый — камера, L3 — бег, A — прыжок, RT — бур,
 ##   LT — кисть, D-pad вверх/вниз — дистанция (раскладка — ProtoControls).
-## Скорость хода и высота уступа зависят от гравитации планеты.
-## Высота под ногами — по видимой сетке рельефа (RobotGround: стопы по склону,
-## корпус с лёгким наклоном), в породу и на слишком крутые уступы не заходит. Камера на пружинной штанге. Под сводом сама
+## Скорость хода, высота уступа и прыжка зависят от гравитации планеты.
+## Высота под ногами — по видимой сетке рельефа и верху деталей завода
+## (RobotGround: стопы по склону, корпус с лёгким наклоном), в породу, в машины
+## и на слишком крутые уступы не заходит. Камера на пружинной штанге. Под сводом сама
 ## включает фару и сгущает тёмный туман.
 
 var robot: Node3D
@@ -25,10 +28,22 @@ var fog_out := Color()
 var fog_out_d := 0.0
 
 var cam_yaw := 0.0
-var cam_pitch := -0.32
+var cam_pitch := 0.28          # > 0 — камера над роботом, смотрит вниз
 var cam_dist := 4.6
 var vel := Vector3.ZERO
 var under := 0.0             # 0 — под небом, 1 — под сводом (сглажено)
+var vy := 0.0                # вертикальная скорость в прыжке/падении
+var air := false             # в воздухе: высоту задаёт vy, а не пол
+var capture := false         # --play: захватывать курсор для камеры мышью
+var _captured_once := false
+var _resume_capture := false
+
+const SPRINT_MULT := 2.3     # бег — во столько раз быстрее шага
+const G := 14.0              # м/с² при 1 g (чуть «игровее» настоящих 9.8)
+const JUMP_V := 5.5          # м/с при отрыве: ≈1.1 м на 1 g (выше трубы), на лёгкой планете выше
+const JUMP_MAX_H := 2.4      # потолок высоты прыжка на совсем лёгкой планете
+const PITCH_MIN := -0.6
+const PITCH_MAX := 1.2
 
 # Скриптовый маршрут.
 var route: Array = []
@@ -40,6 +55,7 @@ var route_len := 0.0
 var route_done := 0.0
 var fist: RobotFist
 var mining: ProtoMining
+var health: ProtoHealth       # прочность корпуса: удар при приземлении, вязкость жидкости
 
 # Скриптовая добыча (--auto=drill).
 var drill_auto := false
@@ -49,6 +65,20 @@ var drill_t := 0.0
 var drill_got := 0
 var drill_shots := 0
 var drill_prefix := ""
+# Скриптовый разбег с прыжком (--auto=jump): кадры бег, взлёт, вершина, приземление.
+var jump_auto := false
+var jump_t := 0.0
+var jump_prefix := ""
+var jump_shots := 0
+var _was_air := false
+# Проверка столкновений (--auto=bump): упереться в дробилку, перешагнуть трубу.
+var bump_view: ProtoPneumaticsView
+var bump_t := 0.0
+var bump_prefix := ""
+var bump_min := INF
+var bump_top := -INF
+var bump_shot2 := false
+var bump_jumped := false
 var cam_focus := Vector3.INF # точка, на которую смотрит камера (скрипт добычи); INF — на робота
 var finale := -1.0           # --auto=sound: время после конца маршрута (бур, кисть)
 
@@ -67,6 +97,7 @@ func setup(r: Node3D, c: Camera3D, t: ProtoTerrain, e: Environment) -> void:
 	fist = robot.get_node_or_null("fist")
 	ProtoControls.ensure()
 	ProtoMining.ensure_action()
+	process_mode = Node.PROCESS_MODE_ALWAYS   # следит за курсором и на паузе
 
 ## Маршрут: от площадки завода по склону к входу в пещеру и по ходу в зал.
 func auto_cave(prefix: String) -> void:
@@ -118,33 +149,83 @@ func _finale(dt: float) -> void:
 	if finale > 9.0:
 		get_tree().quit(0)
 
+## Ввод (x — вправо, y — вперёд) → направление в мире для камеры с рысканием yaw.
+## Длина inp — наклон стика (клавиши дают 1): лёгкий наклон — медленный шаг.
+static func move_dir(yaw: float, inp: Vector2) -> Vector3:
+	var fwd := Vector3(sin(yaw), 0, cos(yaw))
+	# Право на экране: камера смотрит вдоль fwd, значит право — fwd × вверх.
+	var right := fwd.cross(Vector3.UP)
+	return (fwd * inp.y + right * inp.x).normalized() * minf(1.0, inp.length())
+
+## Вернуть захват курсора (после меню).
+func recapture() -> void:
+	if capture:
+		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+
+## Камера мышью: при захваченном курсоре — всегда, без захвата — с правой кнопкой.
+## Клик — захватить курсор; отпускает его меню управления (Esc, ProtoControlsMenu).
 func _unhandled_input(e: InputEvent) -> void:
-	if e is InputEventMouseMotion and Input.is_mouse_button_pressed(MOUSE_BUTTON_RIGHT):
-		cam_yaw -= e.relative.x * 0.006
-		cam_pitch = clampf(cam_pitch - e.relative.y * 0.004, -1.1, 0.2)
+	if get_tree().paused:
+		return
+	var captured := Input.mouse_mode == Input.MOUSE_MODE_CAPTURED
+	if e is InputEventMouseMotion and (captured or Input.is_mouse_button_pressed(MOUSE_BUTTON_RIGHT)):
+		var d := ProtoControls.mouse_look(e.relative)
+		cam_yaw += d.x
+		cam_pitch = clampf(cam_pitch + d.y, PITCH_MIN, PITCH_MAX)
 	elif e is InputEventMouseButton and e.pressed:
-		if e.button_index == MOUSE_BUTTON_WHEEL_UP:
+		if e.button_index == MOUSE_BUTTON_LEFT and capture and not captured:
+			Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+			get_viewport().set_input_as_handled()
+		elif e.button_index == MOUSE_BUTTON_WHEEL_UP:
 			cam_dist = maxf(2.0, cam_dist - 0.4)
 		elif e.button_index == MOUSE_BUTTON_WHEEL_DOWN:
 			cam_dist = minf(12.0, cam_dist + 0.4)
 
 func _process(dt: float) -> void:
+	# Идёт и на паузе (process_mode ALWAYS): пока открыто окно или карточка,
+	# курсор свободен; закрылись — снова захвачен.
+	if get_tree().paused or robot.get_meta("ui_busy", false):
+		if Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
+			Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+			_resume_capture = true
+		if get_tree().paused:
+			return
+	elif _resume_capture:
+		_resume_capture = false
+		recapture()
 	dt = minf(dt, 0.25)
+	if bump_view != null or jump_auto:
+		dt = minf(dt, 1.0 / 30.0)   # проверки: шаг не зависит от того, как тянет машина
+	if capture and not _captured_once and route.is_empty() and not drill_auto:
+		_captured_once = true
+		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 	var want := Vector3.ZERO
 	# Тяжёлая планета — шаг медленнее, лёгкая — быстрее (ProtoWorldStyle).
 	var top_speed := RobotAnim.WALK_SPEED * terrain.style.walk_mult()
 	# Открыта карточка материала (ProtoLabPanel): стик и D-pad заняты ею.
-	var busy: bool = robot.get_meta("ui_busy", false)
+	var busy: bool = robot.get_meta("ui_busy", false) or robot.get_meta("wrecked", false)
 	if route.is_empty() and busy:
 		pass
 	elif route.is_empty():
 		var inp := ProtoControls.move_vector()
 		var look := ProtoControls.look_vector()
+		# Стик вверх — смотреть вверх: камера опускается за спину.
 		cam_yaw -= look.x * dt * 2.4
-		cam_pitch = clampf(cam_pitch + look.y * dt * 1.6, -1.1, 0.2)
+		cam_pitch = clampf(cam_pitch - look.y * dt * 1.6, PITCH_MIN, PITCH_MAX)
 		if Input.is_action_pressed(ProtoControls.CAM_ZOOM_IN): cam_dist = maxf(2.0, cam_dist - dt * 4.0)
 		if Input.is_action_pressed(ProtoControls.CAM_ZOOM_OUT): cam_dist = minf(12.0, cam_dist + dt * 4.0)
-		if Input.is_action_pressed(ProtoControls.SPRINT): top_speed *= 1.9
+		if Input.is_action_pressed(ProtoControls.SPRINT): top_speed *= SPRINT_MULT
+		if Input.is_action_just_pressed(ProtoControls.JUMP) and _can_jump():
+			jump()
+		if bump_view != null:
+			inp = Vector2(0, 1)
+			if bump_t > 4.0:
+				top_speed *= SPRINT_MULT
+			_auto_bump(dt)
+		if jump_auto:
+			inp = Vector2(0, 1)
+			top_speed *= SPRINT_MULT
+			_auto_jump(dt)
 		if drill_auto:
 			inp = Vector2.ZERO
 		if anim:
@@ -161,10 +242,7 @@ func _process(dt: float) -> void:
 				fist.release()
 		if inp != Vector2.ZERO:
 			# Вперёд — от камеры: камера смотрит вдоль (sin yaw, cos yaw).
-			var fwd := Vector3(sin(cam_yaw), 0, cos(cam_yaw))
-			var right := Vector3(-fwd.z, 0, fwd.x)
-			# Длина inp — наклон стика (клавиши дают 1): лёгкий наклон — медленный шаг.
-			want = (fwd * inp.y - right * inp.x).normalized() * minf(1.0, inp.length())
+			want = move_dir(cam_yaw, inp)
 		if drill_auto:
 			want = _auto_drill_walk()
 	else:
@@ -172,6 +250,9 @@ func _process(dt: float) -> void:
 		top_speed *= 1.7
 		if finale >= 0.0 and route_i >= route.size():
 			_finale(dt)
+	# В жидкости вязнет: чем глубже, тем медленнее.
+	if health != null and health.depth > 0.0:
+		top_speed *= lerpf(1.0, 0.5, clampf(health.depth / 0.9, 0.0, 1.0))
 	# Подтягивание: трос тянет робота к кисти.
 	if fist and fist.state == "pull":
 		var tw := robot.to_global(fist.target)
@@ -181,14 +262,19 @@ func _process(dt: float) -> void:
 			top_speed = 2.6
 		else:
 			fist.release()
-	vel = vel.move_toward(want * top_speed, dt * 3.0)
+	# В воздухе разгон слабее: направление прыжка почти не поменять.
+	vel = vel.move_toward(want * top_speed, dt * (1.2 if air else 3.0 * terrain.style.walk_mult()))
 	_move(vel * dt)
+	_vertical(dt)
 	if vel.length() > 0.05:
 		robot.rotation.y = lerp_angle(robot.rotation.y, atan2(vel.x, vel.z), minf(1.0, dt * 6.0))
 		if not route.is_empty():
 			cam_yaw = lerp_angle(cam_yaw, robot.rotation.y, minf(1.0, dt * 2.0))
 	if anim:
 		anim.speed = Vector2(vel.x, vel.z).length()
+		anim.speed_ref = terrain.style.walk_mult()
+		anim.airborne = air
+		anim.vy = vy
 	_mine(dt)
 	_underground(dt)
 	_camera()
@@ -248,7 +334,7 @@ func auto_drill(prefix: String) -> void:
 			var sh := sp + Vector3(0, 1.4, 0)
 			var near := INF
 			for k: MeshInstance3D in d.crystals:
-				near = minf(near, sh.distance_to(ProtoMining.nearest_on(k, sh)))
+				near = minf(near, ProtoMining.reach_dist(k, sh))
 			if near > ProtoMining.REACH - 0.1:
 				continue
 			# Крупная друза смотрится лучше мелкой.
@@ -353,9 +439,12 @@ func _move(d: Vector3) -> void:
 		_settle()
 		return
 	var np := robot.position + d
-	var g := terrain.floor_at(np + Vector3(0, 0.7, 0))
-	# Уступ выше колена за шаг или порода на уровне груди — не пройти.
-	if (g - robot.position.y) > maxf(terrain.style.step_height(), d.length() * 1.6) or terrain.solid(np.x, g + 1.2, np.z):
+	var g := ground_at(np + Vector3(0, 0.7, 0))
+	# Уступ выше колена за шаг, порода на уровне груди или машина — не пройти
+	# (в прыжке — порода на уровне ног или груди там, где робот сейчас).
+	var body := maxf(g, robot.position.y)
+	if (g - robot.position.y) > maxf(terrain.style.step_height(), d.length() * 1.6) or terrain.solid(np.x, body + 1.2, np.z) \
+			or (air and terrain.solid(np.x, robot.position.y + 0.3, np.z)) or (_hits_machine(Vector3(np.x, body, np.z)) and not _hits_machine(robot.position)):
 		vel *= 0.3
 		return
 	robot.position.x = np.x
@@ -365,11 +454,201 @@ func _move(d: Vector3) -> void:
 ## Высота и наклон — по видимой сетке рельефа (RobotGround); поле плотности —
 ## запасной вариант, если сетки под роботом нет.
 func _settle() -> void:
-	var g := terrain.floor_at(robot.position + Vector3(0, 0.6, 0))
+	if air:
+		return
+	var g := ground_at(robot.position + Vector3(0, 0.6, 0))
+	# Пол ушёл вниз больше чем на уступ — не «съезжать», а падать.
+	if robot.position.y - g > terrain.style.step_height() * 1.5 + 0.2:
+		air = true
+		vy = 0.0
+		return
 	if ground:
 		ground.place(g)
 	else:
 		robot.position.y = lerpf(robot.position.y, g, 0.5)
+
+## Разбег по площадке завода боком к камере; прыжок на 2.4 с.
+func auto_jump(prefix: String) -> void:
+	jump_prefix = prefix
+	jump_auto = true
+	# Самая ровная 9-метровая дорожка в стороне от завода, и чтобы сбоку (со стороны
+	# камеры) рельеф не загораживал.
+	var pc := terrain.plateau()
+	var best := INF
+	var st := pc
+	var yaw := 0.0
+	for k in 16:
+		var ang := TAU * k / 16.0
+		var f := Vector3(sin(ang), 0, cos(ang))
+		var side := Basis(Vector3.UP, ang - 1.35) * Vector3(0, 0, -1)
+		for r: float in [9.0, 11.0, 13.0, 15.0]:
+			var p0 := pc + Vector3(sin(ang + 2.0), 0, cos(ang + 2.0)) * r
+			var h0 := terrain.surface_h(p0.x, p0.z)
+			var cost := 0.0
+			for i in 10:
+				var q := p0 + f * i
+				cost += absf(terrain.surface_h(q.x, q.z) - h0)
+				# Не через завод и не в воду.
+				cost += 20.0 if Vector2(q.x - pc.x, q.z - pc.z).length() < 8.0 else 0.0
+				cost += 20.0 if terrain.solid(q.x, h0 + 1.0, q.z) else 0.0
+				var c := q + side * 5.0
+				cost += maxf(0.0, terrain.surface_h(c.x, c.z) - h0 - 1.0) * 0.5
+			if cost < best:
+				best = cost
+				st = p0
+				yaw = ang
+	robot.position = Vector3(st.x, terrain.surface_h(st.x, st.z), st.z)
+	robot.rotation.y = yaw
+	cam_yaw = yaw
+	cam_dist = 5.5
+	cam_pitch = 0.3
+
+func _auto_jump(dt: float) -> void:
+	jump_t += dt
+	# Камера сбоку, идёт вдоль разбега.
+	cam_yaw = robot.rotation.y - 1.35
+	cam_focus = robot.position + Vector3(0, 1.1, 0)
+	if jump_t > 2.4 and jump_t < 2.5 and _can_jump():
+		jump()
+	var shot := ""
+	if jump_shots == 0 and jump_t > 2.2:
+		shot = "бег"
+	elif jump_shots == 1 and air and vy < 2.6:
+		shot = "взлёт"
+	elif jump_shots == 2 and air and vy < 0.0:
+		shot = "вершина"
+	elif jump_shots == 3 and _was_air and not air:
+		shot = "приземление"
+	_was_air = air
+	if shot != "":
+		jump_shots += 1
+		var path := "%s_%d.png" % [jump_prefix, jump_shots]
+		get_viewport().get_texture().get_image().save_png(path)
+		print("кадр прыжка (%s): %s" % [shot, path])
+		if jump_shots >= 4:
+			get_tree().quit(0)
+	if jump_t > 8.0:
+		print("Прыжок: время вышло")
+		get_tree().quit(1)
+
+const BODY_R := 0.3          # радиус корпуса для столкновений с машинами
+
+## Пол под точкой p: первая видимая поверхность вниз — сетка рельефа, настил,
+## деталь завода (тела ProtoMachines); если тел нет — по полю плотности.
+func ground_at(p: Vector3) -> float:
+	var w := robot.get_world_3d() if robot and robot.is_inside_tree() else null
+	if w != null:
+		var q := PhysicsRayQueryParameters3D.create(p, p - Vector3(0, 8.0, 0),
+			ProtoMachines.LAYER_GROUND | ProtoMachines.LAYER_MACHINES)
+		var hit := w.direct_space_state.intersect_ray(q)
+		if not hit.is_empty():
+			return hit.position.y
+	return terrain.floor_at(p)
+
+## Корпус (шары у ног, у пояса и у груди) в машине — не пройти.
+func _hits_machine(at: Vector3) -> bool:
+	var w := robot.get_world_3d() if robot and robot.is_inside_tree() else null
+	if w == null:
+		return false
+	var sp := SphereShape3D.new()
+	sp.radius = BODY_R - 0.02
+	var q := PhysicsShapeQueryParameters3D.new()
+	q.shape = sp
+	q.collision_mask = ProtoMachines.LAYER_MACHINES
+	for h: float in [0.35, 0.8, 1.35]:
+		q.transform = Transform3D(Basis(), at + Vector3(0, h, 0))
+		if not w.direct_space_state.intersect_shape(q, 1).is_empty():
+			return true
+	return false
+
+## Скрипт столкновений: робот идёт на дробилку (клетка 0,0 демо-завода) —
+## должен остановиться у корпуса; потом бежит на трубу (1,0): она по пояс,
+## перешагнуть нельзя — перепрыгивает. Кадры путь_1/2.png, итог в консоль.
+func auto_bump(view: ProtoPneumaticsView, prefix: String) -> void:
+	bump_view = view
+	bump_prefix = prefix
+	_bump_start(Vector2i(0, 0))
+
+func _bump_start(c: Vector2i) -> void:
+	var at := ProtoPneumatics.cell_pos(bump_view.origin, c)
+	robot.position = Vector3(at.x, at.y + 0.3, at.z + 3.6)
+	robot.position.y = ground_at(robot.position + Vector3(0, 1.0, 0))
+	robot.rotation.y = PI
+	cam_yaw = PI           # вперёд — на −z, к линии завода
+	cam_pitch = 0.35
+	cam_dist = 4.5
+	vel = Vector3.ZERO
+
+func _auto_bump(dt: float) -> void:
+	bump_t += dt
+	var crusher := ProtoPneumatics.cell_pos(bump_view.origin, Vector2i(0, 0))
+	var pipe := ProtoPneumatics.cell_pos(bump_view.origin, Vector2i(1, 0))
+	if bump_t < 4.0:
+		bump_min = minf(bump_min, Vector2(robot.position.x - crusher.x, robot.position.z - crusher.z).length())
+		if bump_t + dt >= 4.0:
+			_shot("%s_1.png" % bump_prefix)
+			bump_jumped = false
+			_bump_start(Vector2i(1, 0))
+	elif bump_t < 9.0:
+		if robot.position.z - pipe.z < 1.15 and robot.position.z > pipe.z and not bump_jumped and _can_jump():
+			bump_jumped = true
+			jump()
+		if absf(robot.position.z - pipe.z) < 0.3:
+			bump_top = maxf(bump_top, robot.position.y - pipe.y)
+			if bump_top > 0.05 and not bump_shot2:
+				bump_shot2 = true
+				_shot("%s_2.png" % bump_prefix)
+	else:
+		var passed := robot.position.z < pipe.z - 1.0
+		if not passed:
+			_shot("%s_fail.png" % bump_prefix)   # где застрял
+			print("Столкновения: робот на ", robot.position, ", труба ", pipe)
+		print("Столкновения: до дробилки %.2f м (упёрся: %s); над трубой +%.2f м, перепрыгнул: %s" % [
+			bump_min, "да" if bump_min > 0.9 else "НЕТ", bump_top, "да" if passed else "НЕТ"])
+		get_tree().quit(0 if bump_min > 0.9 and passed else 1)
+
+func _shot(path: String) -> void:
+	get_viewport().get_texture().get_image().save_png(path)
+	print("кадр: ", path)
+
+## Прыгать можно с земли и когда руки свободны: не в стройке, не на тросе, не с буром.
+func _can_jump() -> bool:
+	if air or not route.is_empty() or drill_auto:
+		return false
+	var b := get_parent().get_node_or_null("builder")
+	if b != null and b.get("active"):
+		return false
+	if fist and fist.state == "pull":
+		return false
+	return anim == null or anim.work < 0.3
+
+## Прыжок: скорость отрыва одна, высота — от гравитации (на лёгкой выше).
+func jump() -> void:
+	var g := G * terrain.style.gravity
+	vy = minf(JUMP_V, sqrt(2.0 * g * JUMP_MAX_H))
+	air = true
+	robot.position.y += 0.02
+
+## Полёт: тяжесть, удар головой о свод, приземление на пол.
+func _vertical(dt: float) -> void:
+	if not air:
+		return
+	vy -= G * terrain.style.gravity * dt
+	var p := robot.position
+	if vy > 0.0 and terrain.solid(p.x, p.y + 2.0 + vy * dt, p.z):
+		vy = 0.0
+	robot.position.y += vy * dt
+	var g := ground_at(robot.position + Vector3(0, 0.6, 0))
+	if vy <= 0.0 and robot.position.y <= g:
+		robot.position.y = g
+		air = false
+		if ground:
+			ground.snap(g)
+		if anim:
+			anim.land = clampf(-vy / 6.0, 0.25, 1.0)
+		if health != null:
+			health.landed(-vy)
+		vy = 0.0
 
 func _follow_route() -> Vector3:
 	if route_i >= route.size():
