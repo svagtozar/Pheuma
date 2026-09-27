@@ -221,11 +221,14 @@ static func _net_to(net) -> Dictionary:
 			"busy": SaveGame.p_to(part.busy) if part.get("busy") != null else null,
 			"progress": part.get("progress", 0.0), "cd": part.get("cd", 0.0),
 			"gas": net.gas.amount(part.id)}
+		if part.has("temp"):
+			pd.temp = part.temp
 		var cap = part.get("cap")
 		if cap != null:
 			pd.cap = {"p": SaveGame.p_to(cap.p), "cell": [cap.cell.x, cap.cell.y], "from": [cap.from.x, cap.from.y], "t": cap.t}
 		parts.append(pd)
-	return {"parts": parts, "produced": net.produced.duplicate()}
+	return {"parts": parts, "produced": net.produced.duplicate(),
+		"launched": {"kg": net.launched_kg, "subs": net.launched_subs.duplicate()}}
 
 static func _net_from(net, planet: Planet, d: Dictionary) -> void:
 	for c in net.parts.keys():
@@ -250,6 +253,8 @@ static func _net_from(net, planet: Planet, d: Dictionary) -> void:
 		part.busy = _p_from(planet, pd.busy)
 		part.progress = float(pd.progress)
 		part.cd = float(pd.cd)
+		if pd.has("temp"):
+			part.temp = float(pd.temp)
 		if pd.has("cap"):
 			var cp := _p_from(planet, pd.cap.p)
 			if cp != null:
@@ -266,6 +271,11 @@ static func _net_from(net, planet: Planet, d: Dictionary) -> void:
 	var pr: Dictionary = d.get("produced", {})
 	for k in pr:
 		net.produced[k] = float(pr[k])
+	var la: Dictionary = d.get("launched", {})
+	net.launched_kg = float(la.get("kg", 0.0))
+	net.launched_subs = {}
+	for k in la.get("subs", {}):
+		net.launched_subs[k] = float(la.subs[k])
 	net.events.clear()
 
 # ---------------------------------------------------------------- мелочи

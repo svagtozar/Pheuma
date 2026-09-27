@@ -9,6 +9,8 @@ const PIPE_Y := 0.55
 const PIPE_R := 0.16
 
 var net: ProtoPneumatics
+## Облик сооружений целей (GoalModels.STYLES): "" — MachineModels.
+static var goal_style := ""
 var origin := Vector3.ZERO
 var running := true
 ## В игре подпись видна только у ближней к роботу машины (в LABEL_R м): иначе
@@ -199,7 +201,7 @@ static func build_part(kind: String, sub: Substance, dir: int, links: Array, hol
 			core = _lab_mesh(body)
 		_:
 			# Пушка и машины обработки 2D-игры — общие модели (MachineModels).
-			core = MachineModels.build(kind, body)
+			core = GoalModels.build(kind, body, goal_style)
 			core.scale = Vector3(0.85, 0.85, 0.85)
 			core.name = "model"
 	# Машины смотрят выходом по dir: модель строится выходом на +Z.
@@ -648,10 +650,25 @@ func _play_events() -> void:
 					var ln: Node3D = _nodes.get(net.parts.get(e.cell, {}).get("id", -1))
 					if ln:
 						ln.set_meta("flash", 1.0)
+			"launch":
+				_launch(ProtoPneumatics.cell_pos(origin, e.cell), e.sub.color)
 			"shot":
 				var sd: Vector2i = ProtoPneumatics.DIRS[e.dir]
 				_puff(ProtoPneumatics.cell_pos(origin, e.cell) + Vector3(sd.x * 1.1, 1.8, sd.y * 1.1), Color(0.9, 0.95, 1.0), 24)
 	net.events.clear()
+
+## Старт пусковой шахты: клуб газа и капсула, уходящая в небо.
+func _launch(at: Vector3, col: Color) -> void:
+	_puff(at + Vector3(0, 0.9, 0), Color(0.9, 0.95, 1.0), 80)
+	var mi := MeshInstance3D.new()
+	mi.mesh = _cap_mesh
+	mi.scale = Vector3.ONE * 2.2
+	mi.material_override = ProtoMachines.glow(col, 2.0)
+	mi.position = at + Vector3(0, 1.6, 0)
+	add_child(mi)
+	var tw := mi.create_tween()
+	tw.tween_property(mi, "position:y", at.y + 60.0, 2.5).set_ease(Tween.EASE_IN).set_trans(Tween.TRANS_QUAD)
+	tw.tween_callback(mi.queue_free)
 
 func _puff(at: Vector3, col: Color, amount: int) -> void:
 	var p := CPUParticles3D.new()
