@@ -19,7 +19,13 @@ static func merge_children(root: Node) -> int:
 
 static func _merge_leaves(n: Node3D) -> int:
 	var groups := {}
+	# Безымянные неподвижные узлы-группы из одних листьев (патрубок, опора)
+	# растворяются в родителе: их сетки клеятся вместе с его собственными.
+	var subs := []
 	for c in n.get_children():
+		if _plain_group(c):
+			subs.append(c)
+	for c in n.get_children() + _children_of(subs):
 		var mi := c as MeshInstance3D
 		if mi == null or not _leaf(mi):
 			continue
@@ -34,7 +40,10 @@ static func _merge_leaves(n: Node3D) -> int:
 			continue
 		var parts := []
 		for mi: MeshInstance3D in list:
-			parts.append([mi.mesh, mi.transform])
+			var xf := mi.transform
+			if mi.get_parent() != n:
+				xf = (mi.get_parent() as Node3D).transform * xf
+			parts.append([mi.mesh, xf])
 		var first: MeshInstance3D = list[0]
 		var out := MeshInstance3D.new()
 		out.mesh = merged(parts)
@@ -42,9 +51,74 @@ static func _merge_leaves(n: Node3D) -> int:
 		out.cast_shadow = first.cast_shadow
 		out.layers = first.layers
 		n.add_child(out)
-		n.move_child(out, first.get_index())
+		var at: Node = first if first.get_parent() == n else first.get_parent()
+		n.move_child(out, at.get_index())
 		for mi: MeshInstance3D in list:
-			n.remove_child(mi)
+			mi.get_parent().remove_child(mi)
+			mi.free()
+		saved += list.size() - 1
+	for g: Node3D in subs:
+		if g.get_child_count() == 0:
+			n.remove_child(g)
+			g.free()
+	return saved
+
+static func _children_of(nodes: Array) -> Array:
+	var out := []
+	for g: Node in nodes:
+		out.append_array(g.get_children())
+	return out
+
+## Узел — просто группа: Node3D без имени, метаданных и скрипта, видимый,
+## а внутри только сетки-листья.
+static func _plain_group(c: Node) -> bool:
+	if c.get_class() != "Node3D" or not String(c.name).begins_with("@") or c.get_script() != null \
+			or not c.get_meta_list().is_empty() or not (c as Node3D).visible or c.get_child_count() == 0:
+		return false
+	for ch in c.get_children():
+		if not (ch is MeshInstance3D and _leaf(ch)):
+			return false
+	return true
+
+## Склейка неподвижных деталей многих узлов (машины завода) в общие сетки под
+## into — по одной на материал. Берём листья, у которых на пути до корня
+## (узла из roots) только безымянные узлы или имена из static_names: всё
+## остальное с именем (ролик, карусель, лампа, груз) живое и остаётся на месте.
+## Корни должны лежать прямо в into. Возвращает, сколько сеток стало меньше.
+static func merge_static(into: Node3D, roots: Array, static_names: Array = []) -> int:
+	var groups := {}
+	for r: Node3D in roots:
+		var stack: Array = [[r, r.transform]]
+		while not stack.is_empty():
+			var it: Array = stack.pop_back()
+			for c in (it[0] as Node).get_children():
+				var mi := c as MeshInstance3D
+				if mi != null and _leaf(mi):
+					var k := "%d/%d/%d" % [mi.material_override.get_instance_id(), mi.cast_shadow, mi.layers]
+					if not groups.has(k):
+						groups[k] = []
+					groups[k].append([mi, (it[1] as Transform3D) * mi.transform])
+				elif c.get_class() == "Node3D" and (c as Node3D).visible \
+						and (String(c.name).begins_with("@") or String(c.name) in static_names):
+					stack.append([c, (it[1] as Transform3D) * (c as Node3D).transform])
+	var saved := 0
+	for k in groups:
+		var list: Array = groups[k]
+		if list.size() < 2:
+			continue
+		var parts := []
+		for e in list:
+			parts.append([(e[0] as MeshInstance3D).mesh, e[1]])
+		var first: MeshInstance3D = list[0][0]
+		var out := MeshInstance3D.new()
+		out.mesh = merged(parts)
+		out.material_override = first.material_override
+		out.cast_shadow = first.cast_shadow
+		out.layers = first.layers
+		into.add_child(out)
+		for e in list:
+			var mi: MeshInstance3D = e[0]
+			mi.get_parent().remove_child(mi)
 			mi.free()
 		saved += list.size() - 1
 	return saved

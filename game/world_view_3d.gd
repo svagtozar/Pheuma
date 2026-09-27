@@ -291,8 +291,7 @@ func _cursor() -> void:
 
 # ---------------------------------------------------------------- машины
 
-func _machine_node(m: Machine) -> Node3D:
-	var body := ProtoMachines.surface(m.built_from) if m.built_from != null else ProtoMachines.surface(world.starter)
+func _machine_node(m: Machine, body: Material) -> Node3D:
 	var n := MachineModels.build(m.kind, body)
 	n.position = terrain.cell_pos(m.cell)
 	var d: Vector2i = Machine.DIRS[m.facing]
@@ -312,8 +311,7 @@ func _machine_node(m: Machine) -> Node3D:
 	return n
 
 ## Склад и пневмобатарея 2×2: главная секция несёт общую крышу или тяжёлый ствол.
-func _structure_node(m: Machine) -> Node3D:
-	var body := ProtoMachines.surface(m.built_from if m.built_from != null else world.starter)
+func _structure_node(m: Machine, body: Material) -> Node3D:
 	var n := Node3D.new()
 	n.position = (terrain.cell_pos(m.cell) + terrain.cell_pos(m.cell + Vector2i(1, 1))) / 2.0
 	if m.kind == "warehouse_section":
@@ -386,12 +384,25 @@ func _rebuild_machines() -> void:
 	for ch in _machines.get_children():
 		ch.queue_free()
 	_live.clear()
+	# Корпус — один материал на вещество: одинаковые части разных машин
+	# склеиваются в одну сетку.
 	var mats := {}
+	var roots: Array = []
+	var pipes := Node3D.new()
+	_machines.add_child(pipes)
+	roots.append(pipes)
 	for id in world.machines:
 		var m: Machine = world.machines[id]
-		_machines.add_child(_machine_node(m))
+		var sub: Substance = m.built_from if m.built_from != null else world.starter
+		if not mats.has(sub.id):
+			mats[sub.id] = ProtoMachines.surface(sub)
+		var n := _machine_node(m, mats[sub.id])
+		_machines.add_child(n)
+		roots.append(n)
 		if m.kind in ["warehouse_section", "battery_section"] and m.master_id == m.id:
-			_machines.add_child(_structure_node(m))
+			var st := _structure_node(m, mats[sub.id])
+			_machines.add_child(st)
+			roots.append(st)
 		if m.kind == "pipe":
 			# Труба тянется к соседним трубам и машинам (к трубам — один раз на пару).
 			for d in Machine.DIRS:
@@ -402,9 +413,12 @@ func _rebuild_machines() -> void:
 				var b := terrain.cell_pos(m.cell + d) + Vector3(0, 0.4, 0)
 				if o.kind != "pipe":
 					b = a.lerp(b, 0.6)
-				if not mats.has(m.id):
-					mats[m.id] = ProtoMachines.surface(m.built_from if m.built_from != null else world.starter)
-				ProtoMachines.pipe(_machines, a, b, mats[m.id], 2)
+				ProtoMachines.pipe(pipes, a, b, mats[sub.id], 2)
+	# Неподвижные части всей базы — общими сетками по материалу (ProtoBatch);
+	# лампа, «spin» и «fill» названы и остаются живыми в своих машинах.
+	for n: Node3D in roots:
+		ProtoBatch.merge_children(n)
+	ProtoBatch.merge_static(_machines, roots)
 
 func _machine_signature() -> String:
 	var parts := PackedStringArray()
