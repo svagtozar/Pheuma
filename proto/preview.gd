@@ -17,7 +17,7 @@ extends Node3D
 ##   сейчас, F9 — вернуться к сохранённому; --fresh — начать планету заново
 ##   Ран (ProtoRun, в --play всегда; --run — и без него): цель планеты из трёх
 ##   этапов, награды, прокачка, события, советы и итоги; Esc / Menu — меню,
-##   K — прокачка; --open=briefing|choice|reward|menu|skills|end|event — открыть
+##   K — прокачка; --open=briefing|choice|reward|menu|settings|skills|end|event — открыть
 ##   окно или начать событие (для кадра)
 ##   Разведка материалов (ProtoLabDesk, ProtoLabPanel): Z / A — коснуться друзы, машины
 ##   или груза и открыть карточку (пробы, догадки), V / RB — анализатор; в линии
@@ -26,9 +26,10 @@ extends Node3D
 ##   заново, --tutorial=N — с шага N (для кадра), --no-tutorial — без него
 ##   --robot=clean (по умолчанию; другой вариант из RobotDesigns или old — прежний
 ##   каркас; корпус — металл планеты)
-## Сборка для проверки (фича play3d в export_presets.cfg) стартует прямо сюда,
-## сразу с управлением: Select/View или Tab — другая планета, Start или Esc — меню
-## рана (там же выход).
+## Сборка для проверки (фича play3d в export_presets.cfg) стартует с главного
+## меню (ProtoMainMenu, proto/menu.tscn): продолжить, новая планета, настройки;
+## оттуда — сюда, сразу с управлением. Start или Esc — пауза (меню рана: настройки,
+## сохранить, новая планета, в главное меню, выход). С --screenshot меню пропускается.
 ## Планета — настоящий генератор: теги задают небо, свет и дымку, жидкие при её
 ## температуре материалы — реки и озёра, твёрдые — корпуса машин. Форма рельефа,
 ## тип пещеры, облик кристаллов и гравитация — по тегам (ProtoWorldStyle).
@@ -77,11 +78,13 @@ var tutorial_mode := ""      # --tutorial — начать обучение за
 ## Сид следующей планеты в сборке для проверки (переживает перезагрузку сцены).
 static var build_seed := 14
 static var _booted := false
-## «Новая планета» из меню рана вне сборки: сид для перезагруженной сцены.
-static var next_seed := -1
+## Главное меню: «Начать заново» — не загружать сохранение этой планеты.
+static var start_fresh := false
+## Запуск из главного меню (ProtoMainMenu.launch): играть на build_seed, как в сборке.
+static var from_menu := false
 
 func _ready() -> void:
-	if OS.has_feature("play3d"):
+	if OS.has_feature("play3d") or from_menu:
 		play = true
 		if not _booted:
 			# Первый запуск сборки — с планеты, где играли в прошлый раз.
@@ -90,6 +93,9 @@ func _ready() -> void:
 			if last >= 0:
 				build_seed = last
 		seed_value = build_seed
+	if start_fresh:
+		fresh = true
+		start_fresh = false
 	for a in OS.get_cmdline_user_args():
 		if a.begins_with("--seed="): seed_value = int(a.substr(7))
 		elif a.begins_with("--view="): view = a.substr(7)
@@ -114,8 +120,6 @@ func _ready() -> void:
 		elif a == "--tutorial": tutorial_mode = "0"
 		elif a.begins_with("--tutorial="): tutorial_mode = a.substr(11)
 		elif a == "--no-tutorial": tutorial_mode = "off"
-	if next_seed >= 0:
-		seed_value = next_seed
 	if auto == "drill":
 		RobotDesigns.tool_r = "drill"
 		view = "cave"
@@ -181,6 +185,8 @@ func _ready() -> void:
 		saves.setup(self, fresh)
 	if play or want_run:
 		_run()
+	# Настройки графики и звука (ProtoSettings): тени солнца, громкость шины мира.
+	ProtoSettings.apply()
 
 ## Сохранение (ProtoSave) зовёт после постройки сцены: убрать выбуренные друзы.
 func restore_mined(ids: Array) -> void:
@@ -770,7 +776,7 @@ func _hud() -> void:
 		hud.pad = true
 	if OS.has_feature("play3d"):
 		# Выход — из меню рана (Esc / Menu, строка «Меню» в HUD).
-		hud.extra_hints = [["Сохранить", "F5", "R3"], ["Другая планета", "Tab", "View"]]
+		hud.extra_hints = [["Сохранить", "F5", "R3"]]
 	add_child(hud)
 
 ## Обучение первых минут: в игре — пока не пройдено или не закрыто
@@ -851,25 +857,6 @@ func _lab_demo() -> void:
 		lab_desk.toggle_guess(s, pos[0])
 	lab_panel._sig = ""
 
-## Сборка для проверки: другая планета и выход с геймпада или клавиатуры.
-func _unhandled_input(e: InputEvent) -> void:
-	if not OS.has_feature("play3d") or not e.is_pressed() or e.is_echo():
-		return
-	var next: bool = (e is InputEventJoypadButton and e.button_index == JOY_BUTTON_BACK) \
-		or (e is InputEventKey and e.physical_keycode == KEY_TAB)
-	# Start и Esc открывают меню рана (ProtoRunUi); выход — оттуда.
-	var quit: bool = run_ui == null and ((e is InputEventJoypadButton and e.button_index == JOY_BUTTON_START) \
-		or (e is InputEventKey and e.physical_keycode == KEY_ESCAPE))
-	if next and run_ui != null and run_ui.modal != "":
-		return
-	if (next or quit) and saves != null:
-		saves.save_now(true)
-	if next:
-		build_seed = seed_value + 1
-		get_tree().reload_current_scene()
-	elif quit:
-		get_tree().quit()
-
 func _process(dt: float) -> void:
 	_t += dt
 	if run != null:
@@ -906,6 +893,11 @@ func _run() -> void:
 	run_ui.name = "run_ui"
 	run_ui.setup(run, robot, hud)
 	run_ui.on_new_planet = _next_planet
+	run_ui.on_resume = _recapture
+	if saves != null:
+		run_ui.on_save = func() -> String: return ProtoSave.write(self)
+	if play:
+		run_ui.on_main_menu = _main_menu
 	run_ui.pause_game = shot_path == ""          # для кадра сцена не должна вставать
 	if play:
 		run_ui.on_quit = _quit
@@ -945,16 +937,25 @@ func _open_for_shot() -> void:
 			run.goals.completed = true
 			run.mined = 42.0
 			run.stats.hits = 21
-		"menu":
-			run_ui.open.call_deferred("menu")
+		"menu", "settings":
+			run_ui.open.call_deferred(open_win)
 
+## «Новая планета» — выбор в главном меню (сид по умолчанию — следующий).
 func _next_planet() -> void:
 	if saves != null:
 		saves.save_now(true)
-	build_seed = seed_value + 1
-	next_seed = seed_value + 1
-	get_tree().paused = false
-	get_tree().reload_current_scene()
+	ProtoMainMenu.goto_picker(get_tree(), seed_value + 1)
+
+func _main_menu() -> void:
+	if saves != null:
+		saves.save_now(true)
+	ProtoMainMenu.goto_menu(get_tree())
+
+## После паузы — снова захватить мышь для камеры (если игрок это умеет).
+func _recapture() -> void:
+	var pl := get_node_or_null("player")
+	if pl != null and pl.has_method("recapture"):
+		pl.recapture()
 
 func _quit() -> void:
 	if saves != null:
