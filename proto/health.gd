@@ -8,7 +8,8 @@ extends Node
 ##   Защита — из материала корпуса (ComponentStats, как в 2D: корпус даёт половину
 ##   своей защиты); выше предела нагрева корпуса жар бьёт вдвое, упругий корпус
 ##   смягчает удар.
-##   Починка: у завода — сама, H / D-pad ← (держать) — материалами из груза
+##   Починка: у завода — сама, H / D-pad → (держать; в стройке эта кнопка листает
+##   детали) — материалами из груза
 ##   (металл и твёрдое чинят лучше).
 ##   Поломка: робот оседает, через пару секунд собирается на базе, груз потерян.
 ## Данные для HUD и звука «утиные»: robot.get_meta("health") — этот узел.
@@ -32,7 +33,7 @@ var planet: Planet
 var player: Node                 # ProtoPlayer (vel, air, vy, fist)
 var fx: ProtoHurtFx
 var active := true               # false — урона нет (скриптовые маршруты для кадров)
-var input_enabled := true        # H / D-pad ← — починка из груза
+var input_enabled := true        # H / D-pad → — починка из груза
 
 var hull: Substance
 var stats := {}
@@ -82,7 +83,7 @@ static func ensure_action() -> void:
 	InputMap.action_add_event(REPAIR, k)
 	var b := InputEventJoypadButton.new()
 	b.device = -1
-	b.button_index = JOY_BUTTON_DPAD_LEFT
+	b.button_index = JOY_BUTTON_DPAD_RIGHT
 	InputMap.action_add_event(REPAIR, b)
 
 # ---------------------------------------------------------------- правила
