@@ -2,13 +2,17 @@ extends Node3D
 ## Предпросмотр объёмного 3D-визуала (к игре не подключён).
 ##   godot --path . res://proto/preview.tscn -- --seed=14 --view=third|plan|cave --screenshot=путь.png
 ##   --play — ходить самому (WASD, Shift, Q/E или мышь с ПКМ, колесо; F — бур,
-##   G — выстрел кистью и подтягивание); --tool=drill — бур в правом предплечье
+##   G — выстрел кистью и подтягивание; геймпад — см. ProtoControls); --tool=drill — бур в правом предплечье
 ##   --auto=cave --screenshot=путь.png — маршрут в пещеру, кадры путь_1..4.png
 ##   --view=factory — пневмозавод крупно; --build — режим стройки (призрак детали)
-##   В --play: B — стройка, Tab — деталь, R — повернуть, Пробел — поставить,
+##   В --play: B — стройка, T — деталь, R — повернуть, Пробел — поставить,
 ##   X — разобрать, C — выгрузить груз в приёмник (подробно — ProtoBuilder)
+##   --auto=sound — тот же маршрут без кадров, в конце бур у стены и выстрел кистью
+##   (для проверки звука); --record=путь.wav — записать звук, --mute — без звука
 ##   --robot=clean (по умолчанию; другой вариант из RobotDesigns или old — прежний
 ##   каркас; корпус — металл планеты)
+## Сборка для проверки (фича play3d в export_presets.cfg) стартует прямо сюда,
+## сразу с управлением: Select/View или Tab — другая планета, Start или Esc — выход.
 ## Планета — настоящий генератор: теги задают небо, свет и дымку, жидкие при её
 ## температуре материалы — реки и озёра, твёрдые — корпуса машин.
 
@@ -23,12 +27,20 @@ var cam: Camera3D
 var _t := 0.0
 var play := false            # --play: управление от третьего лица
 var auto := ""               # --auto=cave: скриптовый маршрут с кадрами
+var record := ""             # --record=путь.wav: записать звук (с --play или --auto)
+var mute := false            # --mute: без звука
 var env: Environment
 var pneu: ProtoPneumatics
 var pneu_view: ProtoPneumaticsView
 var build := false           # --build: режим стройки (с --play или для кадра)
 
+## Сид следующей планеты в сборке для проверки (переживает перезагрузку сцены).
+static var build_seed := 14
+
 func _ready() -> void:
+	if OS.has_feature("play3d"):
+		play = true
+		seed_value = build_seed
 	for a in OS.get_cmdline_user_args():
 		if a.begins_with("--seed="): seed_value = int(a.substr(7))
 		elif a.begins_with("--view="): view = a.substr(7)
@@ -37,7 +49,11 @@ func _ready() -> void:
 		elif a == "--play": play = true
 		elif a.begins_with("--tool="): RobotDesigns.tool_r = a.substr(7)
 		elif a.begins_with("--auto="): auto = a.substr(7)
+		elif a.begins_with("--record="): record = a.substr(9)
+		elif a == "--mute": mute = true
 		elif a == "--build": build = true
+	if auto == "sound" and RobotDesigns.tool_r == "":
+		RobotDesigns.tool_r = "drill"
 	planet = PlanetGen.generate(seed_value)
 	var t0 := Time.get_ticks_msec()
 	terrain = ProtoTerrain.new(seed_value)
@@ -68,6 +84,14 @@ func _ready() -> void:
 		if auto == "cave":
 			pl.auto_cave(shot_path.get_basename() if shot_path != "" else "user://route")
 			shot_path = ""
+		elif auto == "sound":
+			pl.auto_sound()
+		if not mute:
+			var snd := ProtoSound.new()
+			snd.name = "sound"
+			snd.record_path = record
+			snd.setup(robot, terrain, pl, planet)
+			add_child(snd)
 	if play or build:
 		_builder()
 
@@ -544,6 +568,31 @@ func _caption() -> void:
 		", ".join(PackedStringArray(planet.tags.map(func(t): return PlanetTags.display(t)))), planet.ambient_temp, planet.atm_pressure, view,
 		"; ".join(PackedStringArray(liq)) if not liq.is_empty() else "нет"]
 	layer.add_child(l)
+	if OS.has_feature("play3d"):
+		var h := Label.new()
+		h.anchor_top = 1.0
+		h.anchor_bottom = 1.0
+		h.offset_left = 16
+		h.offset_top = -34
+		h.add_theme_font_size_override("font_size", 14)
+		h.add_theme_color_override("font_outline_color", Color(0, 0, 0))
+		h.add_theme_constant_override("outline_size", 4)
+		h.text = "Стик — ходьба, правый стик — камера, L3 — бег, RT — бур, LT — кисть, D-pad — дистанция, Select — другая планета, Start — выход"
+		layer.add_child(h)
+
+## Сборка для проверки: другая планета и выход с геймпада или клавиатуры.
+func _unhandled_input(e: InputEvent) -> void:
+	if not OS.has_feature("play3d") or not e.is_pressed() or e.is_echo():
+		return
+	var next: bool = (e is InputEventJoypadButton and e.button_index == JOY_BUTTON_BACK) \
+		or (e is InputEventKey and e.physical_keycode == KEY_TAB)
+	var quit: bool = (e is InputEventJoypadButton and e.button_index == JOY_BUTTON_START) \
+		or (e is InputEventKey and e.physical_keycode == KEY_ESCAPE)
+	if next:
+		build_seed = seed_value + 1
+		get_tree().reload_current_scene()
+	elif quit:
+		get_tree().quit()
 
 func _process(dt: float) -> void:
 	_t += dt

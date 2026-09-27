@@ -3,7 +3,7 @@ extends Node
 ## Стройка пневмозавода роботом (в --play). Деталь ставится в клетку перед
 ## роботом, выходом туда, куда он смотрит (R — повернуть ещё).
 ##   B / Y на геймпаде      — режим стройки вкл/выкл
-##   Tab / D-pad вправо-влево — выбрать деталь
+##   T / D-pad вправо-влево — выбрать деталь (Tab занят сменой планеты)
 ##   R / RB                  — повернуть
 ##   M / LB                  — материал детали (из твёрдых материалов планеты)
 ##   Пробел / A              — поставить
@@ -37,7 +37,7 @@ var _note_t := 0.0
 static func ensure_actions() -> void:
 	var layout := {
 		BUILD_MODE: [_key(KEY_B), _button(JOY_BUTTON_Y)],
-		BUILD_NEXT: [_key(KEY_TAB), _button(JOY_BUTTON_DPAD_RIGHT)],
+		BUILD_NEXT: [_key(KEY_T), _button(JOY_BUTTON_DPAD_RIGHT)],
 		BUILD_PREV: [_button(JOY_BUTTON_DPAD_LEFT)],
 		BUILD_ROTATE: [_key(KEY_R), _button(JOY_BUTTON_RIGHT_SHOULDER)],
 		BUILD_MATERIAL: [_key(KEY_M), _button(JOY_BUTTON_LEFT_SHOULDER)],
@@ -161,7 +161,7 @@ func _hud() -> void:
 		var sub := material()
 		var st := ComponentStats.compute(ProtoPneumatics.KINDS[kind()].stat, sub)
 		lines.append("СТРОЙКА: %s  из «%s» (предел %.1f атм)" % [ProtoPneumatics.KINDS[kind()].n, sub.name, st.max_p])
-		lines.append("Tab/D-pad — деталь · R/RB — повернуть · M/LB — материал · Пробел/A — поставить · X/B — разобрать")
+		lines.append("T/D-pad — деталь · R/RB — повернуть · M/LB — материал · Пробел/A — поставить · X/B — разобрать")
 	else:
 		lines.append("B/Y — стройка")
 	lines.append("Груз: %.1f кг · C/X — выгрузить в приёмник" % m)
