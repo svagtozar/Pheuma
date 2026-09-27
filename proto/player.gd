@@ -55,6 +55,7 @@ var route_len := 0.0
 var route_done := 0.0
 var fist: RobotFist
 var mining: ProtoMining
+var health: ProtoHealth       # прочность корпуса: удар при приземлении, вязкость жидкости
 
 # Скриптовая добыча (--auto=drill).
 var drill_auto := false
@@ -202,7 +203,7 @@ func _process(dt: float) -> void:
 	# Тяжёлая планета — шаг медленнее, лёгкая — быстрее (ProtoWorldStyle).
 	var top_speed := RobotAnim.WALK_SPEED * terrain.style.walk_mult()
 	# Открыта карточка материала (ProtoLabPanel): стик и D-pad заняты ею.
-	var busy: bool = robot.get_meta("ui_busy", false)
+	var busy: bool = robot.get_meta("ui_busy", false) or robot.get_meta("wrecked", false)
 	if route.is_empty() and busy:
 		pass
 	elif route.is_empty():
@@ -249,6 +250,9 @@ func _process(dt: float) -> void:
 		top_speed *= 1.7
 		if finale >= 0.0 and route_i >= route.size():
 			_finale(dt)
+	# В жидкости вязнет: чем глубже, тем медленнее.
+	if health != null and health.depth > 0.0:
+		top_speed *= lerpf(1.0, 0.5, clampf(health.depth / 0.9, 0.0, 1.0))
 	# Подтягивание: трос тянет робота к кисти.
 	if fist and fist.state == "pull":
 		var tw := robot.to_global(fist.target)
@@ -642,6 +646,8 @@ func _vertical(dt: float) -> void:
 			ground.snap(g)
 		if anim:
 			anim.land = clampf(-vy / 6.0, 0.25, 1.0)
+		if health != null:
+			health.landed(-vy)
 		vy = 0.0
 
 func _follow_route() -> Vector3:
