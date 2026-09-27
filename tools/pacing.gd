@@ -212,12 +212,7 @@ func _step() -> void:
 ## Этапы завода: сырьё есть — ждём и докладываем; баки полны — ставим бак;
 ## давления нет — насос.
 func _feed_or_wait() -> void:
-	var net: ProtoPneumatics = game.pneu
-	var free := 0.0
-	for c in net.parts:
-		if net.parts[c].kind == "tank":
-			free += ProtoPneumatics.KINDS.tank.cap - net.mass_in(c)
-	if free < 4.0:
+	if not run.full_tanks().is_empty():
 		await build_part("tank")
 		return
 	if run.net_pressure() - game.planet.atm_pressure < ProtoPneumatics.MOVE_P * 2.0 and _pumps() < 6:
@@ -296,7 +291,9 @@ func _near_factory() -> bool:
 	return Vector2(p.x - f.x, p.z - f.z).length() < ProtoHealth.FACTORY_R - 1.0
 
 func _factory_stand() -> Vector3:
-	return _intake_stand()
+	var c: Vector3 = game.health.factory_at + Vector3(0, 0, 4.0)
+	c.y = game.terrain.floor_at(c + Vector3(0, 3.0, 0))
+	return c
 
 func _intake_cell() -> Vector2i:
 	return Vector2i(-3, 0) if game.pneu.parts.has(Vector2i(-3, 0)) else game.pneu.parts.keys()[0]
@@ -439,9 +436,8 @@ func build_pump() -> void:
 ## Поставить деталь рядом с сетью: свободная клетка, соседняя с трубой/насосом.
 func build_part(kind: String) -> void:
 	var net: ProtoPneumatics = game.pneu
-	var mats: Array = game._solid_mats()
-	mats.sort_custom(func(a, b): return ComponentStats.compute("pipe", a).max_p > ComponentStats.compute("pipe", b).max_p)
-	var sub: Substance = mats[0] if not mats.is_empty() else World.starter_substance()
+	# Материал — как у стройки по умолчанию: тот, из которого стоит завод.
+	var sub: Substance = game.factory_mat if game.get("factory_mat") != null else World.starter_substance()
 	var cell := Vector2i(9999, 0)
 	var dir := 3
 	var keys: Array = net.parts.keys()
@@ -451,7 +447,7 @@ func build_part(kind: String) -> void:
 		for c in keys:
 			var tk: Dictionary = net.parts[c]
 			var front: Vector2i = c + ProtoPneumatics.DIRS[tk.dir]
-			if tk.kind == "tank" and net.mass_in(c) > ProtoPneumatics.KINDS.tank.cap - 4.0 and net.can_place(front):
+			if tk.kind == "tank" and c in run.full_tanks() and net.can_place(front):
 				cell = front
 				dir = tk.dir
 				break
@@ -507,12 +503,22 @@ func _finish(why: String) -> void:
 		"drill_hard": game.mining.drill_hard, "crystal_hard": game.mining.base_sub.hardness if game.mining.base_sub else 0.0,
 		"knowledge": run.robot.knowledge, "tags_known": run.robot.known_tags.size(), "xp": run.robot.xp,
 		"skills": skills, "events": events, "parts": built_parts, "pressure_cap": run._pressure_cap(),
-		"notes": notes.slice(0, 40), "crystal_stats": crystal_stats, "rebuilt": rebuilt, "crystal_log": crystal_log}
+		"notes": notes.slice(0, 40), "crystal_stats": crystal_stats, "rebuilt": rebuilt, "factory": _factory_dump(), "crystal_log": crystal_log}
 	print("ИТОГ ", JSON.stringify(d))
 	if out_path != "":
 		var f := FileAccess.open(out_path, FileAccess.WRITE)
 		f.store_string(JSON.stringify(d))
 	quit(0)
+
+func _factory_dump() -> Array:
+	var net: ProtoPneumatics = game.pneu
+	var out: Array = []
+	var keys: Array = net.parts.keys()
+	keys.sort()
+	for c in keys:
+		var p: Dictionary = net.parts[c]
+		out.append("%s %s %s p=%.1f/%.1f %s kg=%.1f" % [str(c), p.kind, p.sub.name, net.pressure(c), p.stats.max_p, str(p.status).replace("\n", " "), net.mass_in(c)])
+	return out
 
 # ---------------------------------------------------------------- сводка
 

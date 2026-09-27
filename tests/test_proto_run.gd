@@ -151,6 +151,16 @@ func test_advise_asks_to_rebuild_broken_part():
 	assert_true(run.broken_parts().is_empty(), "деталь на месте")
 	assert_false(run.advise(func(_a): return "X").contains("Разбита"))
 
+## Полный бак линии: подсказка просит бак перед ним, даже если другой бак пуст.
+func test_advise_asks_for_tank_in_front_of_full_one():
+	net.place("tank", Vector2i(0, 5), 0, steel)                # пустой бак в стороне
+	net.parts[Vector2i(6, 0)].items.append(Portion.new(crystal, ProtoPneumatics.KINDS.tank.cap))
+	net.feed(Vector2i.ZERO, Portion.new(crystal, 4.0))
+	assert_eq(run.full_tanks(), [Vector2i(6, 0)])
+	assert_true(run.advise(func(_a): return "X").contains("Бак полон"))
+	net.place("tank", Vector2i(7, 0), 0, steel)
+	assert_true(run.full_tanks().is_empty(), "за полным баком есть куда")
+
 func test_storm_slows_pumps_and_events_come_by_themselves():
 	run.start_event("storm", Vector3.ZERO)
 	run.ev.t = 0.0

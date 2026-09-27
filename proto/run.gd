@@ -241,6 +241,18 @@ func net_pressure() -> float:
 		best = maxf(best, pneu.pressure(c))
 	return best
 
+## Полные баки, у которых впереди пусто: линия за ними встала.
+func full_tanks() -> Array:
+	var out: Array = []
+	if pneu == null:
+		return out
+	for c in pneu.parts:
+		var p: Dictionary = pneu.parts[c]
+		if p.kind == "tank" and pneu.mass_in(c) > ProtoPneumatics.KINDS.tank.cap - ProtoPneumatics.CAPSULE_KG \
+				and not pneu.parts.has(c + ProtoPneumatics.DIRS[p.dir]):
+			out.append(c)
+	return out
+
 ## Лопнувшие или разбитые детали, на месте которых пусто: [kind, cell, dir, sub].
 func broken_parts() -> Array:
 	if pneu == null:
@@ -604,12 +616,15 @@ func advise(glyph: Callable) -> String:
 			if pneu != null and net_pressure() < st.p * 0.7:
 				return "Давления мало: поставьте ещё насос (%s — стройка) из прочного материала." % build
 			return "Держите давление не ниже %.1f атм: насосы работают, детали целы." % st.p
-	# Этапы завода: сначала целая линия, сырьё, потом давление, потом место в баках.
+	# Этапы завода: сначала целая линия и место в баках, потом сырьё и давление.
 	if pneu != null:
 		var broken := broken_parts()
 		if not broken.is_empty():
 			return "Разбита деталь завода (%s): поставьте её на место (%s — стройка), иначе груз высыпается." % [
 				ProtoPneumatics.KINDS[broken[0][0]].n, build]
+		# Бак считаем по отдельности: пустой бак другой линии полному не поможет.
+		if not full_tanks().is_empty():
+			return "Бак полон — поставьте ещё бак вплотную перед ним: груз пойдёт дальше в новый."
 		var intake_kg := 0.0
 		for c in pneu.parts:
 			if pneu.parts[c].kind == "intake":
@@ -620,12 +635,6 @@ func advise(glyph: Callable) -> String:
 			return "Отнесите груз к приёмнику и выгрузите (%s)." % unload
 		if net_pressure() - planet.atm_pressure < ProtoPneumatics.MOVE_P:
 			return "Капсулы стоят — нет давления. Поставьте насос у труб (%s — стройка)." % build
-		var free := 0.0
-		for c in pneu.parts:
-			if pneu.parts[c].kind == "tank":
-				free += ProtoPneumatics.KINDS.tank.cap - pneu.mass_in(c)
-		if free < 2.0:
-			return "Баки полны — поставьте ещё бак вплотную перед полным: груз пойдёт дальше в него."
 		if cg > 0.5:
 			return "Выгрузите груз в приёмник (%s), завод всё переработает." % unload
 	return "Завод работает. Пока он крутится — добудьте ещё кристаллов (%s)." % drill
