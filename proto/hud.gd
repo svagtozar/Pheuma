@@ -9,6 +9,7 @@ extends CanvasLayer
 ##   robot.get_meta("cargo")        — Array[Portion], груз робота
 ##   factory: pressure/max_p/parts  — ProtoPneumatics (если есть)
 ##   builder: active/kind()/material()/note — ProtoBuilder (если есть)
+##   map: ProtoMapData — радар в правом верхнем углу (панель завода — под ним)
 
 const BASE := Vector2(1280, 800)
 const PAD := 16.0
@@ -38,6 +39,7 @@ const HINTS_WALK := [
 	["Стройка", &"build_mode"],
 	["Изучить", &"lab_touch"],
 	["Анализатор", &"lab_analyze"],
+	["Карта", &"map_toggle"],
 ]
 const HINTS_BUILD := [
 	["Деталь", &"build_prev", &"build_next"],
@@ -55,6 +57,8 @@ var builder: Object              # ProtoBuilder или null
 var pad := false                 # подсказки для геймпада
 var knowledge: Object = null     # ProtoLabDesk: в грузе видно, что известно о веществе
 var extra_hints: Array = []      # [[подпись, клавиша, кнопка]] — вне InputMap (сборка для проверки)
+var map: ProtoMapData = null     # есть — в углу радар (ProtoRadar)
+var radar: ProtoRadar
 
 var _root: Control
 var _cargo_box: VBoxContainer
@@ -88,6 +92,13 @@ func _ready() -> void:
 	_factory_panel.set_anchors_preset(Control.PRESET_TOP_RIGHT)
 	_factory_panel.grow_horizontal = Control.GROW_DIRECTION_BEGIN
 	_factory_panel.custom_minimum_size.x = 300
+	if map != null:
+		radar = ProtoRadar.new()
+		radar.name = "radar"
+		radar.setup(map, robot)
+		_root.add_child(radar)
+		radar.set_anchors_preset(Control.PRESET_TOP_RIGHT)
+		radar.grow_horizontal = Control.GROW_DIRECTION_BEGIN
 	_build_panel = _panel()
 	_build_box = _build_panel.get_child(0)
 	_root.add_child(_build_panel)
@@ -108,6 +119,12 @@ func _ready() -> void:
 	_root.add_child(_toast)
 	for p in [cargo, _factory_panel, hints]:
 		_margins(p)
+	if radar != null:
+		_margins(radar)
+		radar.offset_left = -PAD - ProtoRadar.D
+		radar.offset_bottom = PAD + ProtoRadar.D
+		_factory_panel.offset_top += ProtoRadar.D + 10.0
+		_factory_panel.offset_bottom += ProtoRadar.D + 10.0
 	get_viewport().size_changed.connect(_fit)
 	_fit()
 
