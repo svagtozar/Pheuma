@@ -169,3 +169,11 @@ func test_panel_probe_button():
 	assert_true("flammable" in w.known_tags_of(s))
 	panel.close()
 	assert_false(robot.get_meta("ui_busy"))
+
+func test_unknown_material_is_not_transparent():
+	var s := _sub(["toxic", "porous"])
+	assert_false(w.is_analyzed(s), "условие теста: материал не изучен")
+	var m := ProtoMachines.surface(s)
+	assert_true(m is StandardMaterial3D, "корпус — обычная поверхность, не голограмма")
+	assert_eq((m as StandardMaterial3D).transparency, BaseMaterial3D.TRANSPARENCY_DISABLED)
+	assert_true(ProtoMachines.hologram() is ShaderMaterial, "голограмма осталась только для призрака стройки")

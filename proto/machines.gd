@@ -2,7 +2,10 @@ class_name ProtoMachines
 extends RefCounted
 ## Процедурные машины из простых тел: бак со стеклянным окном и уровнем груза,
 ## печь с раскалённым окном, насос, пушка, трубы с бусинами газа, машина на втором
-## этаже. Поверхность корпуса — из тегов материала; неизученный — голограмма.
+## этаже. Поверхность корпуса — из тегов материала, изучен он или нет: в мире
+## неизученное выглядит как обычно, что о нём ещё не известно, показывают
+## «?N» в карточке материала, грузе и стройке. Голограмма — только призрак
+## детали в режиме стройки.
 
 const CELL := 2.0
 
@@ -22,15 +25,17 @@ void fragment() {
 
 static var _holo: Shader
 
+## Голограмма: призрак детали в режиме стройки.
+static func hologram() -> Material:
+	if _holo == null:
+		_holo = Shader.new()
+		_holo.code = HOLO
+	var h := ShaderMaterial.new()
+	h.shader = _holo
+	return h
+
 ## Поверхность из тегов материала.
-static func surface(s: Substance, known: bool = true) -> Material:
-	if not known:
-		if _holo == null:
-			_holo = Shader.new()
-			_holo.code = HOLO
-		var h := ShaderMaterial.new()
-		h.shader = _holo
-		return h
+static func surface(s: Substance) -> Material:
 	var m := StandardMaterial3D.new()
 	m.albedo_color = s.color
 	m.roughness = 0.7

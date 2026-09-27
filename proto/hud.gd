@@ -297,7 +297,10 @@ func _part_info() -> Dictionary:
 	var limit := 0.0
 	if info.has("stat") and sub != null:
 		limit = ComponentStats.compute(info.stat, sub).max_p
-	return {"name": info.get("n", kind), "mat": sub.name if sub != null else "",
+	var mat: String = sub.name if sub != null else ""
+	if sub != null and knowledge != null:
+		mat = knowledge.short_label(sub)      # «?2» — сколько тегов материала ещё не известно
+	return {"name": info.get("n", kind), "mat": mat,
 		"mat_color": sub.color if sub != null else Color.GRAY, "limit": limit,
 		"i": order.find(kind) + 1, "n": order.size()}
 

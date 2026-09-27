@@ -117,7 +117,7 @@ func _links(c: Vector2i) -> Array:
 
 ## Корпус детали; links — стороны, куда вести патрубки. Работает и для призрака.
 static func build_part(kind: String, sub: Substance, dir: int, links: Array, holo := false) -> Node3D:
-	var body := ProtoMachines.surface(sub, not holo)
+	var body := ProtoMachines.hologram() if holo else ProtoMachines.surface(sub)
 	var n := Node3D.new()
 	n.name = kind
 	var core: Node3D
