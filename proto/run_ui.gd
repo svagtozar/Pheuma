@@ -10,6 +10,8 @@ extends CanvasLayer
 const BASE := Vector2(1280, 800)
 const PAD := 16.0
 const GOAL_W := 460.0
+const TOAST_W := 400.0             # записи журнала — между панелью цели (и обучением под ней) и заводом справа
+const RIGHT_W := 320.0             # колонка справа: радар, завод, подсказки (ProtoHud)
 
 const BG := Color(0.06, 0.07, 0.09, 0.78)
 const WIN_BG := Color(0.07, 0.08, 0.11, 0.97)
@@ -89,6 +91,13 @@ func _fit() -> void:
 	var s := clampf(minf(vs.x / BASE.x, vs.y / BASE.y), 0.75, 2.0)
 	_root.scale = Vector2(s, s)
 	_root.size = vs / s
+	# Полоса между левой колонкой (цель, обучение) и правой (завод): там записи
+	# не закрывают панелей; на узком экране — просто по центру.
+	var l := PAD + GOAL_W + 8.0
+	var r := _root.size.x - PAD - RIGHT_W - 8.0
+	var shift := (l + r) * 0.5 - _root.size.x * 0.5 if r - l >= TOAST_W + 30.0 else 0.0
+	_toasts.offset_left = shift
+	_toasts.offset_right = shift
 
 func pad() -> bool:
 	return hud != null and hud.pad
@@ -106,7 +115,10 @@ func _process(dt: float) -> void:
 			run.robot_pos = robot.global_position
 		run.tick(dt)
 	_warm -= dt
-	if modal == "" and _warm <= 0.0:
+	# Открыта карта или карточка материала (мета ui_busy): окно рана подождёт,
+	# иначе оно встаёт под карту, а игра на паузе.
+	var busy := robot != null and bool(robot.get_meta("ui_busy", false))
+	if modal == "" and _warm <= 0.0 and not busy:
 		if not run.briefing_seen:
 			open("briefing")
 		elif not run.goals.reward_pending.is_empty():
@@ -275,7 +287,7 @@ func _toast(text: String) -> void:
 	var t := _label(text, 18, TEXT)
 	t.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	t.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	t.custom_minimum_size.x = 560
+	t.custom_minimum_size.x = TOAST_W
 	l.get_child(0).add_child(t)
 	_toasts.add_child(l)
 	while _toasts.get_child_count() > 3:

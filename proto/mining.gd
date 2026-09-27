@@ -32,6 +32,8 @@ var base_mat: StandardMaterial3D
 var _hot := {}               # материал → раскалённый вариант
 var druses: Array = []       # [{node, crystals: [MeshInstance3D]}]
 var robot: Node3D           # чей груз показывать
+var knowledge = null         # ProtoLabDesk: что известно о веществе (без него — все теги)
+var hud: ProtoHud = null     # подсказка кнопки — клавиатура или геймпад, как в HUD
 
 var target: MeshInstance3D   # кристалл под прицелом
 var progress := 0.0          # 0..1 — сколько выбурено у target
@@ -477,17 +479,26 @@ func _label(layer: CanvasLayer, fs: int) -> Label:
 	layer.add_child(l)
 	return l
 
+## Имя вещества в подсказке: с разведкой (ProtoLabDesk) — «Толий ?3», скрытые
+## теги не выдаём; без неё — все теги.
+func sub_label(s: Substance) -> String:
+	if knowledge != null:
+		return knowledge.short_label(s)
+	return "%s (%s)" % [s.name, ", ".join(PackedStringArray(s.tags.map(func(t): return MaterialTags.display(t))))]
+
 func _hud_update(dt: float) -> void:
-	var tags := ", ".join(PackedStringArray(sub.tags.map(func(t): return MaterialTags.display(t))))
-	if target == null:
+	# Открыта карточка материала или карта — подсказка бура под ней не нужна.
+	var busy := robot != null and bool(robot.get_meta("ui_busy", false))
+	if target == null or busy:
 		hud_hint.text = ""
 	elif status != "":
 		hud_hint.text = "%s — %s" % [sub.name, status]
 	elif drilling:
-		hud_hint.text = "Бурю: %s (%s), ≈%.1f кг" % [sub.name, tags, mass_of(target, sub)]
+		hud_hint.text = "Бурю: %s, ≈%.1f кг" % [sub_label(sub), mass_of(target, sub)]
 	else:
-		hud_hint.text = "[F / правый курок] бурить — %s, ≈%.1f кг" % [sub.name, mass_of(target, sub)]
-	hud_bar.visible = target != null and progress > 0.0
+		var key := ProtoHud.glyph([ACTION], hud.pad) if hud != null else "F / правый курок"
+		hud_hint.text = "[%s] бурить — %s, ≈%.1f кг" % [key, sub.name, mass_of(target, sub)]
+	hud_bar.visible = target != null and progress > 0.0 and not busy
 	hud_bar.value = progress
 	var keep := []
 	for pp in popups:

@@ -89,3 +89,15 @@ func test_hints_show_jump_run_and_mouse_camera():
 	hud.pad = true
 	rows = hud.hint_rows(false, false)
 	assert_true(rows.any(func(r): return r[0] == "Прыжок" and r[1] == "A"))
+
+func test_hints_trim_to_fit_under_factory_panel():
+	var hud := ProtoHud.new()
+	add_child_autofree(hud)
+	hud.pad = true
+	var all := hud.hint_rows(false, true, true)
+	var cut := hud.hint_rows(false, true, true, all.size() - 2)
+	assert_eq(cut.size(), all.size() - 2)
+	assert_false(cut.any(func(r): return r[0] in ["Ходьба", "Камера"]), "первыми уходят ходьба и камера")
+	assert_true(cut.any(func(r): return r[0] == "Бур"))
+	assert_true(cut.any(func(r): return r[0] == "Починить из груза"), "подсказки по делу остаются")
+	assert_eq(hud.hint_rows(false, true, true, 99).size(), all.size())

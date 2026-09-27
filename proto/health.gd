@@ -265,7 +265,9 @@ func _heal(dt: float) -> void:
 		hp = minf(max_hp, hp + FACTORY_HEAL * dt)
 		healing = "factory"
 		return
-	if input_enabled and Input.is_action_pressed(REPAIR) and not _building():
+	# В карточке материала и на карте D-pad → выбирает кнопки, а не чинит.
+	var busy := robot != null and bool(robot.get_meta("ui_busy", false))
+	if input_enabled and Input.is_action_pressed(REPAIR) and not _building() and not busy:
 		var got := repair_from_cargo(REPAIR_KG * dt)
 		if got > 0.0:
 			healing = "cargo"

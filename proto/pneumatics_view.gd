@@ -11,6 +11,12 @@ const PIPE_R := 0.16
 var net: ProtoPneumatics
 var origin := Vector3.ZERO
 var running := true
+## В игре подпись видна только у ближней к роботу машины (в LABEL_R м): иначе
+## у площадки десяток крупных подписей наезжает друг на друга и на HUD.
+## null — видны все (кадры завода).
+var focus: Node3D = null
+const LABEL_R := 4.5
+const LABEL_PX := 0.0009      # при fixed_size: ≈24 px строка на 1280×800
 
 var _nodes := {}          # id детали → Node3D
 var _sig := ""            # отпечаток расстановки: при смене трубы перестраиваются
@@ -55,9 +61,30 @@ func sync() -> void:
 		_sig = sig
 		_rebuild()
 	_update_live()
+	_update_label_focus()
 	_update_caps()
 	_update_flights()
 	_play_events()
+
+func _update_label_focus() -> void:
+	if focus == null:
+		return
+	var near_id := -1
+	var near_d := LABEL_R
+	for id in _labels:
+		var n: Node3D = _nodes.get(id)
+		if n == null:
+			continue
+		var d := Vector2(n.global_position.x - focus.global_position.x, n.global_position.z - focus.global_position.z).length()
+		if d < near_d:
+			near_d = d
+			near_id = id
+	for id in _labels:
+		var l: Label3D = _labels[id]
+		l.visible = id == near_id
+		# Одного размера на экране, как бы близко ни встала камера.
+		l.fixed_size = true
+		l.pixel_size = LABEL_PX
 
 # ---------------------------------------------------------------- корпуса
 

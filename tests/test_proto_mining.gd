@@ -85,3 +85,17 @@ func test_mined_druse_recorded_and_restored():
 	mining.restore_mined([0])
 	assert_eq(mining.crystals().size(), 0, "после загрузки кристаллов нет")
 	assert_eq(root.get_meta("mined", []), [0])
+
+class FakeDesk:
+	func short_label(s: Substance) -> String: return "%s ?1" % s.name
+
+func test_drill_hint_hides_unknown_tags_and_card():
+	_setup(_crystal_sub(3.0), 4.0)
+	mining.knowledge = FakeDesk.new()
+	_run(0.3, 1.0)
+	mining._hud_update(0.0)
+	assert_string_contains(mining.hud_hint.text, "Тест ?1", "с разведкой — имя и число неизвестных")
+	assert_false(mining.hud_hint.text.contains(MaterialTags.display("crystalline")), "теги не выдаём")
+	robot.set_meta("ui_busy", true)
+	mining._hud_update(0.0)
+	assert_eq(mining.hud_hint.text, "", "под карточкой материала подсказки бура нет")

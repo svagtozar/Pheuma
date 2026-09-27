@@ -264,6 +264,8 @@ func _ready() -> void:
 			b.out_path = bench_out
 			b.load_ms = load_ms
 			add_child(b)
+	if play and pneu_view != null:
+		pneu_view.focus = robot
 	if play or build:
 		_builder()
 	if play or auto != "" or show_hud:
@@ -883,7 +885,9 @@ func _robot_and_camera() -> void:
 			cam.position = _spring(rp3 + Vector3(0, 1.6, 0), sp[2])
 			cam.look_at(rp3 + f3 * 3.5 + Vector3(0, 0.3, 0))
 		_:
-			var rp := Vector3(pc.x + 5.0, 0, pc.z + 4.0)
+			# Кадр без игрока — прежняя точка и ракурс через весь завод; играя —
+			# свободное место (камеру ставит пружинная штанга ProtoPlayer).
+			var rp := start_spot() if play or auto != "" else Vector3(pc.x + 5.0, 0, pc.z + 4.0)
 			rp.y = terrain.surface_h(rp.x, rp.z)
 			robot.position = rp
 			var tgt := Vector3(pc.x - 4.0, rp.y, pc.z - 3.0)
@@ -893,6 +897,32 @@ func _robot_and_camera() -> void:
 			cam.position = rp - fwd * 4.2 + right * 1.3 + Vector3(0, 2.6, 0)
 			cam.look_at(rp + fwd * 12.0 + Vector3(0, 0.2, 0))
 	cam.current = true
+
+## Где робот высаживается и собирается после поломки: у площадки завода, но не
+## между машинами — линия логистики (капсулы) проходит рядом, и с прежней точки
+## робот не мог выйти. Ищем ближайшее место в CLEAR м от любой детали.
+const CLEAR := 3.5
+func start_spot() -> Vector3:
+	var pc := terrain.plateau()
+	var want := Vector3(pc.x + 5.0, 0, pc.z + 4.0)
+	var best := want
+	var best_score := -INF
+	if pneu != null and pneu_view != null:
+		var cells: Array = []
+		for c in pneu.parts:
+			cells.append(ProtoPneumatics.cell_pos(pneu_view.origin, c))
+		for ix in range(-12, 13):
+			for iz in range(-12, 13):
+				var q := want + Vector3(ix, 0, iz) * 0.5
+				var clear := INF
+				for p: Vector3 in cells:
+					clear = minf(clear, Vector2(p.x - q.x, p.z - q.z).length())
+				var score := minf(clear, CLEAR) - 0.05 * q.distance_to(want)
+				if score > best_score:
+					best_score = score
+					best = q
+	best.y = terrain.surface_h(best.x, best.z)
+	return best
 
 ## Стройка роботом: призрак детали перед ним, HUD, выгрузка груза в приёмник.
 func _builder() -> void:
@@ -988,7 +1018,7 @@ func _health(pl: ProtoPlayer) -> void:
 	health.active = (play and auto == "") or auto == "hurt"
 	health.input_enabled = play and auto == ""
 	var pc := terrain.plateau()
-	health.base = Vector3(pc.x + 5.0, terrain.surface_h(pc.x + 5.0, pc.z + 4.0), pc.z + 4.0)
+	health.base = start_spot()
 	health.factory_at = pc
 	pl.health = health
 	add_child(health)
@@ -1114,6 +1144,9 @@ func _tutorial() -> void:
 func _lab() -> void:
 	lab_desk.robot = robot
 	lab_desk.mining = mining
+	if mining != null:
+		mining.knowledge = lab_desk
+		mining.hud = hud
 	if not (play or auto != "" or show_hud or lab_demo):
 		return
 	lab_panel = ProtoLabPanel.new()
@@ -1272,8 +1305,8 @@ func _map_view() -> void:
 	map_view.cam_main = cam
 	if hud_pad:
 		map_view.pad = true
-	if OS.has_feature("play3d"):
-		map_view.on_next_planet = _next_planet
+	if play:
+		map_view.on_next_planet = _next_planet   # и из меню в редакторе, не только в сборке
 	if map_demo != "":
 		_map_demo.call_deferred()
 

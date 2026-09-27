@@ -53,6 +53,10 @@ const HINTS_BUILD := [
 	["Разобрать", &"build_remove"],
 	["Выйти из стройки", &"build_mode"],
 ]
+## Если подсказки не влезают под панель завода (у геймпада с грузом и ремонтом
+## их до 14), первыми уходят эти — обучение их уже показало.
+const HINTS_TRIM := ["Ходьба", "Камера", "Бег", "Кисть", "Прыжок"]
+const HINT_ROW := 34.0           # высота строки подсказки с отступом
 const UNLOAD := &"cargo_unload"
 const REPAIR := &"repair"
 
@@ -366,8 +370,9 @@ static func _event_glyph(e: InputEvent, for_pad: bool) -> String:
 			JOY_AXIS_TRIGGER_RIGHT: return "RT"
 	return ""
 
-## Строки подсказок для текущего режима: [[подпись, клавиша]].
-func hint_rows(building: bool, has_cargo: bool, can_repair := false) -> Array:
+## Строки подсказок для текущего режима: [[подпись, клавиша]]. max_rows > 0 —
+## не больше стольких строк (лишние — из HINTS_TRIM).
+func hint_rows(building: bool, has_cargo: bool, can_repair := false, max_rows := 0) -> Array:
 	var rows: Array = []
 	for h in (HINTS_BUILD if building else HINTS_WALK):
 		var g := glyph(h.slice(1), pad)
@@ -385,7 +390,21 @@ func hint_rows(building: bool, has_cargo: bool, can_repair := false) -> Array:
 			rows.append(["Починить из груза", g])
 	for h in extra_hints:
 		rows.append([h[0], h[2] if pad else h[1]])
+	for t in HINTS_TRIM:
+		if max_rows <= 0 or rows.size() <= max_rows:
+			break
+		rows = rows.filter(func(r): return r[0] != t)
 	return rows
+
+## Сколько строк подсказок влезает от низа экрана до панели завода (или радара).
+func hint_room() -> int:
+	var top := PAD
+	if _factory_panel != null and _factory_panel.visible:
+		top = _factory_panel.offset_top + maxf(_factory_panel.size.y, _factory_panel.get_combined_minimum_size().y)
+	elif radar != null:
+		top = radar.offset_bottom
+	var room := _root.size.y - PAD - top - 10.0 - 20.0   # зазор и поля панели
+	return maxi(4, int(room / HINT_ROW))
 
 # ---------------------------------------------------------------- панели
 
@@ -513,7 +532,7 @@ func _fill_build(part: Dictionary) -> void:
 
 func _fill_hints(building: bool, has_cargo: bool, can_repair := false) -> void:
 	_clear(_hints_box)
-	for r in hint_rows(building, has_cargo, can_repair):
+	for r in hint_rows(building, has_cargo, can_repair, hint_room()):
 		var line := HBoxContainer.new()
 		line.add_theme_constant_override("separation", 10)
 		var chips := HBoxContainer.new()
