@@ -9,7 +9,7 @@ extends Node3D
 ##   падает, отскакивает от пола и притягивается к роботу. В груз — порция
 ##   материала (Portion, как в игре), масса по объёму и плотности. Груз —
 ##   метаданные "cargo" на узле робота (Array[Portion]); оттуда же его забирает
-##   приёмник пневмозавода (ProtoBuilder, C — выгрузить).
+##   приёмник пневмозавода (ProtoBuilder, C — выгрузить), показывает — ProtoHud.
 ##   Правило игры: бур берёт материал не твёрже себя (+0,5), иначе искры и
 ##   «бур слишком мягкий». Хрупкий (brittle) колется вдвое быстрее и на осколки,
 ##   твёрдость замедляет бурение.
@@ -38,7 +38,6 @@ var sparks: CPUParticles3D
 var crumbs: CPUParticles3D
 var hud_hint: Label
 var hud_bar: ProgressBar
-var hud_cargo: Label
 var popups: Array = []       # [Label3D, t]
 var rng := RandomNumberGenerator.new()
 
@@ -391,8 +390,8 @@ func _hud() -> void:
 	hud_hint.anchor_bottom = 1.0
 	hud_hint.offset_left = -400
 	hud_hint.offset_right = 400
-	hud_hint.offset_top = -100
-	hud_hint.offset_bottom = -70
+	hud_hint.offset_top = -170
+	hud_hint.offset_bottom = -140
 	hud_bar = ProgressBar.new()
 	hud_bar.show_percentage = false
 	hud_bar.anchor_left = 0.5
@@ -401,8 +400,8 @@ func _hud() -> void:
 	hud_bar.anchor_bottom = 1.0
 	hud_bar.offset_left = -140
 	hud_bar.offset_right = 140
-	hud_bar.offset_top = -62
-	hud_bar.offset_bottom = -50
+	hud_bar.offset_top = -132
+	hud_bar.offset_bottom = -120
 	hud_bar.max_value = 1.0
 	var fill := StyleBoxFlat.new()
 	fill.bg_color = sub.color.lerp(Color.WHITE, 0.35)
@@ -411,13 +410,6 @@ func _hud() -> void:
 	bg.bg_color = Color(0, 0, 0, 0.5)
 	hud_bar.add_theme_stylebox_override("background", bg)
 	layer.add_child(hud_bar)
-	hud_cargo = _label(layer, 17)
-	hud_cargo.anchor_top = 1.0
-	hud_cargo.anchor_bottom = 1.0
-	hud_cargo.grow_vertical = Control.GROW_DIRECTION_BEGIN
-	hud_cargo.offset_left = 16
-	hud_cargo.offset_top = -80
-	hud_cargo.offset_bottom = -16
 
 func _label(layer: CanvasLayer, fs: int) -> Label:
 	var l := Label.new()
@@ -440,11 +432,6 @@ func _hud_update(dt: float) -> void:
 		hud_hint.text = "[F / правый курок] бурить — %s, ≈%.1f кг" % [sub.name, mass_of(target, sub)]
 	hud_bar.visible = target != null and progress > 0.0
 	hud_bar.value = progress
-	var lines := ["Груз:"]
-	var cargo := cargo_of(robot) if robot else []
-	for p: Portion in cargo:
-		lines.append("  %s (%s) — %.1f кг" % [p.substance.name, ", ".join(PackedStringArray(p.substance.tags.map(func(t): return MaterialTags.display(t)))), p.mass])
-	hud_cargo.text = "\n".join(PackedStringArray(lines)) if not cargo.is_empty() else ""
 	var keep := []
 	for pp in popups:
 		pp[1] += dt

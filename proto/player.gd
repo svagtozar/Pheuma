@@ -8,6 +8,8 @@ extends Node
 ##   предплечья, отпустить — уходит. У друзы бур выбуривает кристаллы (ProtoMining).
 ##   G — выстрелить кистью туда, куда смотрит камера, и подтянуться (G ещё
 ##   раз — отпустить).
+##   Геймпад: левый стик — ходьба, правый — камера, L3 — быстрее, RT — бур,
+##   LT — кисть, D-pad вверх/вниз — дистанция (раскладка — ProtoControls).
 ## Высота под ногами — по полю плотности (снаружи и в пещере), в породу и на
 ## слишком крутые уступы не заходит. Камера на пружинной штанге. Под сводом сама
 ## включает фару и сгущает тёмный туман.
@@ -35,7 +37,6 @@ var shot_n := 0
 var route_len := 0.0
 var route_done := 0.0
 var fist: RobotFist
-var _g_was := false
 var mining: ProtoMining
 
 # Скриптовая добыча (--auto=drill).
@@ -47,6 +48,7 @@ var drill_got := 0
 var drill_shots := 0
 var drill_prefix := ""
 var cam_focus := Vector3.INF # точка, на которую смотрит камера (скрипт добычи); INF — на робота
+var finale := -1.0           # --auto=sound: время после конца маршрута (бур, кисть)
 
 func setup(r: Node3D, c: Camera3D, t: ProtoTerrain, e: Environment) -> void:
 	robot = r
@@ -60,6 +62,7 @@ func setup(r: Node3D, c: Camera3D, t: ProtoTerrain, e: Environment) -> void:
 		anim.mode = "play"
 	cam_yaw = robot.rotation.y
 	fist = robot.get_node_or_null("fist")
+	ProtoControls.ensure()
 	ProtoMining.ensure_action()
 
 ## Маршрут: от площадки завода по склону к входу в пещеру и по ходу в зал.
@@ -81,6 +84,37 @@ func auto_cave(prefix: String) -> void:
 	shots = [0.08, 0.42, 0.72, 1.0]
 	route_i = 1
 
+## Маршрут для проверки звука: снаружи в пещеру, в конце бур у стены и выстрел кистью.
+func auto_sound() -> void:
+	auto_cave("")
+	shots = []
+	finale = 0.0
+
+## Конец маршрута --auto=sound: повернуться к стене, сверлить, выстрелить кистью.
+func _finale(dt: float) -> void:
+	finale += dt
+	if finale < 0.1:
+		var best := Vector3.FORWARD
+		var best_d := 99.0
+		for k in 16:
+			var dir := Vector3(sin(TAU * k / 16.0), 0, cos(TAU * k / 16.0))
+			for d in range(1, 30):
+				var q := robot.position + Vector3(0, 1.1, 0) + dir * (d * 0.25)
+				if terrain.solid(q.x, q.y, q.z):
+					if d < best_d:
+						best_d = d
+						best = dir
+					break
+		robot.rotation.y = atan2(best.x, best.z)
+		cam_yaw = robot.rotation.y
+	if anim:
+		anim.work = move_toward(anim.work, 1.0 if finale > 0.5 and finale < 4.5 else 0.0, dt * 5.0)
+	if fist and finale > 5.5 and fist.state == "dock" and finale < 6.0:
+		var hit := _aim_point()
+		fist.fire(robot.to_local(hit) if hit != Vector3.INF else Vector3(0.9, 1.5, 3.2), false)
+	if finale > 9.0:
+		get_tree().quit(0)
+
 func _unhandled_input(e: InputEvent) -> void:
 	if e is InputEventMouseMotion and Input.is_mouse_button_pressed(MOUSE_BUTTON_RIGHT):
 		cam_yaw -= e.relative.x * 0.006
@@ -96,38 +130,40 @@ func _process(dt: float) -> void:
 	var want := Vector3.ZERO
 	var top_speed := RobotAnim.WALK_SPEED
 	if route.is_empty():
-		var inp := Vector2.ZERO
-		if Input.is_physical_key_pressed(KEY_W): inp.y += 1
-		if Input.is_physical_key_pressed(KEY_S): inp.y -= 1
-		if Input.is_physical_key_pressed(KEY_A): inp.x -= 1
-		if Input.is_physical_key_pressed(KEY_D): inp.x += 1
-		if Input.is_physical_key_pressed(KEY_Q): cam_yaw += dt * 1.8
-		if Input.is_physical_key_pressed(KEY_E): cam_yaw -= dt * 1.8
-		if Input.is_physical_key_pressed(KEY_SHIFT): top_speed *= 1.9
+		var inp := ProtoControls.move_vector()
+		var look := ProtoControls.look_vector()
+		cam_yaw -= look.x * dt * 2.4
+		cam_pitch = clampf(cam_pitch + look.y * dt * 1.6, -1.1, 0.2)
+		if Input.is_action_pressed(ProtoControls.CAM_ZOOM_IN): cam_dist = maxf(2.0, cam_dist - dt * 4.0)
+		if Input.is_action_pressed(ProtoControls.CAM_ZOOM_OUT): cam_dist = minf(12.0, cam_dist + dt * 4.0)
+		if Input.is_action_pressed(ProtoControls.SPRINT): top_speed *= 1.9
 		if drill_auto:
 			inp = Vector2.ZERO
 		if anim:
-			var use := Input.is_action_pressed(ProtoMining.ACTION) or (drill_auto and _auto_drill_use())
-			anim.work = move_toward(anim.work, 1.0 if use else 0.0, dt * 5.0)
-		var g := Input.is_physical_key_pressed(KEY_G)
-		if g and not _g_was and fist:
+			var use := Input.get_action_strength(ProtoControls.WORK)
+			if drill_auto and _auto_drill_use():
+				use = 1.0
+			anim.work = move_toward(anim.work, use, dt * 5.0)
+		if Input.is_action_just_pressed(ProtoControls.FIST) and fist:
 			if fist.state == "dock":
 				var hit := _aim_point()
 				if hit != Vector3.INF:
 					fist.fire(robot.to_local(hit), true)
 			else:
 				fist.release()
-		_g_was = g
 		if inp != Vector2.ZERO:
 			# Вперёд — от камеры: камера смотрит вдоль (sin yaw, cos yaw).
 			var fwd := Vector3(sin(cam_yaw), 0, cos(cam_yaw))
 			var right := Vector3(-fwd.z, 0, fwd.x)
-			want = (fwd * inp.y - right * inp.x).normalized()
+			# Длина inp — наклон стика (клавиши дают 1): лёгкий наклон — медленный шаг.
+			want = (fwd * inp.y - right * inp.x).normalized() * minf(1.0, inp.length())
 		if drill_auto:
 			want = _auto_drill_walk()
 	else:
 		want = _follow_route()
 		top_speed *= 1.7
+		if finale >= 0.0 and route_i >= route.size():
+			_finale(dt)
 	# Подтягивание: трос тянет робота к кисти.
 	if fist and fist.state == "pull":
 		var tw := robot.to_global(fist.target)

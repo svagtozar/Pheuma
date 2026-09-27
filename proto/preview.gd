@@ -2,12 +2,21 @@ extends Node3D
 ## Предпросмотр объёмного 3D-визуала (к игре не подключён).
 ##   godot --path . res://proto/preview.tscn -- --seed=14 --view=third|plan|cave --screenshot=путь.png
 ##   --play — ходить самому (WASD, Shift, Q/E или мышь с ПКМ, колесо; F — бур,
-##   G — выстрел кистью и подтягивание); --tool=drill — бур в правом предплечье
+##   G — выстрел кистью и подтягивание; геймпад — см. ProtoControls); --tool=drill — бур в правом предплечье
 ##   --auto=cave --screenshot=путь.png — маршрут в пещеру, кадры путь_1..4.png
 ##   --auto=drill --screenshot=путь.png — подойти к друзе и выбурить её (ProtoMining),
 ##   кадры путь_1..4.png; в --play бур по действию tool_work (F / правый курок)
+##   --view=factory — пневмозавод крупно; --build — режим стройки (призрак детали)
+##   В --play: B — стройка, T — деталь, R — повернуть, Пробел — поставить,
+##   X — разобрать, C — выгрузить груз в приёмник (подробно — ProtoBuilder)
+##   --auto=sound — тот же маршрут без кадров, в конце бур у стены и выстрел кистью
+##   (для проверки звука); --record=путь.wav — записать звук, --mute — без звука
+##   --hud — HUD (груз, завод, стройка, кнопки; в --play он есть всегда), --pad —
+##   подсказки для геймпада, --cargo — положить роботу образцы груза (для кадра)
 ##   --robot=clean (по умолчанию; другой вариант из RobotDesigns или old — прежний
 ##   каркас; корпус — металл планеты)
+## Сборка для проверки (фича play3d в export_presets.cfg) стартует прямо сюда,
+## сразу с управлением: Select/View или Tab — другая планета, Start или Esc — выход.
 ## Планета — настоящий генератор: теги задают небо, свет и дымку, жидкие при её
 ## температуре материалы — реки и озёра, твёрдые — корпуса машин.
 
@@ -22,11 +31,26 @@ var cam: Camera3D
 var _t := 0.0
 var play := false            # --play: управление от третьего лица
 var auto := ""               # --auto=cave: скриптовый маршрут с кадрами
+var record := ""             # --record=путь.wav: записать звук (с --play или --auto)
+var mute := false            # --mute: без звука
 var env: Environment
 var mining: ProtoMining
 var drill_hard := -1.0       # --drill-hard=N — твёрдость бура (иначе — по материалам планеты)
+var hud: ProtoHud
+var show_hud := false        # --hud: HUD и без --play (для кадра)
+var hud_pad := false         # --pad: подсказки для геймпада
+var demo_cargo := false      # --cargo: образцы груза у робота
+var pneu: ProtoPneumatics
+var pneu_view: ProtoPneumaticsView
+var build := false           # --build: режим стройки (с --play или для кадра)
+
+## Сид следующей планеты в сборке для проверки (переживает перезагрузку сцены).
+static var build_seed := 14
 
 func _ready() -> void:
+	if OS.has_feature("play3d"):
+		play = true
+		seed_value = build_seed
 	for a in OS.get_cmdline_user_args():
 		if a.begins_with("--seed="): seed_value = int(a.substr(7))
 		elif a.begins_with("--view="): view = a.substr(7)
@@ -36,9 +60,17 @@ func _ready() -> void:
 		elif a.begins_with("--tool="): RobotDesigns.tool_r = a.substr(7)
 		elif a.begins_with("--auto="): auto = a.substr(7)
 		elif a.begins_with("--drill-hard="): drill_hard = float(a.substr(13))
+		elif a.begins_with("--record="): record = a.substr(9)
+		elif a == "--mute": mute = true
+		elif a == "--hud": show_hud = true
+		elif a == "--pad": hud_pad = true
+		elif a == "--cargo": demo_cargo = true
+		elif a == "--build": build = true
 	if auto == "drill":
 		RobotDesigns.tool_r = "drill"
 		view = "cave"
+	if auto == "sound" and RobotDesigns.tool_r == "":
+		RobotDesigns.tool_r = "drill"
 	planet = PlanetGen.generate(seed_value)
 	var t0 := Time.get_ticks_msec()
 	terrain = ProtoTerrain.new(seed_value)
@@ -73,6 +105,18 @@ func _ready() -> void:
 		elif auto == "cave":
 			pl.auto_cave(shot_path.get_basename() if shot_path != "" else "user://route")
 			shot_path = ""
+		elif auto == "sound":
+			pl.auto_sound()
+		if not mute:
+			var snd := ProtoSound.new()
+			snd.name = "sound"
+			snd.record_path = record
+			snd.setup(robot, terrain, pl, planet)
+			add_child(snd)
+	if play or build:
+		_builder()
+	if play or auto != "" or show_hud:
+		_hud()
 
 ## Сохранение (ProtoSave) зовёт после постройки сцены: убрать выбуренные друзы.
 func restore_mined(ids: Array) -> void:
@@ -82,110 +126,13 @@ func restore_mined(ids: Array) -> void:
 # ---------------------------------------------------------------- палитра и свет
 
 func _palette() -> void:
-	var c := Color(0.36, 0.31, 0.26)
-	if planet.has_tag("volcanic"): c = Color(0.30, 0.20, 0.18)
-	if planet.has_tag("frozen"): c = Color(0.62, 0.68, 0.74)
-	if planet.has_tag("oceanic"): c = Color(0.25, 0.36, 0.30)
-	if planet.has_tag("crystalline_crust"): c = c.lerp(Color(0.5, 0.55, 0.65), 0.35)
-	if planet.has_tag("toxic_atmosphere"): c = c.lerp(Color(0.4, 0.45, 0.2), 0.25)
-	if planet.has_tag("fungal_biosphere"): c = c.lerp(Color(0.42, 0.33, 0.4), 0.3)
-	if planet.has_tag("anomalous_field"): c = c.lerp(Color(0.4, 0.3, 0.5), 0.3)
-	terrain.ground = c
-	terrain.cliff = c.darkened(0.25).lerp(Color(0.35, 0.33, 0.32), 0.3)
-	terrain.outcrops = _solid_mats().slice(0, 5).map(func(m): return m.color)
-	var vein = _mat_with("crystalline")
-	terrain.vein = vein.color if vein != null else Color(0.5, 0.8, 1.0)
+	ProtoSky.palette(planet, terrain)
 
 func _environment() -> void:
-	var sky_top := Color(0.25, 0.42, 0.7)
-	var horizon := Color(0.7, 0.72, 0.75)
-	var sun_col := Color(1.0, 0.96, 0.9)
-	var sun_pitch := -48.0
-	if planet.has_tag("volcanic"):
-		sky_top = Color(0.3, 0.2, 0.18); horizon = Color(0.7, 0.5, 0.38); sun_col = Color(1.0, 0.7, 0.5); sun_pitch = -22.0
-	if planet.has_tag("frozen"):
-		sky_top = Color(0.35, 0.5, 0.75); horizon = Color(0.85, 0.9, 0.97); sun_col = Color(0.9, 0.95, 1.0); sun_pitch = -30.0
-	if planet.has_tag("toxic_atmosphere") or planet.has_tag("fungal_biosphere"):
-		sky_top = sky_top.lerp(Color(0.35, 0.45, 0.2), 0.5); horizon = horizon.lerp(Color(0.65, 0.7, 0.4), 0.5)
-	if planet.has_tag("thin_atmosphere"):
-		sky_top = Color(0.03, 0.03, 0.06); horizon = Color(0.25, 0.25, 0.3)
-	if planet.has_tag("tidally_locked"):
-		sun_pitch = -8.0; sun_col = sun_col.lerp(Color(1.0, 0.55, 0.35), 0.5)
-	var env := Environment.new()
-	var sky := Sky.new()
-	var sm := ProceduralSkyMaterial.new()
-	sm.sky_top_color = sky_top
-	sm.sky_horizon_color = horizon
-	sm.ground_horizon_color = horizon.darkened(0.3)
-	sm.ground_bottom_color = horizon.darkened(0.7)
-	sm.sun_angle_max = 20.0
-	sky.sky_material = sm
-	env.background_mode = Environment.BG_SKY
-	env.sky = sky
-	env.ambient_light_source = Environment.AMBIENT_SOURCE_SKY
-	env.ambient_light_energy = 0.45
-	env.ambient_light_sky_contribution = 0.5
-	env.ambient_light_color = Color(0.55, 0.55, 0.58)
-	env.tonemap_mode = Environment.TONE_MAPPER_FILMIC
-	env.fog_enabled = true
-	env.fog_light_color = horizon.lerp(Color(0.6, 0.6, 0.62), 0.4)
-	env.fog_density = 0.0015 + 0.0035 * clampf(planet.atm_pressure, 0.0, 3.0) + (0.006 if planet.has_tag("toxic_atmosphere") else 0.0)
-	env.fog_sky_affect = 0.3
-	if view == "cave":
-		# Под землёй: тёмный плотный воздух — дальние стены уходят в темноту.
-		env.fog_light_color = Color(0.04, 0.045, 0.055)
-		env.fog_density = 0.06
-	self.env = env
-	var we := WorldEnvironment.new()
-	we.environment = env
-	add_child(we)
-	var sun := DirectionalLight3D.new()
-	sun.light_color = sun_col
-	sun.light_energy = 1.35
-	sun.shadow_enabled = true
-	sun.rotation_degrees = Vector3(sun_pitch, -35.0, 0)
-	add_child(sun)
-	# Частицы в воздухе.
-	var kind := ""
-	if planet.has_tag("volcanic"): kind = "ash"
-	elif planet.has_tag("frozen"): kind = "snow"
-	elif planet.has_tag("fungal_biosphere"): kind = "spores"
-	elif planet.has_tag("storms"): kind = "dust"
-	if kind != "":
-		var p := CPUParticles3D.new()
-		p.amount = 400
-		p.lifetime = 8.0
-		p.preprocess = 8.0
-		p.emission_shape = CPUParticles3D.EMISSION_SHAPE_BOX
-		p.emission_box_extents = Vector3(30, 8, 30)
-		p.position = Vector3(46, 26, 36)
-		p.direction = Vector3(0.3, -1, 0.1)
-		p.gravity = Vector3(0.6, -0.4 if kind != "spores" else 0.05, 0.2)
-		p.initial_velocity_min = 0.2
-		p.initial_velocity_max = 0.8
-		var q := QuadMesh.new()
-		q.size = Vector2(0.07, 0.07) if kind != "spores" else Vector2(0.1, 0.1)
-		var m := StandardMaterial3D.new()
-		m.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-		m.billboard_mode = BaseMaterial3D.BILLBOARD_ENABLED
-		var g := GradientTexture2D.new()
-		g.fill = GradientTexture2D.FILL_RADIAL
-		g.fill_from = Vector2(0.5, 0.5)
-		g.fill_to = Vector2(1.0, 0.5)
-		var gr := Gradient.new()
-		gr.set_color(0, Color(1, 1, 1, 1))
-		gr.set_color(1, Color(1, 1, 1, 0))
-		g.gradient = gr
-		m.albedo_texture = g
-		m.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-		m.albedo_color = {"ash": Color(0.2, 0.18, 0.17, 0.8), "snow": Color(1, 1, 1, 0.9),
-			"spores": Color(0.8, 1.0, 0.5, 0.8), "dust": Color(0.7, 0.6, 0.45, 0.6)}[kind]
-		if kind == "spores":
-			m.emission_enabled = true
-			m.emission = Color(0.7, 1.0, 0.4)
-		q.material = m
-		p.mesh = q
-		add_child(p)
+	var sky := ProtoSky.build(planet, self, view == "cave")
+	env = sky.env
+	if sky.particles != null:
+		sky.particles.position = Vector3(46, 26, 36)
 
 # ---------------------------------------------------------------- жидкости
 
@@ -395,63 +342,33 @@ func _normal_at(p: Vector3) -> Vector3:
 # ---------------------------------------------------------------- завод
 
 func _mat_with(tag: String):
-	for m in planet.materials:
-		if m.has(tag) and m.phase_at(planet.ambient_temp) == Substance.Phase.SOLID:
-			return m
-	return null
+	return ProtoSky.mat_with(planet, tag)
 
 func _solid_mats() -> Array:
-	return planet.materials.filter(func(m): return m.phase_at(planet.ambient_temp) == Substance.Phase.SOLID)
+	return ProtoSky.solid_mats(planet)
 
+## Живой пневмозавод на площадке: приёмник с добытыми кристаллами → трубы →
+## дробилка → печь → бак, насос сбоку (ProtoPneumatics). Корпуса — из металла
+## планеты; к моменту кадра завод уже работает.
 func _factory() -> void:
-	var solids := _solid_mats()
 	var metal = _mat_with("metallic")
 	var cryst = _mat_with("crystalline")
-	var rough = _mat_with("porous")
-	if rough == null: rough = _mat_with("fibrous")
 	var a: Substance = metal if metal != null else World.starter_substance()
-	var b: Substance = cryst if cryst != null else (solids[0] if not solids.is_empty() else a)
-	var c: Substance = rough if rough != null else (solids[-1] if not solids.is_empty() else a)
+	var ore: Substance = cryst if cryst != null else (_solid_mats()[0] if not _solid_mats().is_empty() else a)
 	var pc := terrain.plateau()
 	var top := pc.y + 0.1
-	var base := Node3D.new()
-	base.position = Vector3(pc.x, top, pc.z)
-	add_child(base)
-	var slab := ProtoMachines.slab(Vector3(13, 0.6, 9), terrain.ground.lerp(Color(0.5, 0.5, 0.52), 0.6))
-	slab.position = Vector3(0, -0.28, 0)
-	base.add_child(slab)
-	var C := ProtoMachines.CELL
-	var liq := _liquid_mats()
-	var cargo: Color = liq[0].color if not liq.is_empty() else c.color
-	var tank := ProtoMachines.tank(ProtoMachines.surface(a), cargo, 0.62)
-	tank.position = Vector3(-C * 2, 0, -C * 0.5)
-	base.add_child(tank)
-	var fur := ProtoMachines.furnace(ProtoMachines.surface(c))
-	fur.position = Vector3(-C * 0.5, 0, -C * 0.5)
-	base.add_child(fur)
-	var pump := ProtoMachines.pump(ProtoMachines.surface(a))
-	pump.position = Vector3(-C * 2, 0, C * 1.2)
-	base.add_child(pump)
-	var gun := ProtoMachines.cannon(ProtoMachines.surface(b))
-	gun.position = Vector3(C * 2.2, 0, C * 1.2)
-	base.add_child(gun)
-	var fr := ProtoMachines.frame(ProtoMachines.surface(a), 2.2)
-	fr.position = Vector3(C * 1.2, 0, -C * 0.6)
-	base.add_child(fr)
-	var up := ProtoMachines.furnace(ProtoMachines.surface(b, false))   # неизученный материал — голограмма
-	up.position = Vector3(C * 1.2, 2.26, -C * 0.6)
-	up.scale = Vector3(0.8, 0.8, 0.8)
-	base.add_child(up)
-	var holo_tank := ProtoMachines.tank(ProtoMachines.surface(b), cargo.lerp(Color.WHITE, 0.3), 0.3)
-	holo_tank.position = Vector3(C * 0.5, 0, C * 1.2)
-	base.add_child(holo_tank)
-	var pm := ProtoMachines.surface(a)
-	var bp := base.position
-	ProtoMachines.pipe(self, bp + Vector3(-C * 2, 0.4, C * 1.0), bp + Vector3(-C * 2, 0.4, -C * 0.1), pm)
-	ProtoMachines.pipe(self, bp + Vector3(-C * 1.6, 0.4, C * 1.2), bp + Vector3(C * 1.8, 0.4, C * 1.2), pm, 5)
-	ProtoMachines.pipe(self, bp + Vector3(C * 0.5, 0.4, C * 0.6), bp + Vector3(C * 0.5, 2.6, C * 0.6), pm, 3)
-	ProtoMachines.pipe(self, bp + Vector3(C * 0.5, 2.6, C * 0.6), bp + Vector3(C * 1.2, 2.6, -C * 0.2), pm, 2)
-	print("Материалы машин: %s | %s | %s (голограмма — неизученный)" % [_label(a), _label(b), _label(c)])
+	var slab := ProtoMachines.slab(Vector3(15, 0.6, 9), terrain.ground.lerp(Color(0.5, 0.5, 0.52), 0.6))
+	slab.position = Vector3(pc.x, top - 0.28, pc.z)
+	add_child(slab)
+	pneu = ProtoPneumatics.new(planet)
+	pneu.build_demo(Vector2i(-3, 0), a)
+	pneu.feed(Vector2i(-3, 0), Portion.new(ore, 30.0, planet.ambient_temp))
+	pneu_view = ProtoPneumaticsView.new()
+	pneu_view.name = "pneumatics"
+	add_child(pneu_view)
+	pneu_view.setup(pneu, Vector3(pc.x, top, pc.z - 1.0))
+	pneu_view.warm(9.0)
+	print("Завод: корпуса из %s, в приёмнике %s" % [_label(a), _label(ore)])
 
 func _label(s: Substance) -> String:
 	return "%s %s" % [s.name, str(s.tags)]
@@ -473,6 +390,12 @@ func _robot_and_camera() -> void:
 	var pc := terrain.plateau()
 	var top := pc.y + 0.1
 	match view:
+		"factory":
+			# Робот у линии завода лицом к свободной клетке; камера сверху-сбоку.
+			robot.position = Vector3(pc.x + 2.0, top, pc.z + 3.0)
+			robot.rotation.y = PI
+			cam.position = Vector3(pc.x + 4.5, top + 6.5, pc.z + 10.5)
+			cam.look_at(Vector3(pc.x - 0.5, top + 0.6, pc.z - 1.0))
 		"plan":
 			robot.position = Vector3(pc.x - 1.0, top, pc.z + 5.0)
 			robot.rotation.y = PI
@@ -524,6 +447,16 @@ func _robot_and_camera() -> void:
 			cam.position = rp - fwd * 4.2 + right * 1.3 + Vector3(0, 2.6, 0)
 			cam.look_at(rp + fwd * 12.0 + Vector3(0, 0.2, 0))
 	cam.current = true
+
+## Стройка роботом: призрак детали перед ним, HUD, выгрузка груза в приёмник.
+func _builder() -> void:
+	if pneu_view == null:
+		return
+	var b := ProtoBuilder.new()
+	b.name = "builder"
+	add_child(b)
+	b.setup(pneu_view, robot, _solid_mats())
+	b.active = build
 
 ## Пол пещеры под точкой: вниз по полю плотности до породы.
 func _floor_at(p: Vector3) -> float:
@@ -577,6 +510,8 @@ func _caption() -> void:
 	add_child(layer)
 	var l := Label.new()
 	l.position = Vector2(16, 12)
+	l.size = Vector2(880, 0)             # справа сверху — панель завода в HUD
+	l.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	l.add_theme_font_size_override("font_size", 16)
 	l.add_theme_color_override("font_color", Color(1, 1, 1))
 	l.add_theme_color_override("font_outline_color", Color(0, 0, 0))
@@ -586,6 +521,38 @@ func _caption() -> void:
 		", ".join(PackedStringArray(planet.tags.map(func(t): return PlanetTags.display(t)))), planet.ambient_temp, planet.atm_pressure, view,
 		"; ".join(PackedStringArray(liq)) if not liq.is_empty() else "нет"]
 	layer.add_child(l)
+
+## HUD: груз робота, завод и стройка (когда они есть), подсказки кнопок.
+func _hud() -> void:
+	if demo_cargo:
+		var cargo: Array = []
+		var solids := _solid_mats()
+		for i in mini(3, solids.size()):
+			cargo.append(Portion.new(solids[i], 6.5 - i * 2.0, planet.ambient_temp))
+		robot.set_meta("cargo", cargo)
+	ProtoControls.ensure()
+	hud = ProtoHud.new()
+	hud.name = "hud"
+	hud.setup(robot)
+	if hud_pad:
+		hud.pad = true
+	if OS.has_feature("play3d"):
+		hud.extra_hints = [["Другая планета", "Tab", "View"], ["Выход", "Esc", "Menu"]]
+	add_child(hud)
+
+## Сборка для проверки: другая планета и выход с геймпада или клавиатуры.
+func _unhandled_input(e: InputEvent) -> void:
+	if not OS.has_feature("play3d") or not e.is_pressed() or e.is_echo():
+		return
+	var next: bool = (e is InputEventJoypadButton and e.button_index == JOY_BUTTON_BACK) \
+		or (e is InputEventKey and e.physical_keycode == KEY_TAB)
+	var quit: bool = (e is InputEventJoypadButton and e.button_index == JOY_BUTTON_START) \
+		or (e is InputEventKey and e.physical_keycode == KEY_ESCAPE)
+	if next:
+		build_seed = seed_value + 1
+		get_tree().reload_current_scene()
+	elif quit:
+		get_tree().quit()
 
 func _process(dt: float) -> void:
 	_t += dt
