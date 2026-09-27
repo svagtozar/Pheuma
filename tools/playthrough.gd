@@ -98,6 +98,8 @@ func send(e: InputEvent) -> void:
 		Input.flush_buffered_events()
 
 func tap(action: StringName) -> void:
+	if game != null and is_instance_valid(game) and game.get("run_ui") != null:
+		await settle()
 	var e := ev(action, true)
 	if e == null:
 		check(false, "у действия %s есть %s" % [action, "кнопка" if pad else "клавиша"])
@@ -184,6 +186,16 @@ func state() -> Dictionary:
 	return {"air": pl().air, "vy": pl().vy, "parts": game.pneu.parts.size(),
 		"build": builder().active, "card": game.lab_panel.open, "map": game.map_view.open,
 		"modal": run_ui().modal}
+
+## Стройка вкл/выкл кнопкой. Окно награды может открыться в тот же кадр и забрать
+## нажатие себе (игра на паузе) — тогда взять награду и нажать ещё раз.
+func set_build(on: bool) -> void:
+	for i in 4:
+		await settle()
+		if builder().active == on:
+			return
+		await tap(&"build_mode")
+		await frames(3)
 
 ## Выбрать деталь кнопкой «следующая» (окно рана может открыться посреди выбора).
 func _select(kind: String) -> void:
@@ -330,7 +342,7 @@ func _planet(seed_v: int, full: bool) -> void:
 	await secs(1.6)
 	check(tut.step >= 5, "обучение: дошёл до «Поставьте насос» (шаг %d)" % tut.step)
 	# ---- стройка
-	await tap(&"build_mode")
+	await set_build(true)
 	check(builder().active, "стройка включилась")
 	await _select("pump")
 	check(builder().kind() == "pump", "выбран насос")
@@ -361,7 +373,7 @@ func _planet(seed_v: int, full: bool) -> void:
 	check(not game.lab_panel.open, "в стройке «разобрать» не открывает карточку")
 	await tap(&"build_place")
 	await secs(1.6)
-	await tap(&"build_mode")
+	await set_build(false)
 	check(not builder().active, "стройка выключилась")
 	await secs(1.6)
 	check(tut.step >= 7, "обучение: дошёл до «Цель планеты» (шаг %d)" % tut.step)
@@ -383,9 +395,9 @@ func _planet(seed_v: int, full: bool) -> void:
 	check(paused, "игра на паузе")
 	await shot("pause")
 	await tap(ProtoControls.MENU)
-	check(run_ui().modal == "" and not paused, "пауза закрылась")
+	check(run_ui().modal != "menu", "пауза закрылась (могла сразу открыться отложенная награда)")
 	# ---- этапы: награда приходит, пока идёт стройка
-	await tap(&"build_mode")
+	await set_build(true)
 	for i in 4:
 		if game.run.goals.completed:
 			break
