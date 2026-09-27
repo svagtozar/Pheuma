@@ -9,6 +9,8 @@ extends Node3D
 ##   X — разобрать, C — выгрузить груз в приёмник (подробно — ProtoBuilder)
 ##   --auto=sound — тот же маршрут без кадров, в конце бур у стены и выстрел кистью
 ##   (для проверки звука); --record=путь.wav — записать звук, --mute — без звука
+##   --hud — HUD (груз, завод, стройка, кнопки; в --play он есть всегда), --pad —
+##   подсказки для геймпада, --cargo — положить роботу образцы груза (для кадра)
 ##   В --play игра сохраняется (ProtoSave): сама раз в минуту и при выходе, F5 / R3 —
 ##   сейчас, F9 — вернуться к сохранённому; --fresh — начать планету заново
 ##   --robot=clean (по умолчанию; другой вариант из RobotDesigns или old — прежний
@@ -32,6 +34,10 @@ var auto := ""               # --auto=cave: скриптовый маршрут 
 var record := ""             # --record=путь.wav: записать звук (с --play или --auto)
 var mute := false            # --mute: без звука
 var env: Environment
+var hud: ProtoHud
+var show_hud := false        # --hud: HUD и без --play (для кадра)
+var hud_pad := false         # --pad: подсказки для геймпада
+var demo_cargo := false      # --cargo: образцы груза у робота
 var pneu: ProtoPneumatics
 var pneu_view: ProtoPneumaticsView
 var build := false           # --build: режим стройки (с --play или для кадра)
@@ -62,6 +68,9 @@ func _ready() -> void:
 		elif a.begins_with("--auto="): auto = a.substr(7)
 		elif a.begins_with("--record="): record = a.substr(9)
 		elif a == "--mute": mute = true
+		elif a == "--hud": show_hud = true
+		elif a == "--pad": hud_pad = true
+		elif a == "--cargo": demo_cargo = true
 		elif a == "--build": build = true
 		elif a == "--fresh": fresh = true
 	if auto == "sound" and RobotDesigns.tool_r == "":
@@ -106,6 +115,8 @@ func _ready() -> void:
 			add_child(snd)
 	if play or build:
 		_builder()
+	if play or auto != "" or show_hud:
+		_hud()
 	if play and auto == "":
 		saves = ProtoSave.new()
 		saves.name = "saves"
@@ -476,6 +487,8 @@ func _caption() -> void:
 	add_child(layer)
 	var l := Label.new()
 	l.position = Vector2(16, 12)
+	l.size = Vector2(880, 0)             # справа сверху — панель завода в HUD
+	l.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	l.add_theme_font_size_override("font_size", 16)
 	l.add_theme_color_override("font_color", Color(1, 1, 1))
 	l.add_theme_color_override("font_outline_color", Color(0, 0, 0))
@@ -485,17 +498,24 @@ func _caption() -> void:
 		", ".join(PackedStringArray(planet.tags.map(func(t): return PlanetTags.display(t)))), planet.ambient_temp, planet.atm_pressure, view,
 		"; ".join(PackedStringArray(liq)) if not liq.is_empty() else "нет"]
 	layer.add_child(l)
+
+## HUD: груз робота, завод и стройка (когда они есть), подсказки кнопок.
+func _hud() -> void:
+	if demo_cargo:
+		var cargo: Array = []
+		var solids := _solid_mats()
+		for i in mini(3, solids.size()):
+			cargo.append(Portion.new(solids[i], 6.5 - i * 2.0, planet.ambient_temp))
+		robot.set_meta("cargo", cargo)
+	ProtoControls.ensure()
+	hud = ProtoHud.new()
+	hud.name = "hud"
+	hud.setup(robot)
+	if hud_pad:
+		hud.pad = true
 	if OS.has_feature("play3d"):
-		var h := Label.new()
-		h.anchor_top = 1.0
-		h.anchor_bottom = 1.0
-		h.offset_left = 16
-		h.offset_top = -34
-		h.add_theme_font_size_override("font_size", 14)
-		h.add_theme_color_override("font_outline_color", Color(0, 0, 0))
-		h.add_theme_constant_override("outline_size", 4)
-		h.text = "Стик — ходьба, правый стик — камера, L3 — бег, RT — бур, LT — кисть, D-pad — дистанция, R3 — сохранить, Select — другая планета, Start — выход"
-		layer.add_child(h)
+		hud.extra_hints = [["Сохранить", "F5", "R3"], ["Другая планета", "Tab", "View"], ["Выход", "Esc", "Menu"]]
+	add_child(hud)
 
 ## Сборка для проверки: другая планета и выход с геймпада или клавиатуры.
 func _unhandled_input(e: InputEvent) -> void:
