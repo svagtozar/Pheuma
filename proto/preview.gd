@@ -300,6 +300,21 @@ func _cave_crystals() -> void:
 			var off := Vector3.ZERO if m == 0 else (x * cos(m * 2.4) + x.cross(y) * sin(m * 2.4)) * rng.randf_range(0.08, 0.28)
 			ci.transform = Transform3D(Basis(x, y, x.cross(y)).rotated(y, rng.randf() * TAU), base + off - tilt * len * 0.12)
 			add_child(ci)
+		# Щётка: мелкие кристаллики вокруг подножия, почти вровень с породой.
+		var fx := nrm.cross(Vector3.UP if absf(nrm.y) < 0.9 else Vector3.RIGHT).normalized()
+		var fz := nrm.cross(fx)
+		for m in rng.randi_range(8, 14):
+			var a := rng.randf() * TAU
+			var len := rng.randf_range(0.06, 0.2)
+			var tilt := (nrm + Vector3(rng.randf_range(-1, 1), rng.randf_range(-1, 1), rng.randf_range(-1, 1)) * 0.8).normalized()
+			var ci := MeshInstance3D.new()
+			ci.mesh = ProtoCrystal.mesh(len, len * rng.randf_range(0.14, 0.22), rng)
+			ci.material_override = cmat
+			var y := tilt
+			var x := y.cross(Vector3.UP if absf(y.y) < 0.9 else Vector3.RIGHT).normalized()
+			var at := base + (fx * cos(a) + fz * sin(a)) * rng.randf_range(0.2, 0.5) - nrm * 0.03
+			ci.transform = Transform3D(Basis(x, y, x.cross(y)), at)
+			add_child(ci)
 		if lights < 4:
 			var l := OmniLight3D.new()
 			l.light_color = col
