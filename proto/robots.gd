@@ -1,6 +1,6 @@
 extends Node3D
 ## Витрина вариантов робота (к игре не подключена).
-##   godot --path . res://proto/robots.tscn -- --shot=front|back|top|close:N|closeback:N|head:N|hand:N|far:N  [--toon] --screenshot=путь.png
+##   godot --path . res://proto/robots.tscn -- --shot=front|back|top|close:N|closeback:N|head:N|hand:N|far:N|gauge:N  [--toon] --screenshot=путь.png
 
 var shot := "front"
 var shot_path := ""
@@ -40,7 +40,7 @@ func _ready() -> void:
 		l.rotation = Vector3(-PI / 2.0 + 0.5, 0, 0)
 		l.modulate = Color(0.9, 0.93, 1.0)
 		l.outline_size = 8
-		if shot == "back" or shot.begins_with("closeback:"):
+		if shot == "back" or shot.begins_with("closeback:") or shot.begins_with("gauge:"):
 			l.rotation.y = PI
 			l.position.z = -0.75
 		add_child(l)
@@ -116,6 +116,11 @@ func _camera(n: int) -> void:
 		cam.position = Vector3(kx + 0.75, 1.0, 0.5)
 		cam.look_at(Vector3(kx + 0.3, 0.88, 0.08))
 		cam.fov = 30.0
+	if shot.begins_with("gauge:"):
+		var gx := (int(shot.substr(6)) - (n - 1) / 2.0) * GAP
+		cam.position = Vector3(gx + 0.75, 1.6, -0.9)
+		cam.look_at(Vector3(gx + 0.2, 1.4, -0.3))
+		cam.fov = 35.0
 	if shot.begins_with("head:"):
 		var hx := (int(shot.substr(5)) - (n - 1) / 2.0) * GAP
 		cam.position = Vector3(hx + 0.35, 1.85, 1.0)

@@ -51,6 +51,9 @@ static func mat(key: String) -> Material:
 		"glow":
 			m.albedo_color = Color(0.3, 0.9, 1.0); m.emission_enabled = true
 			m.emission = Color(0.3, 0.9, 1.0); m.emission_energy_multiplier = 3.0
+		"gauge":
+			m.albedo_color = Color(0.93, 0.92, 0.86); m.roughness = 0.5
+			m.emission_enabled = true; m.emission = Color(0.93, 0.92, 0.86); m.emission_energy_multiplier = 0.15
 		"gunmetal": m.albedo_color = Color(0.34, 0.36, 0.4); m.metallic = 0.8; m.roughness = 0.3
 		"steel": m.albedo_color = Color(0.72, 0.74, 0.77); m.metallic = 0.7; m.roughness = 0.28
 		"iris":
@@ -828,6 +831,33 @@ static func _flask_pack(n: Node3D, fb: Vector3, fh: float, r: float, hull: Strin
 	_socket(n, "socket_pods", pc2)
 	return fb + Vector3(0, fh + 0.045 * k, 0)
 
+## Манометр: ободок, светлая шкала с делениями (последнее — красное) и стрелка в
+## узле gauge_needle (в игре — поворот по давлению в колбе). normal — куда смотрит
+## шкала, level — доля давления 0..1.
+static func _gauge(n: Node3D, c: Vector3, normal: Vector3, r: float, metal: String, level: float = 0.7) -> Node3D:
+	var z := normal.normalized()
+	var y := (Vector3.UP - z * z.dot(Vector3.UP)).normalized()
+	var g := Node3D.new()
+	g.name = "gauge"
+	g.transform = Transform3D(Basis(y.cross(z), y, z), c)
+	n.add_child(g)
+	disc(g, Vector3.ZERO, Vector3.BACK, r * 1.18, r * 0.5, metal)
+	disc(g, Vector3(0, 0, r * 0.2), Vector3.BACK, r, r * 0.2, "gauge")
+	ring(g, Vector3(0, 0, r * 0.26), Vector3.BACK, r * 0.98, r * 1.14, metal)
+	# Шкала от -135° до +135°, отсчёт по часовой стрелке от левого-нижнего края.
+	for i in 7:
+		var a := deg_to_rad(225.0 - i * 45.0)
+		var d := Vector3(cos(a), sin(a), 0)
+		rbox(g, d * r * 0.78 + Vector3(0, 0, r * 0.31), Vector3(r * 0.08, r * 0.22, r * 0.03), 0.0, "pod:#e05a4a" if i == 6 else "dark", Basis(Vector3.BACK, a - PI / 2.0))
+	var nd := Node3D.new()
+	nd.name = "gauge_needle"
+	nd.position = Vector3(0, 0, r * 0.34)
+	nd.rotation.z = deg_to_rad(135.0 - level * 270.0)
+	g.add_child(nd)
+	rbox(nd, Vector3(0, r * 0.32, 0), Vector3(r * 0.07, r * 0.72, r * 0.03), 0.0, "dark")
+	ball(nd, Vector3.ZERO, r * 0.1, metal)
+	return g
+
 ## По концепт-арту: голова-объектив с антеннами-ушами, тонкий каркас с открытым
 ## позвоночником, шарниры-шары с бандажами, колба за правым плечом, под ней кассета
 ## капсул, тяжёлые ботинки. hull — металл корпуса (медь по умолчанию).
@@ -1058,6 +1088,11 @@ static func _clean(n: Node3D, hull_col: Color) -> void:
 	var fb := Vector3(0.15, 1.13, -0.24)
 	var fh := 0.46
 	var top := _flask_pack(n, fb, fh, 0.105, metal)
+	# Манометр на колбе — давление видно со спины, с камеры от третьего лица.
+	var gn := Vector3(0.55, 0.1, -0.83).normalized()
+	var gc := fb + Vector3(0, fh * 0.6, 0) + Vector3(gn.x, 0, gn.z).normalized() * 0.142
+	rod(n, fb + Vector3(0, fh * 0.6, 0) + Vector3(gn.x, 0, gn.z).normalized() * 0.09, gc, 0.012, "dark")
+	_gauge(n, gc, gn, 0.046, metal, 0.72)
 	for y in [1.26, 1.4]:
 		rod(n, Vector3(0.04, y, -0.1), Vector3(0.13, y, -0.22), 0.013, "dark")
 	hose(n, fb + Vector3(-0.06, fh - 0.02, -0.02), fb + Vector3(-0.18, fh + 0.08, -0.02), s.sh_l + Vector3(0.1, 0.12, -0.12), s.sh_l + Vector3(0.02, 0.03, -0.05), 0.013)
