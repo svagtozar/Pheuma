@@ -1,6 +1,7 @@
 class_name GoalsTracker
 extends RefCounted
 ## Прогресс этапов цели планеты.
+## Мир — World или «утиная» обёртка с теми же полями (3D-прототип: ProtoRun).
 
 var w:                      # World; слабая ссылка, чтобы мир не держал сам себя
 	get: return _wr.get_ref()
@@ -161,6 +162,9 @@ func evaluate(st: Dictionary, dt: float) -> float:
 				if w.gas.pressure(m.id) >= st.pressure:
 					ok = true
 			return _hold(ok, st.hold, dt)
+	# Свои типы этапов у мира-обёртки (3D-прототип: ProtoRun.eval_stage).
+	if w.has_method("eval_stage"):
+		return w.eval_stage(self, st, dt)
 	return 0.0
 
 func text() -> String:

@@ -5,6 +5,15 @@ extends RefCounted
 
 ## Цвета породы рельефа: грунт, обрыв, пятна выходов материалов, жила.
 static func palette(planet: Planet, terrain: ProtoTerrain) -> void:
+	var c := ground_color(planet)
+	terrain.ground = c
+	terrain.cliff = c.darkened(0.25).lerp(Color(0.35, 0.33, 0.32), 0.3)
+	terrain.outcrops = solid_mats(planet).slice(0, 5).map(func(m): return m.color)
+	var vein = mat_with(planet, "crystalline")
+	terrain.vein = vein.color if vein != null else Color(0.5, 0.8, 1.0)
+
+## Цвет грунта по тегам (рельеф, диск планеты в меню).
+static func ground_color(planet: Planet) -> Color:
 	var c := Color(0.36, 0.31, 0.26)
 	if planet.has_tag("volcanic"): c = Color(0.30, 0.20, 0.18)
 	if planet.has_tag("frozen"): c = Color(0.62, 0.68, 0.74)
@@ -13,11 +22,7 @@ static func palette(planet: Planet, terrain: ProtoTerrain) -> void:
 	if planet.has_tag("toxic_atmosphere"): c = c.lerp(Color(0.4, 0.45, 0.2), 0.25)
 	if planet.has_tag("fungal_biosphere"): c = c.lerp(Color(0.42, 0.33, 0.4), 0.3)
 	if planet.has_tag("anomalous_field"): c = c.lerp(Color(0.4, 0.3, 0.5), 0.3)
-	terrain.ground = c
-	terrain.cliff = c.darkened(0.25).lerp(Color(0.35, 0.33, 0.32), 0.3)
-	terrain.outcrops = solid_mats(planet).slice(0, 5).map(func(m): return m.color)
-	var vein = mat_with(planet, "crystalline")
-	terrain.vein = vein.color if vein != null else Color(0.5, 0.8, 1.0)
+	return c
 
 ## Твёрдые при температуре планеты материалы.
 static func solid_mats(planet: Planet) -> Array:

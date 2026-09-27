@@ -10,6 +10,10 @@ extends Node2D
 ##   --tutorial        — начать обучение (при первом запуске оно включается само)
 ##   --flow            — включить карту потоков (O)
 ##   --no-music        — без музыки (в headless она и так не сводится)
+##   --3d              — объёмный вид (F3); окна те же, геймпад работает и в нём
+##   --pad             — как будто играют с геймпада (фокус на кнопках окон)
+## Геймпад: левый стик — ход, RT — добыча, Menu — пауза, B — закрыть окно,
+## View — прокачка, Y — цель; в окнах D-pad — выбор, A — нажать.
 
 const T := 32.0
 const WorldView := preload("res://game/world_view.gd")
@@ -25,6 +29,7 @@ var sim: Sim
 var view: Node2D
 var view3d: Node3D = null      # объёмный вид (F3); создаётся при первом включении
 var use_3d := false
+var _show_deposits := false      # --deposits: все залежи разведаны, робот у ближайшей (кадр форм)
 var lab_panel: ProtoLabPanel = null   # 3D: карточка материала с геймпада (Z / A)
 var cam: Camera2D
 var hud: Control
@@ -47,6 +52,7 @@ var tutorial: Tutorial = null
 var _uitest := false
 var _demo := false          # --demo[=N]: у робота строится завод из N машин (для скриншотов и замера кадров)
 var _demo_n := 13
+var _showcase := ""         # --showcase[=near]: все машины и подвижное для 3D-вида (скриншоты)
 var _lab_demo := false      # --lab: 3D-вид, робот у залежи, открыта карточка материала (для кадра)
 var _bench := false         # --bench: 5 с кадрового профиля и выход
 var _bench_t := 0.0
@@ -54,6 +60,7 @@ var _bench_frames := 0
 var _bench_us := {"draw": 0, "hud": 0, "sim": 0, "fx": 0}
 var sel_start = null
 var _autosave_t := 0.0
+var pad_used := false          # последний ввод — с геймпада (фокус кнопок в окнах)
 
 var mode := "none"            # none | build | remove | wire | link | macro_select | macro_place
 var build_kind := ""
@@ -97,10 +104,17 @@ func _ready() -> void:
 			_demo = true
 			if a.begins_with("--demo="):
 				_demo_n = int(a.substr(7))
+		elif a == "--showcase" or a.begins_with("--showcase="):
+			_demo = true
+			_showcase = a.substr(11) if a.begins_with("--showcase=") else "all"
 		elif a == "--flow":
 			flow_view = true
 		elif a == "--3d":
 			use_3d = true
+		elif a == "--deposits":
+			_show_deposits = true
+		elif a == "--pad":
+			pad_used = true
 		elif a == "--lab":
 			_lab_demo = true
 			use_3d = true
@@ -109,6 +123,7 @@ func _ready() -> void:
 			_demo = true
 	randomize()
 	ProtoControls.ensure()
+	ProtoControls.ensure_ui()
 	view = WorldView.new()
 	view.main = self
 	add_child(view)
@@ -268,6 +283,8 @@ func new_world(s: int, loaded: World = null) -> void:
 	audio.set_world(world)
 	_autosave_t = 0.0
 	view.world = world
+	if _show_deposits:
+		_reveal_deposits()
 	set_3d(use_3d)
 	cam.position = world.robot.pos * T
 	cam.reset_smoothing()
@@ -365,26 +382,32 @@ func _process(dt: float) -> void:
 		world.meta.end_shown = true
 		menus.show_run_end(world)
 	sim.paused = paused or manual_pause
+	if _showcase != "" and not sim.paused:
+		DemoFactory.showcase_tick(world, dt)
 	var lab_open: bool = lab_panel != null and lab_panel.open
 	if lab_panel != null and use_3d:
 		lab_panel.focus_cell = mouse_cell()
 	if not paused:
 		var dir := Vector2.ZERO
-		if Input.is_key_pressed(KEY_W) or Input.is_key_pressed(KEY_UP): dir.y -= 1
-		if Input.is_key_pressed(KEY_S) or Input.is_key_pressed(KEY_DOWN): dir.y += 1
-		if Input.is_key_pressed(KEY_A) or Input.is_key_pressed(KEY_LEFT): dir.x -= 1
-		if Input.is_key_pressed(KEY_D) or Input.is_key_pressed(KEY_RIGHT): dir.x += 1
-		if dir != Vector2.ZERO:
+		if Input.is_key_pressed(KEY_UP): dir.y -= 1
+		if Input.is_key_pressed(KEY_DOWN): dir.y += 1
+		if Input.is_key_pressed(KEY_LEFT): dir.x -= 1
+		if Input.is_key_pressed(KEY_RIGHT): dir.x += 1
+		# WASD и левый стик — действия ProtoControls (переназначаются в «Управлении»);
+		# наклон стика задаёт скорость.
+		var mv := ProtoControls.move_vector()
+		dir += Vector2(mv.x, -mv.y)
+		if dir.length() > 1.0:
 			dir = dir.normalized()
-		else:
-			# Левый стик геймпада (раскладка ProtoControls): наклон задаёт скорость.
-			var stick := ProtoControls.move_vector()
-			dir = Vector2(stick.x, -stick.y)
 		if dir != Vector2.ZERO and use_3d and view3d != null:
 			dir = dir.rotated(-view3d.cam_yaw)   # в 3D — относительно камеры
 		if dir != Vector2.ZERO and not lab_open:   # карточке материала нужны стик и стрелки
+			var before: Vector2 = world.robot.pos
 			world.move_robot(dir * world.robot_speed() * dt)
-		if Input.is_key_pressed(KEY_E):
+			if use_3d:
+				world.robot.pos = around_machines(world, before, world.robot.pos)
+		# Добыча: E или правый курок (F — тоже клавиша бура в раскладке, но здесь это фабрикатор).
+		if Input.is_key_pressed(KEY_E) or (Input.is_action_pressed(ProtoControls.WORK) and not Input.is_physical_key_pressed(KEY_F)):
 			say(world.mine(_mine_target(), dt))
 		if Input.is_key_pressed(KEY_G):
 			world.refill_robot(dt)
@@ -408,6 +431,7 @@ func _process(dt: float) -> void:
 			SaveGame.save_file(world, "auto")
 	if not in_menu:
 		cam.position = cam.position.lerp(world.robot.pos * T, min(1.0, dt * 8.0))
+	_pad_focus()
 	var t_hud := Time.get_ticks_usec()
 	hud.refresh()
 	_bench_us.hud += Time.get_ticks_usec() - t_hud
@@ -417,6 +441,29 @@ func _process(dt: float) -> void:
 		_shot_t += dt
 		if _shot_t > 2.5:
 			_save_screenshot()
+
+## В объёмном виде машины твёрдые: робот (радиус ROBOT_R клетки) не заходит
+## в клетку машины, кроме мелких деталей (трубы, провода, датчики) — их перешагивает. Если уже стоит в
+## машине (её построили на нём), выйти можно. Скользит вдоль стенки по осям.
+const ROBOT_R := 0.22
+
+static func around_machines(w: World, from: Vector2, to: Vector2) -> Vector2:
+	if not in_machine(w, to) or in_machine(w, from):
+		return to
+	var sx := Vector2(to.x, from.y)
+	if not in_machine(w, sx):
+		return sx
+	var sy := Vector2(from.x, to.y)
+	if not in_machine(w, sy):
+		return sy
+	return from
+
+static func in_machine(w: World, p: Vector2) -> bool:
+	for off in [Vector2(-ROBOT_R, -ROBOT_R), Vector2(ROBOT_R, -ROBOT_R), Vector2(-ROBOT_R, ROBOT_R), Vector2(ROBOT_R, ROBOT_R)]:
+		var m = w.machine_at(Vector2i((p + off).floor()))
+		if m != null and ComponentStats.SIZE.get(m.kind, 1.0) >= 0.5:
+			return true
+	return false
 
 func _mine_target() -> Vector2i:
 	var mc := mouse_cell()
@@ -433,8 +480,17 @@ func _mine_target() -> Vector2i:
 
 # ---------------------------------------------------------------- ввод
 
+func _input(event: InputEvent) -> void:
+	if event is InputEventJoypadButton or (event is InputEventJoypadMotion and absf(event.axis_value) > 0.5):
+		pad_used = true
+	elif event is InputEventKey or event is InputEventMouseButton:
+		pad_used = false
+
 func _unhandled_input(event: InputEvent) -> void:
 	if world == null:
+		return
+	if event is InputEventJoypadButton and event.pressed:
+		_on_pad(event)
 		return
 	if (in_menu or menus.any_open()) and not event is InputEventKey:
 		return
@@ -449,6 +505,71 @@ func _unhandled_input(event: InputEvent) -> void:
 	elif event is InputEventMouseMotion and not _drag.is_empty():
 		if world.logic.wires.has(_drag.wire):
 			world.logic.move_waypoint(_drag.wire, _drag.idx, mouse_world())
+
+# ---------------------------------------------------------------- геймпад
+
+## Открытое окно, где геймпаду нужна кнопка в фокусе: меню, выбор пути,
+## награда, высадка, прокачка и остальные окна HUD. null — окон нет.
+func pad_window() -> Control:
+	for k in menus.panels:
+		if menus.panels[k].visible:
+			return menus.panels[k]
+	for k in ["reward", "choice", "briefing"]:
+		if hud.windows[k].visible:
+			return hud.windows[k]
+	for k in hud.windows:
+		if hud.windows[k].visible and k != "help":
+			return hud.windows[k]
+	return null
+
+## С геймпада окна управляются фокусом: если он не в открытом окне — первая кнопка.
+func _pad_focus() -> void:
+	if not pad_used:
+		return
+	var w := pad_window()
+	if w == null:
+		return
+	var f := get_viewport().gui_get_focus_owner()
+	if f != null and w.is_ancestor_of(f) and f.is_visible_in_tree():
+		return
+	var b := ProtoControls.first_button(w)
+	if b != null:
+		b.grab_focus()
+
+## Кнопки геймпада вне окон (A — нажать кнопку в фокусе — делает сам интерфейс):
+##   Menu (Start) — пауза; B — закрыть окно; View (Back) — прокачка; Y — цель (высадка).
+func _on_pad(e: InputEventJoypadButton) -> void:
+	match e.button_index:
+		JOY_BUTTON_START:
+			if in_menu:
+				return
+			if menus.any_open():
+				menus.close_all()
+			elif pad_window() != null and not hud.windows.choice.visible and not hud.windows.reward.visible:
+				_pad_back()
+			else:
+				menus.show_panel("pause")
+		JOY_BUTTON_B:
+			_pad_back()
+		JOY_BUTTON_BACK:
+			if not menus.any_open() and not in_menu:
+				hud.toggle("skills")
+		JOY_BUTTON_Y:
+			if not menus.any_open() and not in_menu and pad_window() == null:
+				hud.show_briefing()
+
+## B: шаг назад — из настроек и слотов в меню, иначе закрыть окно.
+func _pad_back() -> void:
+	if menus.any_open():
+		if menus.panels.settings.visible or menus.panels.slots.visible:
+			menus.show_panel(menus._back)
+		elif not in_menu:
+			menus.close_all()
+		return
+	if hud.windows.briefing.visible:
+		hud.windows.briefing.visible = false
+		return
+	hud.close_all()
 
 func _on_key(e: InputEventKey) -> void:
 	if hud.handle_key(e):
@@ -737,8 +858,30 @@ func _wire_ends(w: Dictionary) -> Array:
 # ---------------------------------------------------------------- автотест и скриншот
 
 ## Демо-завод у робота (--demo=N): для скриншотов и замеров.
+## Кадр форм залежей: всё разведано, робот стоит южнее ближайшей к старту залежи.
+func _reveal_deposits() -> void:
+	var best = null
+	for c in world.planet.deposits:
+		world.revealed[c] = true
+		if best == null or Vector2(c).distance_to(world.robot.pos) < Vector2(best).distance_to(world.robot.pos):
+			best = c
+	if best != null:
+		world.robot.pos = Vector2(best) + Vector2(0.5, 3.5)
+
 func _build_demo() -> void:
 	var w := world
+	if _showcase != "":
+		var o := Vector2i(clampi(w.planet.spawn.x - 10, 2, w.planet.width - 34), clampi(w.planet.spawn.y - 12, 2, w.planet.height - 30))
+		w.robot.pos = DemoFactory.showcase(w, o)
+		cam.zoom = Vector2(0.85, 0.85) if _showcase in ["near", "machines"] else Vector2(0.4, 0.4)
+		if _showcase == "machines":
+			w.robot.pos = Vector2(o) + Vector2(8.5, 6.5)
+		if _showcase == "near":
+			w.robot.pos += Vector2(-2, 3.5)
+		hud.inv_collapsed = true
+		cam.position = w.robot.pos * T
+		cam.reset_smoothing()
+		return
 	var c := DemoFactory.build(w, w.planet.spawn + Vector2i(2, -3), _demo_n)
 	w.robot.pos = c + Vector2(0.5, 0.5)
 	cam.position = w.robot.pos * T

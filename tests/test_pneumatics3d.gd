@@ -117,3 +117,46 @@ func test_builder_places_in_front_and_unloads_cargo():
 	assert_true(b.unload())
 	assert_almost_eq(n.mass_in(Vector2i(0, 1)), 5.0, 0.01)
 	assert_true(b.cargo().is_empty())
+
+func test_cannon_shoots_capsule_into_intake():
+	var n := ProtoPneumatics.new(planet)
+	n.place("pump", Vector2i(0, 1), 3, steel)
+	var cannon := n.place("cannon", Vector2i(0, 0), 0, steel)
+	n.place("intake", Vector2i(7, 0), 0, steel)
+	assert_eq(n.cannon_target(Vector2i.ZERO), Vector2i(7, 0), "пушка видит приёмник впереди")
+	cannon.items.append(Portion.new(crystal, 2.0))
+	_run(n, 20.0)
+	assert_true(n.events.any(func(e): return e.kind == "shot"), "выстрел был")
+	assert_true(n.events.any(func(e): return e.kind == "caught"), "приёмник поймал капсулу")
+	var got: float = n.mass_in(Vector2i(7, 0))
+	if n.parts[Vector2i(7, 0)].cap != null:
+		got += n.parts[Vector2i(7, 0)].cap.p.mass
+	assert_almost_eq(got, 2.0, 0.05, "груз перелетел в приёмник")
+
+func test_cannon_without_target_keeps_cargo():
+	var n := ProtoPneumatics.new(planet)
+	n.place("pump", Vector2i(0, 1), 3, steel)
+	var cannon := n.place("cannon", Vector2i(0, 0), 0, steel)
+	cannon.items.append(Portion.new(crystal, 2.0))
+	_run(n, 10.0)
+	assert_eq(cannon.items.size(), 1, "некуда стрелять — капсула ждёт")
+	assert_true(n.flights.is_empty())
+
+func test_every_processing_machine_of_2d_game_is_buildable_and_runs():
+	var kinds := []
+	for k in Buildings.KINDS:
+		if Buildings.KINDS[k].has("process"):
+			kinds.append(k)
+	assert_eq(kinds.size(), 16, "в 2D шестнадцать машин обработки")
+	for k in kinds:
+		assert_true(k in ProtoPneumatics.ORDER, "%s есть в меню стройки 3D" % k)
+		var n := ProtoPneumatics.new(planet)
+		n.place("intake", Vector2i(0, 0), 0, steel)
+		n.place("pump", Vector2i(0, 1), 3, steel)
+		assert_false(n.place(k, Vector2i(1, 0), 0, steel).is_empty(), "%s ставится" % k)
+		n.place("tank", Vector2i(2, 0), 0, steel)
+		n.feed(Vector2i.ZERO, Portion.new(crystal, 2.0))
+		_run(n, 40.0)
+		assert_eq(n.mass_in(Vector2i.ZERO), 0.0, "%s забрал груз из приёмника" % k)
+		assert_true(n.events.any(func(e): return e.kind == "done" and e.cell == Vector2i(1, 0)) or n.parts[Vector2i(1, 0)].busy != null,
+			"%s взялся за обработку (%s)" % [k, n.parts[Vector2i(1, 0)].status])
