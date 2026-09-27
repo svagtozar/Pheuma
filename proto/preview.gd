@@ -4,6 +4,8 @@ extends Node3D
 ##   --play — ходить самому (WASD, Shift, Q/E или мышь с ПКМ, колесо; F — бур,
 ##   G — выстрел кистью и подтягивание); --tool=drill — бур в правом предплечье
 ##   --auto=cave --screenshot=путь.png — маршрут в пещеру, кадры путь_1..4.png
+##   --auto=drill --screenshot=путь.png — подойти к друзе и выбурить её (ProtoMining),
+##   кадры путь_1..4.png; в --play бур по действию tool_work (F / правый курок)
 ##   --robot=clean (по умолчанию; другой вариант из RobotDesigns или old — прежний
 ##   каркас; корпус — металл планеты)
 ## Планета — настоящий генератор: теги задают небо, свет и дымку, жидкие при её
@@ -21,6 +23,8 @@ var _t := 0.0
 var play := false            # --play: управление от третьего лица
 var auto := ""               # --auto=cave: скриптовый маршрут с кадрами
 var env: Environment
+var mining: ProtoMining
+var drill_hard := -1.0       # --drill-hard=N — твёрдость бура (иначе — по материалам планеты)
 
 func _ready() -> void:
 	for a in OS.get_cmdline_user_args():
@@ -31,6 +35,10 @@ func _ready() -> void:
 		elif a == "--play": play = true
 		elif a.begins_with("--tool="): RobotDesigns.tool_r = a.substr(7)
 		elif a.begins_with("--auto="): auto = a.substr(7)
+		elif a.begins_with("--drill-hard="): drill_hard = float(a.substr(13))
+	if auto == "drill":
+		RobotDesigns.tool_r = "drill"
+		view = "cave"
 	planet = PlanetGen.generate(seed_value)
 	var t0 := Time.get_ticks_msec()
 	terrain = ProtoTerrain.new(seed_value)
@@ -58,7 +66,11 @@ func _ready() -> void:
 		pl.name = "player"
 		add_child(pl)
 		pl.setup(robot, cam, terrain, env)
-		if auto == "cave":
+		pl.mining = mining
+		if auto == "drill":
+			pl.auto_drill(shot_path.get_basename() if shot_path != "" else "user://drill")
+			shot_path = ""
+		elif auto == "cave":
 			pl.auto_cave(shot_path.get_basename() if shot_path != "" else "user://route")
 			shot_path = ""
 
@@ -226,6 +238,21 @@ func _cave_crystals() -> void:
 	var glow := ProtoMachines.glow(col, 0.75)
 	var cmat := ProtoCrystal.material(col)
 	var cc: Vector3 = terrain.cave_c
+	mining = ProtoMining.new()
+	mining.name = "mining"
+	add_child(mining)
+	var cs = _mat_with("crystalline")
+	var metal = _mat_with("metallic")
+	var cs_sub: Substance = cs if cs != null else (_solid_mats()[0] if not _solid_mats().is_empty() else World.starter_substance())
+	# Сверло — из самого твёрдого материала планеты (как собранный из него бур
+	# в игре); --drill-hard=N — задать твёрдость, чтобы проверить «слишком мягкий».
+	var hard: float = metal.hardness if metal != null else 2.5
+	for m in _solid_mats():
+		hard = maxf(hard, m.hardness)
+	if drill_hard >= 0.0:
+		hard = drill_hard
+	mining.setup(cs_sub, hard, planet.ambient_temp, terrain, cmat)
+	print("Друзы: %s, твёрдость %.1f; бур %.1f" % [_label(cs_sub), cs_sub.hardness, hard])
 	# Натёки: сталактиты со свода, сталагмиты с пола.
 	var made := 0
 	for i in 300:
@@ -284,6 +311,10 @@ func _cave_crystals() -> void:
 		var base := p - dir * 0.05
 		# Друза: главный кристалл и поросль вокруг, все растут веером от стены,
 		# основания утоплены в породу, у подножия — мелкие «щётки».
+		var druse := Node3D.new()
+		druse.name = "druse_%d" % made
+		druse.set_meta("normal", nrm)
+		add_child(druse)
 		var cnt := rng.randi_range(5, 9)
 		var main_len := rng.randf_range(0.7, 1.3)
 		for m in cnt:
@@ -299,7 +330,10 @@ func _cave_crystals() -> void:
 			var x := y.cross(ref).normalized()
 			var off := Vector3.ZERO if m == 0 else (x * cos(m * 2.4) + x.cross(y) * sin(m * 2.4)) * rng.randf_range(0.08, 0.28)
 			ci.transform = Transform3D(Basis(x, y, x.cross(y)).rotated(y, rng.randf() * TAU), base + off - tilt * len * 0.12)
-			add_child(ci)
+			ci.name = "crystal_%d" % m
+			ci.set_meta("len", len)
+			ci.set_meta("r", r)
+			druse.add_child(ci)
 		# Щётка: мелкие кристаллики вокруг подножия, почти вровень с породой.
 		var fx := nrm.cross(Vector3.UP if absf(nrm.y) < 0.9 else Vector3.RIGHT).normalized()
 		var fz := nrm.cross(fx)
@@ -314,7 +348,7 @@ func _cave_crystals() -> void:
 			var x := y.cross(Vector3.UP if absf(y.y) < 0.9 else Vector3.RIGHT).normalized()
 			var at := base + (fx * cos(a) + fz * sin(a)) * rng.randf_range(0.2, 0.5) - nrm * 0.03
 			ci.transform = Transform3D(Basis(x, y, x.cross(y)), at)
-			add_child(ci)
+			druse.add_child(ci)
 		if lights < 4:
 			var l := OmniLight3D.new()
 			l.light_color = col
@@ -323,6 +357,7 @@ func _cave_crystals() -> void:
 			l.position = base + nrm * 0.7
 			add_child(l)
 			lights += 1
+		mining.add_druse(druse)
 		made += 1
 
 ## Место робота в пещере и желаемая точка камеры: [робот, цель взгляда, камера].
