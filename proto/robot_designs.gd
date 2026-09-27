@@ -51,7 +51,7 @@ static func mat(key: String) -> Material:
 		"glow":
 			m.albedo_color = Color(0.3, 0.9, 1.0); m.emission_enabled = true
 			m.emission = Color(0.3, 0.9, 1.0); m.emission_energy_multiplier = 3.0
-		"cloth": m.albedo_color = Color(0.9, 0.36, 0.14); m.roughness = 0.95
+		"gunmetal": m.albedo_color = Color(0.34, 0.36, 0.4); m.metallic = 0.8; m.roughness = 0.3
 		"steel": m.albedo_color = Color(0.72, 0.74, 0.77); m.metallic = 0.7; m.roughness = 0.28
 		"iris":
 			m.albedo_color = Color(0.2, 0.85, 1.0); m.emission_enabled = true
@@ -768,7 +768,7 @@ static func rbox_along(p: Node3D, a: Vector3, b: Vector3, w: float, d: float, be
 
 ## Голова-объектив с антеннами-ушами в своём узле head (наклон — поворот узла).
 ## r — радиус объектива; shell_m — корпус головы, trim_m — ободки.
-static func _head(p: Node3D, pos: Vector3, r: float, shell_m: String, trim_m: String, tilt := Vector3.ZERO, brow := false) -> Node3D:
+static func _head(p: Node3D, pos: Vector3, r: float, shell_m: String, trim_m: String, tilt := Vector3.ZERO, aperture := false) -> Node3D:
 	var hd := Node3D.new()
 	hd.name = "head"
 	hd.position = pos
@@ -786,16 +786,20 @@ static func _head(p: Node3D, pos: Vector3, r: float, shell_m: String, trim_m: St
 	ball(hd, Vector3(0, 0, 0.09) * k, 0.084 * k, "glass").scale = Vector3(1, 1, 0.3)
 	for sg in [-1.0, 1.0]:
 		_ear(hd, Vector3(sg * 0.125, 0.085, -0.03) * k, sg, trim_m, k)
-	if brow:
-		# Бровь-козырёк, наполовину прикрывающая объектив: узел lid, наклон и перекос дают выражение
-		# (в игре — хмурится, удивляется, щурится).
-		var lid := Node3D.new()
-		lid.name = "lid"
-		lid.position = Vector3(0, 0.092, 0.095) * k
-		lid.rotation = Vector3(0.25, 0, -0.33)
-		hd.add_child(lid)
-		rbox(lid, Vector3.ZERO, Vector3(0.24, 0.055, 0.05) * k, 0.016 * k, shell_m)
-		rbox(lid, Vector3(0, -0.03, 0.006) * k, Vector3(0.2, 0.01, 0.036) * k, 0.004 * k, "accent")
+	if aperture:
+		# Диафрагма объектива: восемь лепестков вертушкой. Узел aperture — в игре
+		# лепестки сходятся и расходятся (прищур, удивление, яркий свет).
+		var ap := Node3D.new()
+		ap.name = "aperture"
+		ap.position = Vector3(0, 0, 0.0985) * k
+		hd.add_child(ap)
+		for bi in 8:
+			var a := bi * TAU / 8.0
+			var dir := Vector3(cos(a), sin(a), 0)
+			var tan := Vector3(-sin(a), cos(a), 0)
+			var bb := Basis(tan.rotated(Vector3.BACK, 0.3), dir.rotated(Vector3.BACK, 0.3), Vector3.BACK)
+			# Лепестки чуть внахлёст: каждый следующий на волос ближе к стеклу.
+			rbox(ap, dir * 0.074 * k + Vector3(0, 0, bi * 0.0004) * k, Vector3(0.06, 0.03, 0.002) * k, 0.0006 * k, "gunmetal", bb)
 	return hd
 
 ## Колба на ремнях и кассета капсул под ней; r — радиус стекла. Возвращает точку
@@ -965,13 +969,6 @@ static func _clean(n: Node3D, hull_col: Color) -> void:
 	# --- Голова: наклон вбок и чуть вниз — «присматривается».
 	var hc := Vector3(0.0, 1.63, 0.03)
 	_head(n, hc, 0.14, paint, metal, Vector3(-0.08, 0.14, 0.14), true)
-	# Шарф из ткани: петля на шее и два хвоста назад — характер и силуэт со спины.
-	ring(n, Vector3(0, 1.465, -0.01), Vector3(0.1, 1, 0), 0.062, 0.088, "cloth").scale = Vector3(1.15, 0.8, 1.0)
-	for tail in [[Vector3(-0.05, 1.45, -0.08), Vector3(-0.09, 1.37, -0.15), Vector3(-0.11, 1.28, -0.19), Vector3(-0.19, 1.16, -0.28), 0.085],
-			[Vector3(-0.02, 1.45, -0.085), Vector3(-0.04, 1.39, -0.15), Vector3(-0.03, 1.32, -0.2), Vector3(-0.07, 1.24, -0.27), 0.065]]:
-		var w: float = tail[4]
-		for i in 3:
-			rbox_along(n, tail[i], tail[i + 1], w * (1.0 - i * 0.18), 0.008, 0.003, Vector3(0.3, 0.2, -1), "cloth")
 	rod(n, Vector3(0, 1.44, -0.01), hc + Vector3(0, -0.1, -0.02), 0.03, "dark")
 	disc(n, Vector3(0, 1.475, -0.01), Vector3.UP, 0.07, 0.035, "dark")
 	# --- Кираса: грудь с фаской, медная полоса, светящиеся щели.
