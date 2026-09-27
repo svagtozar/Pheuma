@@ -77,6 +77,7 @@ var bump_prefix := ""
 var bump_min := INF
 var bump_top := -INF
 var bump_shot2 := false
+var bump_jumped := false
 var cam_focus := Vector3.INF # точка, на которую смотрит камера (скрипт добычи); INF — на робота
 var finale := -1.0           # --auto=sound: время после конца маршрута (бур, кисть)
 
@@ -192,6 +193,8 @@ func _process(dt: float) -> void:
 		_resume_capture = false
 		recapture()
 	dt = minf(dt, 0.25)
+	if bump_view != null or jump_auto:
+		dt = minf(dt, 1.0 / 30.0)   # проверки: шаг не зависит от того, как тянет машина
 	if capture and not _captured_once and route.is_empty() and not drill_auto:
 		_captured_once = true
 		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
@@ -580,9 +583,11 @@ func _auto_bump(dt: float) -> void:
 		bump_min = minf(bump_min, Vector2(robot.position.x - crusher.x, robot.position.z - crusher.z).length())
 		if bump_t + dt >= 4.0:
 			_shot("%s_1.png" % bump_prefix)
+			bump_jumped = false
 			_bump_start(Vector2i(1, 0))
 	elif bump_t < 9.0:
-		if robot.position.z - pipe.z < 1.15 and robot.position.z > pipe.z and _can_jump():
+		if robot.position.z - pipe.z < 1.15 and robot.position.z > pipe.z and not bump_jumped and _can_jump():
+			bump_jumped = true
 			jump()
 		if absf(robot.position.z - pipe.z) < 0.3:
 			bump_top = maxf(bump_top, robot.position.y - pipe.y)
@@ -591,6 +596,9 @@ func _auto_bump(dt: float) -> void:
 				_shot("%s_2.png" % bump_prefix)
 	else:
 		var passed := robot.position.z < pipe.z - 1.0
+		if not passed:
+			_shot("%s_fail.png" % bump_prefix)   # где застрял
+			print("Столкновения: робот на ", robot.position, ", труба ", pipe)
 		print("Столкновения: до дробилки %.2f м (упёрся: %s); над трубой +%.2f м, перепрыгнул: %s" % [
 			bump_min, "да" if bump_min > 0.9 else "НЕТ", bump_top, "да" if passed else "НЕТ"])
 		get_tree().quit(0 if bump_min > 0.9 and passed else 1)

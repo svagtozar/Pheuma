@@ -28,7 +28,9 @@ var robot: Node3D
 var hud: ProtoHud                  # подписи кнопок: клавиатура или геймпад
 var on_new_planet := Callable()
 var on_quit := Callable()
-var on_controls := Callable()      # экран «Управление» (ProtoControlsMenu) поверх меню
+var on_save := Callable()           # «Сохранить» в паузе; вернуть "" или текст ошибки
+var on_main_menu := Callable()      # «В главное меню»
+var on_resume := Callable()         # окно закрыто, игра снова идёт (захват мыши)
 var pause_game := true             # окно ставит игру на паузу (для кадров — нет)
 
 var modal := ""                    # открытое окно или ""
@@ -315,6 +317,9 @@ func open(name: String) -> void:
 		"menu": _fill_menu()
 		"skills": _fill_skills()
 		"end": _fill_end()
+		"settings": _fill_settings()
+	# Окно — мышь свободна (камера мышью её захватывает).
+	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 	_layer.visible = true
 	if pause_game:
 		get_tree().paused = true
@@ -329,7 +334,9 @@ func close() -> void:
 	# Снять паузу чуть позже: нажатие A, закрывшее окно, не должно поставить деталь.
 	get_tree().create_timer(0.12, true).timeout.connect(func():
 		if modal == "" and is_inside_tree():
-			get_tree().paused = false)
+			get_tree().paused = false
+			if on_resume.is_valid():
+				on_resume.call())
 
 func _title(t: String, sub: String = "") -> void:
 	var l := _label(t, 28, TEXT)
@@ -354,7 +361,8 @@ func _button(parent: Container, t: String, f: Callable, min_size := Vector2(0, 4
 	b.text = t
 	b.custom_minimum_size = min_size
 	b.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	b.pressed.connect(f)
+	if f.is_valid():
+		b.pressed.connect(f)
 	parent.add_child(b)
 	return b
 
@@ -437,13 +445,33 @@ func _fill_menu() -> void:
 	var can := _learnable()
 	_button(v, "Прокачка · знаний %d%s" % [run.robot.knowledge, " · можно изучить %d" % can if can > 0 else ""], func(): open("skills"))
 	_button(v, "Итоги рана", func(): open("end"))
-	if on_controls.is_valid():
-		_button(v, "Управление", on_controls)
+	_button(v, "Настройки", func(): open("settings"))
 	if on_new_planet.is_valid():
 		_button(v, "Новая планета", on_new_planet)
+	var h := HBoxContainer.new()
+	h.add_theme_constant_override("separation", 10)
+	v.add_child(h)
+	if on_save.is_valid():
+		var sb := _button(h, "Сохранить", Callable(), Vector2(130, 48))
+		sb.pressed.connect(func():
+			var err: String = on_save.call()
+			sb.text = err if err != "" else "Сохранено")
+	if on_main_menu.is_valid():
+		_button(h, "В меню", on_main_menu, Vector2(130, 48))
 	if on_quit.is_valid():
-		_button(v, "Сохранить и выйти", on_quit)
+		_button(h, "Выход", on_quit, Vector2(130, 48))
+	for b in h.get_children():
+		b.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		b.autowrap_mode = TextServer.AUTOWRAP_OFF
 	_text(_controls_line(), 15, DIM, 420).horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+
+## Настройки (ProtoSettingsPanel) внутри паузы; «Назад» — снова пауза.
+func _fill_settings() -> void:
+	var p := ProtoSettingsPanel.new()
+	p.custom_minimum_size = Vector2(860, 560)
+	p.add_theme_stylebox_override("panel", StyleBoxEmpty.new())   # рамка — у окна
+	p.closed.connect(func(): open("menu"))
+	_body.add_child(p)
 
 func _fill_skills() -> void:
 	var r := run.robot
