@@ -4,6 +4,8 @@ extends Node3D
 ##   --play — ходить самому (WASD, Shift, Q/E или мышь с ПКМ, колесо; F — бур,
 ##   G — выстрел кистью и подтягивание); --tool=drill — бур в правом предплечье
 ##   --auto=cave --screenshot=путь.png — маршрут в пещеру, кадры путь_1..4.png
+##   --auto=sound — тот же маршрут без кадров, в конце бур у стены и выстрел кистью
+##   (для проверки звука); --record=путь.wav — записать звук, --mute — без звука
 ##   --robot=clean (по умолчанию; другой вариант из RobotDesigns или old — прежний
 ##   каркас; корпус — металл планеты)
 ## Планета — настоящий генератор: теги задают небо, свет и дымку, жидкие при её
@@ -20,6 +22,8 @@ var cam: Camera3D
 var _t := 0.0
 var play := false            # --play: управление от третьего лица
 var auto := ""               # --auto=cave: скриптовый маршрут с кадрами
+var record := ""             # --record=путь.wav: записать звук (с --play или --auto)
+var mute := false            # --mute: без звука
 var env: Environment
 
 func _ready() -> void:
@@ -31,6 +35,10 @@ func _ready() -> void:
 		elif a == "--play": play = true
 		elif a.begins_with("--tool="): RobotDesigns.tool_r = a.substr(7)
 		elif a.begins_with("--auto="): auto = a.substr(7)
+		elif a.begins_with("--record="): record = a.substr(9)
+		elif a == "--mute": mute = true
+	if auto == "sound" and RobotDesigns.tool_r == "":
+		RobotDesigns.tool_r = "drill"
 	planet = PlanetGen.generate(seed_value)
 	var t0 := Time.get_ticks_msec()
 	terrain = ProtoTerrain.new(seed_value)
@@ -61,6 +69,14 @@ func _ready() -> void:
 		if auto == "cave":
 			pl.auto_cave(shot_path.get_basename() if shot_path != "" else "user://route")
 			shot_path = ""
+		elif auto == "sound":
+			pl.auto_sound()
+		if not mute:
+			var snd := ProtoSound.new()
+			snd.name = "sound"
+			snd.record_path = record
+			snd.setup(robot, terrain, pl, planet)
+			add_child(snd)
 
 # ---------------------------------------------------------------- палитра и свет
 
