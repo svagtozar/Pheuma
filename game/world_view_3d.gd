@@ -14,6 +14,7 @@ var main                         # game/main.gd — зум камеры и кл�
 var terrain: TileTerrain
 var robot: Node3D
 var anim: RobotAnim
+var robot_ground: RobotGround     # стопы и наклон по сетке рельефа
 var cam: Camera3D
 var env: Environment
 var particles: CPUParticles3D
@@ -94,6 +95,7 @@ func _build_chunk(k: Vector2i) -> void:
 	ground.mesh = terrain.build_height_mesh(r)
 	ground.material_override = _ground_mat
 	node.add_child(ground)
+	RobotGround.add_collision(ground)
 	for t in [Planet.Tile.LAVA, Planet.Tile.ACID]:
 		var mesh := terrain.liquid_mesh(t, terrain.liquid_level(), r)
 		if mesh == null:
@@ -241,6 +243,7 @@ func _robot() -> void:
 	if anim:
 		anim.mode = "play"          # скорость задаёт вид — по движению робота в мире
 	_content.add_child(robot)
+	robot_ground = RobotGround.attach(robot)
 	var lamp := robot.find_child("head_lamp", true, false) as SpotLight3D
 	if lamp:
 		lamp.light_energy = 1.5
@@ -379,6 +382,8 @@ func _process(dt: float) -> void:
 		# Скорость игры рассчитана на 2D (клеток в секунду) — шаг ограничен бегом.
 		anim.speed = minf(speed, RobotAnim.WALK_SPEED * 2.6)
 	robot.position = terrain.world_pos(world.robot.pos)
+	if robot_ground:
+		robot_ground.place(robot.position.y)
 	_sync(dt)
 	_follow(dt)
 	if main != null and cursor != null:
