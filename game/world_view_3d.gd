@@ -35,6 +35,8 @@ var build_ms := 0
 var map_data: ProtoMapData      # радар (ProtoRadar) в левом нижнем углу
 var radar: ProtoRadar
 var _radar_layer: CanvasLayer
+var _live := {}                  # id машины → живые части модели (лампа, вращение, груз)
+var _fx3d: WorldFx3D             # снаряды, дроны, огонь, порции, события, частицы
 var _zone: MeshInstance3D         # круг зоны события планеты (метеориты, вспышка, гейзер)
 var _t := 0.0
 
@@ -43,6 +45,7 @@ func set_world(w: World) -> void:
 	if _content != null:
 		_content.queue_free()
 	_deposits.clear()
+	_live.clear()
 	_liquid_mats.clear()
 	_machine_sig = ""
 	_content = Node3D.new()
@@ -66,6 +69,9 @@ func set_world(w: World) -> void:
 	_content.add_child(_machines)
 	_robot()
 	_cursor()
+	_fx3d = WorldFx3D.new()
+	_content.add_child(_fx3d)
+	_fx3d.setup(world, terrain, main.view.fx if main != null and main.view != null else null)
 	_zone = MeshInstance3D.new()
 	var ring := TorusMesh.new()
 	ring.inner_radius = 0.94
@@ -146,6 +152,8 @@ func _refresh_tiles() -> void:
 		_deposits[c][0].position = terrain.cell_pos(c)
 		_deposits[c][1].position = terrain.cell_pos(c) + Vector3(0, 0.04, 0)
 	_machine_sig = ""
+	if _fx3d != null:
+		_fx3d.terrain_changed()
 
 ## Шейдер жидкостей прототипа: лава — с коркой и свечением, кислота — с пузырями.
 func _liquid_mat(t: int) -> Material:
@@ -282,70 +290,105 @@ func _cursor() -> void:
 
 func _machine_node(m: Machine) -> Node3D:
 	var body := ProtoMachines.surface(m.built_from) if m.built_from != null else ProtoMachines.surface(world.starter)
-	var info: Dictionary = Buildings.KINDS.get(m.kind, {})
-	var n: Node3D
-	match m.kind:
-		"tank", "dome":
-			var fill := 0.0
-			if m.capacity() > 0.0:
-				var mass := 0.0
-				for p in m.items:
-					mass += p.mass
-				fill = clampf(mass / m.capacity(), 0.05, 1.0)
-			n = ProtoMachines.tank(body, m.items[0].substance.color if not m.items.is_empty() else Color(0.3, 0.3, 0.35), fill)
-			n.scale = Vector3(0.85, 0.85, 0.85)
-		"pump", "compressor", "decompressor":
-			n = ProtoMachines.pump(body)
-		"cannon", "battery_section":
-			n = ProtoMachines.cannon(body)
-		"drill":
-			n = ProtoMachines.frame(body, 1.5)
-			var bit := MeshInstance3D.new()
-			var cy := CylinderMesh.new()
-			cy.top_radius = 0.22
-			cy.bottom_radius = 0.02
-			cy.height = 1.3
-			bit.mesh = cy
-			bit.material_override = body
-			bit.position = Vector3(0, 0.75, 0)
-			n.add_child(bit)
-		"container", "warehouse_section", "receiver":
-			n = Node3D.new()
-			var box := ProtoMachines.slab(Vector3(1.7, 0.9, 1.7), m.built_from.color if m.built_from else Color.GRAY)
-			box.material_override = body
-			box.position = Vector3(0, 0.45, 0)
-			n.add_child(box)
-		"pipe":
-			n = Node3D.new()
-			var hub := MeshInstance3D.new()
-			var sp := SphereMesh.new()
-			sp.radius = 0.2
-			sp.height = 0.4
-			hub.mesh = sp
-			hub.material_override = body
-			hub.position = Vector3(0, 0.4, 0)
-			n.add_child(hub)
-		_:
-			if info.get("cat", -1) == 2 or info.has("process"):
-				n = ProtoMachines.furnace(body)
-			else:
-				n = Node3D.new()
-				var box := ProtoMachines.slab(Vector3(1.6, 1.0, 1.6), Color.GRAY)
-				box.material_override = body
-				box.position = Vector3(0, 0.5, 0)
-				n.add_child(box)
+	var n := MachineModels.build(m.kind, body)
 	n.position = terrain.cell_pos(m.cell)
 	var d: Vector2i = Machine.DIRS[m.facing]
 	n.rotation.y = atan2(float(d.x), float(d.y))
+	if m.outputs() == 2:
+		var d2: Vector2i = Machine.DIRS[(m.facing + 1) % 4]
+		MachineModels.add_outlet(n, n.basis.inverse() * Vector3(d2.x, 0, d2.y))
+	_live[m.id] = {"node": n, "lamp": n.get_node_or_null("lamp"), "spin": n.find_child("spin", true, false),
+		"fill": n.get_node_or_null("fill"), "h": float(n.get_meta("h", 1.2)), "busy": null, "light": null}
+	if m.stats.get("light", false):
+		var l := OmniLight3D.new()
+		l.light_color = Color(1, 1, 0.75)
+		l.light_energy = 0.8
+		l.omni_range = 5.0
+		l.position = Vector3(0, _live[m.id].h + 0.5, 0)
+		n.add_child(l)
 	return n
+
+## Склад и пневмобатарея 2×2: главная секция несёт общую крышу или тяжёлый ствол.
+func _structure_node(m: Machine) -> Node3D:
+	var body := ProtoMachines.surface(m.built_from if m.built_from != null else world.starter)
+	var n := Node3D.new()
+	n.position = (terrain.cell_pos(m.cell) + terrain.cell_pos(m.cell + Vector2i(1, 1))) / 2.0
+	if m.kind == "warehouse_section":
+		var roof := MeshInstance3D.new()
+		var pr := PrismMesh.new()
+		pr.size = Vector3(4.0, 0.8, 4.0)
+		roof.mesh = pr
+		roof.material_override = body
+		roof.position = Vector3(0, 1.75, 0)
+		n.add_child(roof)
+	else:
+		var cyl := CylinderMesh.new()
+		cyl.top_radius = 0.38
+		cyl.bottom_radius = 0.5
+		cyl.height = 3.4
+		var barrel := MeshInstance3D.new()
+		barrel.mesh = cyl
+		barrel.material_override = body
+		var d: Vector2i = Machine.DIRS[m.facing]
+		barrel.position = Vector3(d.x, 0, d.y) * 0.9 + Vector3(0, 2.6, 0)
+		barrel.rotation.y = atan2(float(d.x), float(d.y))
+		barrel.rotate_object_local(Vector3.RIGHT, PI / 2.0 - 0.55)
+		n.add_child(barrel)
+	return n
+
+## Меняющаяся часть машин каждый кадр: лампа, вращение, груз, порция в работе.
+func _update_live(dt: float) -> void:
+	for id in _live:
+		var m = world.machines.get(id)
+		if m == null:
+			continue
+		var L: Dictionary = _live[id]
+		var working: bool = m.hot or (m is Processor and m.busy != null)
+		if m is Drill or m.kind in ["pump", "fabricator", "beacon", "resonator"]:
+			working = working or m.enabled
+		if L.lamp != null:
+			var key := "lamp_idle"
+			if not m.enabled:
+				key = "lamp_off"
+			elif world.logic.outputs.get(id, false):
+				key = "lamp_sig"
+			elif working:
+				key = "lamp_work"
+			L.lamp.material_override = MachineModels.mat(key)
+		if L.spin != null and working:
+			L.spin.rotation.y += dt * (9.0 if m.kind in ["centrifuge", "drill"] else 2.5)
+		if L.fill != null and m.capacity() > 0.0:
+			var f: float = clampf(m.total_mass() / m.capacity(), 0.0, 1.0)
+			L.fill.scale.y = maxf(0.001, f * float(L.fill.get_meta("h", 1.0)))
+			L.fill.visible = f > 0.001
+			if f > 0.001:
+				var fm := L.fill.get_node("fill_mesh") as MeshInstance3D
+				var col: Color = m.items[0].substance.color
+				if fm.get_meta("col", Color.TRANSPARENT) != col:
+					fm.set_meta("col", col)
+					(fm.material_override as StandardMaterial3D).albedo_color = col
+		# Порция в работе едет от входа (сзади) к центру, как в 2D.
+		var busy = m.busy if m is Processor else null
+		if busy != null:
+			if L.busy == null:
+				L.busy = _portion_mesh(busy.substance, 0.16, false)
+				L.node.add_child(L.busy)
+			var k: float = clampf(m.progress / m.proc.dur, 0.0, 1.0)
+			L.busy.position = Vector3(0, L.h + 0.25 + 0.05 * sin(_t * 8.0), -0.8 * (1.0 - k))
+		elif L.busy != null:
+			L.busy.queue_free()
+			L.busy = null
 
 func _rebuild_machines() -> void:
 	for ch in _machines.get_children():
 		ch.queue_free()
+	_live.clear()
 	var mats := {}
 	for id in world.machines:
 		var m: Machine = world.machines[id]
 		_machines.add_child(_machine_node(m))
+		if m.kind in ["warehouse_section", "battery_section"] and m.master_id == m.id:
+			_machines.add_child(_structure_node(m))
 		if m.kind == "pipe":
 			# Труба тянется к соседним трубам и машинам (к трубам — один раз на пару).
 			for d in Machine.DIRS:
@@ -364,7 +407,7 @@ func _machine_signature() -> String:
 	var parts := PackedStringArray()
 	for id in world.machines:
 		var m: Machine = world.machines[id]
-		parts.append("%d:%s:%d:%d" % [id, m.kind, m.facing, m.items.size()])
+		parts.append("%d:%s:%d:%d" % [id, m.kind, m.facing, m.master_id])
 	return ",".join(parts)
 
 # ---------------------------------------------------------------- кадр
@@ -453,6 +496,8 @@ func _process(dt: float) -> void:
 	if robot_ground:
 		robot_ground.place(robot.position.y)
 	_sync(dt)
+	_update_live(dt)
+	_fx3d.update(dt)
 	_follow(dt)
 	_event_zone(dt)
 	if main != null and cursor != null:
@@ -518,3 +563,15 @@ func screen_to_world(screen: Vector2) -> Vector2:
 			return Vector2(b.x, b.z) / S
 		prev = p
 	return Vector2(prev.x, prev.z) / S
+
+## Порция вещества шариком (твёрдое — матовое, светящееся — по тегам материала).
+func _portion_mesh(sub: Substance, r: float, _glow: bool) -> MeshInstance3D:
+	var mi := MeshInstance3D.new()
+	var sp := SphereMesh.new()
+	sp.radius = r
+	sp.height = r * 2.0
+	sp.radial_segments = 10
+	sp.rings = 5
+	mi.mesh = sp
+	mi.material_override = ProtoMachines.surface(sub)
+	return mi
