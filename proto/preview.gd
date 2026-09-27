@@ -18,6 +18,8 @@ extends Node3D
 ##   Разведка материалов (ProtoLabDesk, ProtoLabPanel): Z / A — коснуться друзы, машины
 ##   или груза и открыть карточку (пробы, догадки), V / RB — анализатор; в линии
 ##   завода — лаборатория. --lab — открыть карточку сразу (для кадра)
+##   Обучение первых минут (ProtoTutorial) — в --play, пока не пройдено; --tutorial —
+##   заново, --tutorial=N — с шага N (для кадра), --no-tutorial — без него
 ##   --robot=clean (по умолчанию; другой вариант из RobotDesigns или old — прежний
 ##   каркас; корпус — металл планеты)
 ## Сборка для проверки (фича play3d в export_presets.cfg) стартует прямо сюда,
@@ -55,6 +57,8 @@ var saves: ProtoSave
 var lab_desk: ProtoLabDesk   # знания о веществах (касание, пробы, догадки, лаборатория)
 var lab_panel: ProtoLabPanel
 var lab_demo := false        # --lab: карточка материала открыта с самого начала
+var tutorial: ProtoTutorial
+var tutorial_mode := ""      # --tutorial — начать обучение заново; --tutorial=N — с шага N (для кадра); --no-tutorial
 
 ## Сид следующей планеты в сборке для проверки (переживает перезагрузку сцены).
 static var build_seed := 14
@@ -87,11 +91,14 @@ func _ready() -> void:
 		elif a == "--build": build = true
 		elif a == "--fresh": fresh = true
 		elif a == "--lab": lab_demo = true
+		elif a == "--tutorial": tutorial_mode = "0"
+		elif a.begins_with("--tutorial="): tutorial_mode = a.substr(11)
+		elif a == "--no-tutorial": tutorial_mode = "off"
 	if auto == "drill":
 		RobotDesigns.tool_r = "drill"
 		view = "cave"
-	if auto == "sound" and RobotDesigns.tool_r == "":
-		RobotDesigns.tool_r = "drill"
+	if (auto == "sound" or play) and RobotDesigns.tool_r == "":
+		RobotDesigns.tool_r = "drill"          # играя, робот добывает: бур в предплечье
 	planet = PlanetGen.generate(seed_value)
 	lab_desk = ProtoLabDesk.new(ProtoLabDesk.for_planet(planet))
 	var t0 := Time.get_ticks_msec()
@@ -143,6 +150,7 @@ func _ready() -> void:
 	if play or auto != "" or show_hud:
 		_hud()
 	_lab()
+	_tutorial()
 	if play and auto == "":
 		saves = ProtoSave.new()
 		saves.name = "saves"
@@ -736,6 +744,21 @@ func _hud() -> void:
 	if OS.has_feature("play3d"):
 		hud.extra_hints = [["Сохранить", "F5", "R3"], ["Другая планета", "Tab", "View"], ["Выход", "Esc", "Menu"]]
 	add_child(hud)
+
+## Обучение первых минут: в игре — пока не пройдено или не закрыто
+## (ProtoTutorial помнит это в user://settings.json), --tutorial — заново.
+func _tutorial() -> void:
+	if tutorial_mode == "off" or hud == null:
+		return
+	var forced := tutorial_mode != ""
+	if not forced and (not play or auto != "" or ProtoTutorial.is_done()):
+		return
+	if tutorial_mode == "0":
+		ProtoTutorial.reset()
+	tutorial = ProtoTutorial.new()
+	tutorial.name = "tutorial"
+	tutorial.setup(self, hud, int(tutorial_mode) if forced else -1)
+	add_child(tutorial)
 
 ## Разведка материалов: карточка с пробами и догадками, анализатор, лента находок.
 func _lab() -> void:
