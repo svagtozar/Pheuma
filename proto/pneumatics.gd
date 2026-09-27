@@ -69,6 +69,13 @@ var by_id := {}                 # id → Vector2i
 var events: Array = []          # {"kind": "burst"|"done"|"lost", "cell", ...} — для визуала
 var produced := {}              # id вещества → кг, пришедших в баки
 var flights: Array = []         # капсулы пушек в полёте: {p, from, to, t, dur}
+# Счётчики для целей рана (ProtoRun) и множители от прокачки и событий.
+var placed := 0                 # деталей поставлено за всё время
+var delivered := 0              # капсул пришло в баки
+var processed := 0              # порций обработано машинами
+var burst_log: Array = []       # лопнувшие детали: [kind, cell, dir, sub] — «ремонтная бригада»
+var pump_mult := 1.0            # скорость насосов
+var speed_mult := 1.0           # скорость машин обработки
 var knowledge: World = null     # чьи знания пополняет лаборатория (ProtoLabDesk.world)
 var _next_id := 1
 
@@ -92,6 +99,7 @@ func place(kind: String, c: Vector2i, dir: int, sub: Substance) -> Dictionary:
 		"stats": stats, "items": [], "busy": null, "progress": 0.0, "status": "",
 		"cap": null, "cd": 0.0, "hot": false, "work": false, "out_q": []}
 	_next_id += 1
+	placed += 1
 	parts[c] = part
 	by_id[part.id] = c
 	gas.add_node(part.id, info.vol, stats.max_p)
@@ -183,7 +191,7 @@ func _pump(part: Dictionary, dt: float) -> void:
 		return
 	# Насос забирает воздух снаружи: чем он реже, тем меньше за такт.
 	var want := gas.gas_for_pressure(part.id, limit)
-	gas.add_gas(part.id, minf(want, PUMP_RATE * planet.atm_pressure * dt))
+	gas.add_gas(part.id, minf(want, PUMP_RATE * pump_mult * planet.atm_pressure * dt))
 	part.status = "качает: %.1f атм" % p
 	part.hot = true
 
@@ -222,7 +230,7 @@ func _machine(part: Dictionary, dt: float) -> void:
 			return
 		part.busy = part.items.pop_front()
 		part.progress = 0.0
-	part.progress += dt * part.stats.speed
+	part.progress += dt * part.stats.speed * speed_mult
 	part.hot = proc.get("temp", "") == "heat"
 	part.work = true
 	part.status = "работает %d%%" % int(100.0 * part.progress / proc.dur)
@@ -255,6 +263,7 @@ func _machine(part: Dictionary, dt: float) -> void:
 		gas.take_gas(part.id, proc.gas_use)
 	if res.gas > 0.0:
 		gas.add_gas(part.id, res.gas * Processor.GAS_PER_KG)
+	processed += 1
 	if knowledge != null:
 		# Наблюдение, как в 2D (World.on_processed): сработавшее правило выдаёт тег
 		# входа, знание переходит на продукт.
@@ -339,6 +348,7 @@ func _accept(part: Dictionary, p: Portion, from: Vector2i) -> bool:
 				part.status = "полон"
 				return false
 			produced[p.substance.id] = produced.get(p.substance.id, 0.0) + p.mass
+			delivered += 1
 			for it in part.items:
 				if it.substance == p.substance:
 					it.absorb(p)
@@ -410,6 +420,7 @@ func _burst(c: Vector2i) -> void:
 	if part.is_empty():
 		return
 	events.append({"kind": "burst", "cell": c, "part": part.kind, "p": gas.pressure(part.id), "max_p": part.stats.max_p})
+	burst_log.append([part.kind, c, part.dir, part.sub])
 	remove(c)
 
 # ---------------------------------------------------------------- удобства

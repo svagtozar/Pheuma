@@ -34,6 +34,7 @@ var _yaw := PI
 var build_ms := 0
 var _live := {}                  # id машины → живые части модели (лампа, вращение, груз)
 var _fx3d: WorldFx3D             # снаряды, дроны, огонь, порции, события, частицы
+var _zone: MeshInstance3D         # круг зоны события планеты (метеориты, вспышка, гейзер)
 var _t := 0.0
 
 func set_world(w: World) -> void:
@@ -68,6 +69,16 @@ func set_world(w: World) -> void:
 	_fx3d = WorldFx3D.new()
 	_content.add_child(_fx3d)
 	_fx3d.setup(world, terrain, main.view.fx if main != null and main.view != null else null)
+	_zone = MeshInstance3D.new()
+	var ring := TorusMesh.new()
+	ring.inner_radius = 0.94
+	ring.outer_radius = 1.0
+	ring.rings = 48
+	ring.ring_segments = 4
+	_zone.mesh = ring
+	_zone.material_override = ProtoMachines.glow(Color(1.0, 0.45, 0.2), 1.5)
+	_zone.visible = false
+	_content.add_child(_zone)
 	cam = Camera3D.new()
 	cam.fov = 55.0
 	cam.far = 400.0
@@ -321,7 +332,6 @@ func _structure_node(m: Machine) -> Node3D:
 
 ## Меняющаяся часть машин каждый кадр: лампа, вращение, груз, порция в работе.
 func _update_live(dt: float) -> void:
-	_t += dt
 	for id in _live:
 		var m = world.machines.get(id)
 		if m == null:
@@ -433,10 +443,30 @@ func _process(dt: float) -> void:
 	_update_live(dt)
 	_fx3d.update(dt)
 	_follow(dt)
+	_event_zone(dt)
 	if main != null and cursor != null:
 		var mc: Vector2i = main.mouse_cell()
 		cursor.visible = world.planet.in_bounds(mc)
 		cursor.position = terrain.cell_pos(mc) + Vector3(0, 0.05, 0)
+
+## Зона события — как круг в 2D: мигает при предупреждении, ровно светит в активной фазе.
+func _event_zone(dt: float) -> void:
+	_t += dt
+	var d: EventDirector = world.director
+	var id: String = d.current.get("id", "")
+	var zoned: bool = id in ["meteors", "flare", "geyser", "spore_bloom", "ring_debris"]
+	_zone.visible = zoned
+	if not zoned:
+		return
+	var warn: bool = d.current.phase == "warn"
+	var r: float = (float(d.current.radius) + 0.5) * S
+	var col := Color(0.8, 0.5, 1.0) if id == "flare" else (Color(0.8, 0.9, 1.0) if id == "geyser" else Color(1.0, 0.45, 0.2))
+	var m := _zone.material_override as StandardMaterial3D
+	m.albedo_color = col
+	m.emission = col
+	m.emission_energy_multiplier = 1.5 * (0.5 + 0.5 * sin(_t * (6.0 if warn else 3.0))) + (0.0 if warn else 0.8)
+	_zone.position = terrain.cell_pos(d.center()) + Vector3(0, 0.2, 0)
+	_zone.scale = Vector3(r, 4.0, r)
 
 func _cam_dist() -> float:
 	var z := 1.5

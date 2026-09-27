@@ -1,5 +1,6 @@
 class_name Rewards
 ## Награды за этапы цели: после этапа предлагаются три карточки, игрок берёт одну.
+## w — World или обёртка 3D-прототипа (ProtoRun): offer и простые карточки общие.
 
 const CARDS := {
 	"supply": {"n": "Сброс припасов", "desc": "С орбиты к базе прилетит капсула с 40 кг сплава капсулы."},
@@ -10,7 +11,7 @@ const CARDS := {
 	"survey": {"n": "Орбитальная разведка", "desc": "Залежи в радиусе 25 клеток раскрыты и их материалы проанализированы."},
 }
 
-static func unlearned_blueprints(w: World) -> Array:
+static func unlearned_blueprints(w) -> Array:
 	var out: Array = []
 	for k in Modules.MODULES:
 		if not w.robot.blueprints.has(k):
@@ -19,7 +20,7 @@ static func unlearned_blueprints(w: World) -> Array:
 	return out
 
 ## Три разные карточки, детерминированно от seed и номера этапа.
-static func offer(w: World, stage: int) -> Array:
+static func offer(w, stage: int) -> Array:
 	var rng: Rng = w.rng.fork("rewards%d" % stage)
 	var pool: Array = CARDS.keys()
 	pool.sort()
@@ -32,8 +33,8 @@ static func offer(w: World, stage: int) -> Array:
 		pool.erase(c)
 	return out
 
-static func apply(w: World, id: String) -> String:
-	var r := w.robot
+static func apply(w, id: String) -> String:
+	var r: RobotState = w.robot
 	match id:
 		"supply":
 			var to := Vector2(w.planet.spawn) + Vector2(2.5, 0.5)

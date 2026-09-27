@@ -436,14 +436,7 @@ func _build_event(d: EventDirector) -> void:
 		"meteors", "flare":
 			var col := Color(1.0, 0.45, 0.2) if id == "meteors" else Color(0.8, 0.5, 1.0)
 			var r: float = (float(d.current.radius) + 0.5) * S
-			var t := TorusMesh.new()
-			t.inner_radius = r - 0.08
-			t.outer_radius = r + 0.08
-			t.rings = 64
-			t.ring_segments = 4
-			var m := ProtoMachines.glow(col, 2.0)
-			var ring := _add(_event, t, m, ctr + Vector3(0, 0.3, 0))
-			ring.name = "ring"
+			# Сам круг зоны рисует WorldView3D._event_zone.
 			if not warn:
 				# Зона накрыта: полупрозрачный купол над ней.
 				var dome := SphereMesh.new()
