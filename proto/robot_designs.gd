@@ -51,6 +51,7 @@ static func mat(key: String) -> Material:
 		"glow":
 			m.albedo_color = Color(0.3, 0.9, 1.0); m.emission_enabled = true
 			m.emission = Color(0.3, 0.9, 1.0); m.emission_energy_multiplier = 3.0
+		"cloth": m.albedo_color = Color(0.9, 0.36, 0.14); m.roughness = 0.95
 		"steel": m.albedo_color = Color(0.72, 0.74, 0.77); m.metallic = 0.7; m.roughness = 0.28
 		"iris":
 			m.albedo_color = Color(0.2, 0.85, 1.0); m.emission_enabled = true
@@ -767,7 +768,7 @@ static func rbox_along(p: Node3D, a: Vector3, b: Vector3, w: float, d: float, be
 
 ## Голова-объектив с антеннами-ушами в своём узле head (наклон — поворот узла).
 ## r — радиус объектива; shell_m — корпус головы, trim_m — ободки.
-static func _head(p: Node3D, pos: Vector3, r: float, shell_m: String, trim_m: String, tilt := Vector3.ZERO) -> Node3D:
+static func _head(p: Node3D, pos: Vector3, r: float, shell_m: String, trim_m: String, tilt := Vector3.ZERO, brow := false) -> Node3D:
 	var hd := Node3D.new()
 	hd.name = "head"
 	hd.position = pos
@@ -785,6 +786,16 @@ static func _head(p: Node3D, pos: Vector3, r: float, shell_m: String, trim_m: St
 	ball(hd, Vector3(0, 0, 0.09) * k, 0.084 * k, "glass").scale = Vector3(1, 1, 0.3)
 	for sg in [-1.0, 1.0]:
 		_ear(hd, Vector3(sg * 0.125, 0.085, -0.03) * k, sg, trim_m, k)
+	if brow:
+		# Бровь-козырёк, наполовину прикрывающая объектив: узел lid, наклон и перекос дают выражение
+		# (в игре — хмурится, удивляется, щурится).
+		var lid := Node3D.new()
+		lid.name = "lid"
+		lid.position = Vector3(0, 0.092, 0.095) * k
+		lid.rotation = Vector3(0.25, 0, -0.33)
+		hd.add_child(lid)
+		rbox(lid, Vector3.ZERO, Vector3(0.24, 0.055, 0.05) * k, 0.016 * k, shell_m)
+		rbox(lid, Vector3(0, -0.03, 0.006) * k, Vector3(0.2, 0.01, 0.036) * k, 0.004 * k, "accent")
 	return hd
 
 ## Колба на ремнях и кассета капсул под ней; r — радиус стекла. Возвращает точку
@@ -943,8 +954,9 @@ static func _clean(n: Node3D, hull_col: Color) -> void:
 	var s := {
 		"pelvis": Vector3(0, 0.93, 0),
 		"sh_l": Vector3(-0.24, 1.43, 0), "sh_r": Vector3(0.24, 1.455, 0),
-		"el_l": Vector3(-0.3, 1.17, -0.04), "el_r": Vector3(0.31, 1.19, -0.02),
-		"ha_l": Vector3(-0.31, 0.94, 0.05), "ha_r": Vector3(0.33, 0.97, 0.09),
+		# Левая рука упёрта в бедро, правая — с инструментом — чуть вперёд, наготове.
+		"el_l": Vector3(-0.37, 1.18, -0.07), "el_r": Vector3(0.31, 1.18, 0.02),
+		"ha_l": Vector3(-0.2, 1.0, 0.02), "ha_r": Vector3(0.33, 1.0, 0.19),
 		"hi_l": Vector3(-0.11, 0.93, 0), "hi_r": Vector3(0.11, 0.91, 0),
 		"kn_l": Vector3(-0.12, 0.5, 0.04), "kn_r": Vector3(0.14, 0.49, 0.1),
 		"an_l": Vector3(-0.13, 0.09, 0.0), "an_r": Vector3(0.18, 0.09, 0.07),
@@ -952,7 +964,14 @@ static func _clean(n: Node3D, hull_col: Color) -> void:
 	var tilt := Basis(Vector3.BACK, 0.05)
 	# --- Голова: наклон вбок и чуть вниз — «присматривается».
 	var hc := Vector3(0.0, 1.63, 0.03)
-	_head(n, hc, 0.14, paint, metal, Vector3(-0.08, 0.12, 0.12))
+	_head(n, hc, 0.14, paint, metal, Vector3(-0.08, 0.14, 0.14), true)
+	# Шарф из ткани: петля на шее и два хвоста назад — характер и силуэт со спины.
+	ring(n, Vector3(0, 1.465, -0.01), Vector3(0.1, 1, 0), 0.062, 0.088, "cloth").scale = Vector3(1.15, 0.8, 1.0)
+	for tail in [[Vector3(-0.05, 1.45, -0.08), Vector3(-0.09, 1.37, -0.15), Vector3(-0.11, 1.28, -0.19), Vector3(-0.19, 1.16, -0.28), 0.085],
+			[Vector3(-0.02, 1.45, -0.085), Vector3(-0.04, 1.39, -0.15), Vector3(-0.03, 1.32, -0.2), Vector3(-0.07, 1.24, -0.27), 0.065]]:
+		var w: float = tail[4]
+		for i in 3:
+			rbox_along(n, tail[i], tail[i + 1], w * (1.0 - i * 0.18), 0.008, 0.003, Vector3(0.3, 0.2, -1), "cloth")
 	rod(n, Vector3(0, 1.44, -0.01), hc + Vector3(0, -0.1, -0.02), 0.03, "dark")
 	disc(n, Vector3(0, 1.475, -0.01), Vector3.UP, 0.07, 0.035, "dark")
 	# --- Кираса: грудь с фаской, медная полоса, светящиеся щели.
@@ -978,15 +997,44 @@ static func _clean(n: Node3D, hull_col: Color) -> void:
 		var hi: Vector3 = s["hi_" + side]
 		var kn: Vector3 = s["kn_" + side]
 		var an: Vector3 = s["an_" + side]
-		# Наплечник с фаской.
-		rbox(n, sh + Vector3(sg * 0.025, 0.05, 0), Vector3(0.13, 0.065, 0.16), 0.025, paint, Basis(Vector3.BACK, -sg * 0.35))
+		# Наплечник с фаской; левый крупнее, с полосами опасности и номером.
+		var pbas := Basis(Vector3.BACK, -sg * 0.35)
+		if side == "l":
+			var pc := sh + Vector3(-0.03, 0.055, 0)
+			rbox(n, pc, Vector3(0.155, 0.075, 0.185), 0.028, paint, pbas)
+			for dz in [-0.035, 0.035]:
+				rbox(n, pc + pbas * Vector3(0.0, 0.002, dz), Vector3(0.157, 0.076, 0.022), 0.01, "accent", pbas)
+			var lb := Label3D.new()
+			lb.text = "P-7"
+			lb.font_size = 48
+			lb.pixel_size = 0.0011
+			lb.modulate = Color(0.12, 0.12, 0.14)
+			lb.outline_size = 0
+			lb.shaded = true
+			lb.transform = Transform3D(pbas * Basis(Vector3.UP, -PI / 2.0), pc + pbas * Vector3(-0.08, -0.005, 0))
+			n.add_child(lb)
+		else:
+			rbox(n, sh + Vector3(sg * 0.025, 0.05, 0), Vector3(0.13, 0.065, 0.16), 0.025, paint, pbas)
 		ball(n, sh, 0.05, "dark")
 		rod(n, sh, el, 0.034, "dark")
 		piston(n, sh, el, Vector3(sg * 0.04, 0, -0.025), 0.017)
 		ball(n, el, 0.042, "dark")
-		# Предплечье — массивный щиток с медным бандажом у запястья.
-		rbox_along(n, el.lerp(ha, 0.12), el.lerp(ha, 0.8), 0.085, 0.095, 0.022, Vector3(sg * 0.3, 0, 1), paint)
-		rbox_along(n, el.lerp(ha, 0.8), el.lerp(ha, 0.9), 0.09, 0.1, 0.012, Vector3(sg * 0.3, 0, 1), metal)
+		# Предплечье — массивный щиток с медным бандажом у запястья; правое —
+		# рабочая перчатка крупнее, с пневмосоплом снаружи.
+		var big := 1.25 if side == "r" else 1.0
+		rbox_along(n, el.lerp(ha, 0.12), el.lerp(ha, 0.8), 0.085 * big, 0.095 * big, 0.022, Vector3(sg * 0.3, 0, 1), paint)
+		rbox_along(n, el.lerp(ha, 0.8), el.lerp(ha, 0.9), 0.09 * big, 0.1 * big, 0.012, Vector3(sg * 0.3, 0, 1), metal)
+		if side == "r":
+			var ax := (ha - el).normalized()
+			var out := Vector3(1, 0, -0.2).normalized()
+			var t0 := el.lerp(ha, 0.2) + out * 0.07
+			var t1 := el.lerp(ha, 0.95) + out * 0.07
+			rod(n, t0, t1, 0.024, "dark")
+			rod(n, t1, t1 + ax * 0.05, 0.026, metal, 0.014)
+			rod(n, t1 + ax * 0.05, t1 + ax * 0.056, 0.012, "glow")
+			for t in [0.3, 0.6]:
+				ring(n, t0.lerp(t1, t), ax, 0.024, 0.031, "dark")
+			hose(n, sh + Vector3(0.05, 0.0, -0.06), sh + Vector3(0.14, -0.1, -0.08), t0 + Vector3(0.05, 0.08, -0.06), t0 + Vector3(0.0, 0.0, -0.02), 0.011)
 		ball(n, ha, 0.03, "dark")
 		hand(n, ha, (ha - el).normalized() + Vector3(0, -0.6, 0), Vector3(-sg, 0, 0), paint, 1.25)
 		# Бедро — тёмная кость с поршнем, колено — щиток.
