@@ -11,12 +11,13 @@ extends Node
 ##   Геймпад: левый стик — ходьба, правый — камера, L3 — быстрее, RT — бур,
 ##   LT — кисть, D-pad вверх/вниз — дистанция (раскладка — ProtoControls).
 ## Скорость хода и высота уступа зависят от гравитации планеты.
-## Высота под ногами — по полю плотности (снаружи и в пещере), в породу и на
-## слишком крутые уступы не заходит. Камера на пружинной штанге. Под сводом сама
+## Высота под ногами — по видимой сетке рельефа (RobotGround: стопы по склону,
+## корпус с лёгким наклоном), в породу и на слишком крутые уступы не заходит. Камера на пружинной штанге. Под сводом сама
 ## включает фару и сгущает тёмный туман.
 
 var robot: Node3D
 var anim: RobotAnim
+var ground: RobotGround      # стопы и наклон по сетке рельефа
 var cam: Camera3D
 var terrain: ProtoTerrain
 var env: Environment
@@ -61,6 +62,7 @@ func setup(r: Node3D, c: Camera3D, t: ProtoTerrain, e: Environment) -> void:
 	anim = robot.get_node_or_null("anim")
 	if anim:
 		anim.mode = "play"
+	ground = RobotGround.attach(robot)
 	cam_yaw = robot.rotation.y
 	fist = robot.get_node_or_null("fist")
 	ProtoControls.ensure()
@@ -246,7 +248,7 @@ func auto_drill(prefix: String) -> void:
 			var sh := sp + Vector3(0, 1.4, 0)
 			var near := INF
 			for k: MeshInstance3D in d.crystals:
-				near = minf(near, sh.distance_to(ProtoMining.nearest_on(k, sh)))
+				near = minf(near, ProtoMining.reach_dist(k, sh))
 			if near > ProtoMining.REACH - 0.1:
 				continue
 			# Крупная друза смотрится лучше мелкой.
@@ -353,16 +355,25 @@ func _move(d: Vector3) -> void:
 	var np := robot.position + d
 	var g := terrain.floor_at(np + Vector3(0, 0.7, 0))
 	# Уступ выше колена за шаг или порода на уровне груди — не пройти.
-	if (g - robot.position.y) > maxf(terrain.style.step_height(), d.length() * 1.6) or terrain.solid(np.x, g + 1.2, np.z):
+	# Уступ меряем по полю плотности с обеих сторон: высота корпуса идёт по сетке
+	# (RobotGround) и с посадкой к стопе, от поля она отличается на десятки
+	# сантиметров — сравнение с ней стопорило робота на ровном месте.
+	var cur := terrain.floor_at(robot.position + Vector3(0, 0.7, 0)) if ground else robot.position.y
+	if (g - cur) > maxf(terrain.style.step_height(), d.length() * 1.6) or terrain.solid(np.x, g + 1.2, np.z):
 		vel *= 0.3
 		return
 	robot.position.x = np.x
 	robot.position.z = np.z
 	_settle()
 
+## Высота и наклон — по видимой сетке рельефа (RobotGround); поле плотности —
+## запасной вариант, если сетки под роботом нет.
 func _settle() -> void:
 	var g := terrain.floor_at(robot.position + Vector3(0, 0.6, 0))
-	robot.position.y = lerpf(robot.position.y, g, 0.5)
+	if ground:
+		ground.place(g)
+	else:
+		robot.position.y = lerpf(robot.position.y, g, 0.5)
 
 func _follow_route() -> Vector3:
 	if route_i >= route.size():

@@ -13,17 +13,23 @@ extends Node3D
 ##   Правило игры: бур берёт материал не твёрже себя (+0,5), иначе искры и
 ##   «бур слишком мягкий». Хрупкий (brittle) колется вдвое быстрее и на осколки,
 ##   твёрдость замедляет бурение.
+##   Кроме друз бурятся и залежи других форм (ProtoDeposit: жилы, конкреции,
+##   пласты, корки…): у их узла meta sub и mat — своё вещество и материал; sub и
+##   cmat здесь — вещество и материал того, что сейчас под прицелом.
 
 const REACH := 1.2           # м от плеча до оси кристалла (с наклоном корпуса)
 const BREAK_TIME := 1.1      # с на кристалл средней массы при равной твёрдости
 const ACTION := &"tool_work"   # то же имя, что в раскладке ProtoControls
 
-var sub: Substance           # материал кристаллов
+var sub: Substance           # вещество под прицелом (или последнее)
+var base_sub: Substance      # вещество друз по умолчанию
 var drill_hard := 2.5        # твёрдость бура (металл планеты)
 var temp := 15.0
 var terrain: ProtoTerrain
-var cmat: StandardMaterial3D
-var hot_mat: StandardMaterial3D
+var cmat: Material
+var hot_mat: Material
+var base_mat: StandardMaterial3D
+var _hot := {}               # материал → раскалённый вариант
 var druses: Array = []       # [{node, crystals: [MeshInstance3D]}]
 var robot: Node3D           # чей груз показывать
 
@@ -40,6 +46,8 @@ var hud_hint: Label
 var hud_bar: ProgressBar
 var popups: Array = []       # [Label3D, t]
 var rng := RandomNumberGenerator.new()
+var mined_total := 0.0       # кг, собранных за всё время (цели рана — ProtoRun)
+var speed_mult := 1.0        # скорость бурения (прокачка)
 
 ## Действие инструмента: F и правый курок; если его уже завёл кто-то ещё
 ## (например, раскладка геймпада) — не трогаем.
@@ -57,13 +65,17 @@ static func ensure_action() -> void:
 
 func setup(s: Substance, hard: float, t: float, tr: ProtoTerrain, mat: StandardMaterial3D) -> void:
 	sub = s
+	base_sub = s
 	drill_hard = hard
 	temp = t
 	terrain = tr
+	base_mat = mat
 	cmat = mat
-	hot_mat = mat.duplicate()
-	hot_mat.emission_energy_multiplier = mat.emission_energy_multiplier * 2.6
-	hot_mat.albedo_color = mat.albedo_color.lerp(Color.WHITE, 0.3)
+	var h: StandardMaterial3D = mat.duplicate()
+	h.emission_energy_multiplier = mat.emission_energy_multiplier * 2.6
+	h.albedo_color = mat.albedo_color.lerp(Color.WHITE, 0.3)
+	_hot[mat] = h
+	hot_mat = h
 	rng.seed = 7
 	_marker()
 	sparks = _particles(Color(1.0, 0.8, 0.45), 0.012, 3.5, 60, true)
@@ -77,6 +89,26 @@ func add_druse(node: Node3D) -> void:
 		if c is MeshInstance3D and c.has_meta("len"):
 			list.append(c)
 	druses.append({"node": node, "crystals": list})
+
+## Вещество куска: своё у залежи (meta sub узла), иначе — друз.
+func sub_of(c: Node3D) -> Substance:
+	var p := c.get_parent()
+	return p.get_meta("sub") if p != null and p.has_meta("sub") else base_sub
+
+## Материал куска в покое: свой у залежи (meta mat узла), иначе — друз.
+func mat_of(c: Node3D) -> Material:
+	var p := c.get_parent()
+	return p.get_meta("mat") if p != null and p.has_meta("mat") else base_mat
+
+func _hot_of(m: Material) -> Material:
+	if not _hot.has(m):
+		_hot[m] = ProtoDeposit.hot(m)
+	return _hot[m]
+
+## Форма залежи куска ("druse" у кристаллов).
+static func form_of(c: Node3D) -> String:
+	var p := c.get_parent()
+	return String(p.get_meta("form", "druse")) if p != null else "druse"
 
 ## Все кристаллы, ещё сидящие в породе.
 func crystals() -> Array:
@@ -99,6 +131,13 @@ static func nearest_on(c: MeshInstance3D, p: Vector3) -> Vector3:
 	var t := clampf((p - ax[0]).dot(ab) / maxf(ab.length_squared(), 0.0001), 0.15, 0.8)
 	return ax[0] + ab * t
 
+## Досягаемость куска от плеча sh: робот ещё и нагибается, так что низкие
+## залежи на полу (корки, конкреции) достаёт плечом, опущенным на STOOP.
+const STOOP := 0.55
+static func reach_dist(c: MeshInstance3D, sh: Vector3) -> float:
+	var low := sh - Vector3(0, STOOP, 0)
+	return minf(sh.distance_to(nearest_on(c, sh)), low.distance_to(nearest_on(c, low)) + 0.05)
+
 ## Груз робота: Array[Portion] в метаданных "cargo" (общий с ProtoBuilder).
 static func cargo_of(r: Node3D) -> Array:
 	if not r.has_meta("cargo"):
@@ -119,7 +158,7 @@ func pick(r: Node3D) -> MeshInstance3D:
 	var best_d := INF
 	for c in crystals():
 		var q := nearest_on(c, sh)
-		var d := sh.distance_to(q)
+		var d := reach_dist(c, sh)
 		if d > REACH:
 			continue
 		var flat := Vector3(q.x - r.global_position.x, 0, q.z - r.global_position.z)
@@ -140,7 +179,7 @@ func step(dt: float, r: Node3D, work: float, out: float, tip: Vector3) -> void:
 	var t := target
 	var sh := robot.to_global(Vector3(0.23, 1.4, 0.1))
 	var keep := work > 0.05 and t != null and is_instance_valid(t) and not t.has_meta("broken") \
-		and sh.distance_to(nearest_on(t, sh)) < REACH * 1.25
+		and reach_dist(t, sh) < REACH * 1.25
 	if not keep:
 		t = pick(robot)
 	if t != target:
@@ -149,6 +188,12 @@ func step(dt: float, r: Node3D, work: float, out: float, tip: Vector3) -> void:
 			target.position = target.get_meta("rest_pos", target.position)
 		target = t
 		progress = 0.0
+		if target != null:
+			sub = sub_of(target)
+			cmat = mat_of(target)
+			hot_mat = _hot_of(cmat)
+			(hud_bar.get_theme_stylebox("fill") as StyleBoxFlat).bg_color = sub.color.lerp(Color.WHITE, 0.35)
+			((crumbs.mesh as PrimitiveMesh).material as StandardMaterial3D).albedo_color = sub.color.lerp(Color.WHITE, 0.4)
 	drilling = false
 	status = ""
 	if target:
@@ -164,7 +209,7 @@ func step(dt: float, r: Node3D, work: float, out: float, tip: Vector3) -> void:
 				var rate := 1.0 / (BREAK_TIME * clampf(sub.hardness / maxf(drill_hard, 0.5), 0.5, 2.0))
 				if sub.has("brittle"): rate *= 2.0
 				rate /= clampf(sqrt(mass_of(target, sub) / 1.5), 0.6, 2.2)
-				progress += dt * rate
+				progress += dt * rate * speed_mult
 		target.material_override = hot_mat if drilling and not too_soft else cmat
 		var rest: Vector3 = target.get_meta("rest_pos")
 		target.position = rest + (Vector3(rng.randf() - 0.5, rng.randf() - 0.5, rng.randf() - 0.5) * 0.012 * (0.5 + progress) if drilling and not too_soft else Vector3.ZERO)
@@ -190,24 +235,35 @@ func _break(c: MeshInstance3D) -> void:
 	var gt := c.global_transform
 	var nrm: Vector3 = c.get_parent().get_meta("normal", Vector3.UP)
 	var m := mass_of(c, sub)
-	# Пенёк в породе: обломанное основание.
-	var stump := MeshInstance3D.new()
+	var form := form_of(c)
+	# Пенёк в породе: обломанное основание (у кристалла — короткая призма,
+	# у прочих форм — сплющенный низ того же куска; парящим пенёк не нужен).
 	var r2 := RandomNumberGenerator.new()
 	r2.seed = hash(c.name)
-	stump.mesh = ProtoCrystal.mesh(float(c.get_meta("len")) * 0.18, float(c.get_meta("r")) * 0.95, r2)
-	stump.material_override = cmat
-	stump.transform = c.transform
-	c.get_parent().add_child(stump)
+	if form != "floaters":
+		var stump := MeshInstance3D.new()
+		stump.material_override = cmat
+		if form == "druse":
+			stump.mesh = ProtoCrystal.mesh(float(c.get_meta("len")) * 0.18, float(c.get_meta("r")) * 0.95, r2)
+			stump.transform = c.transform
+		else:
+			stump.mesh = c.mesh
+			stump.transform = c.transform.scaled_local(Vector3(0.9, 0.22, 0.9))
+		c.get_parent().add_child(stump)
 	# Сам кристалл — в свободный полёт (в мировых координатах).
 	var pieces := [c]
 	if sub.has("brittle"):
 		# Хрупкий — раскалывается ещё и на пару осколков.
 		for k in 2:
 			var sh := MeshInstance3D.new()
-			sh.mesh = ProtoCrystal.mesh(float(c.get_meta("len")) * 0.4, float(c.get_meta("r")) * 0.7, rng)
 			sh.material_override = cmat
 			add_child(sh)
-			sh.global_transform = gt.translated(gt.basis.y * 0.3 * (k + 1))
+			if form == "druse":
+				sh.mesh = ProtoCrystal.mesh(float(c.get_meta("len")) * 0.4, float(c.get_meta("r")) * 0.7, rng)
+				sh.global_transform = gt.translated(gt.basis.y * 0.3 * (k + 1))
+			else:
+				sh.mesh = c.mesh
+				sh.global_transform = gt.translated(gt.basis.y * 0.3 * (k + 1)).scaled_local(Vector3.ONE * 0.45)
 			pieces.append(sh)
 	c.get_parent().remove_child(c)
 	add_child(c)
@@ -220,7 +276,7 @@ func _break(c: MeshInstance3D) -> void:
 		var v: Vector3 = nrm * 0.6 + Vector3.UP * rng.randf_range(1.6, 2.3) + away * 0.5 + Vector3(rng.randf_range(-0.4, 0.4), 0, rng.randf_range(-0.4, 0.4))
 		falling.append({"node": pieces[i], "vel": v,
 			"spin": Vector3(rng.randf_range(-6, 6), rng.randf_range(-4, 4), rng.randf_range(-6, 6)),
-			"t": 0.0, "land": 0.0, "mass": m / pieces.size(), "pull": 0.0})
+			"t": 0.0, "land": 0.0, "mass": m / pieces.size(), "pull": 0.0, "sub": sub})
 	# Всплеск крошки при отколе.
 	var burst := _particles(sub.color.lerp(Color.WHITE, 0.5), 0.016, 2.6, 50, false)
 	burst.one_shot = true
@@ -271,7 +327,7 @@ func _falling(dt: float) -> void:
 			n.scale = Vector3.ONE * maxf(0.05, 1.0 - f.pull * 1.6)
 			n.rotate_y(dt * 8.0)
 			if to.length() < 0.25 or f.pull > 0.8:
-				_collect(f.mass)
+				_collect(f.mass, f.sub)
 				n.queue_free()
 				continue
 		else:
@@ -293,23 +349,24 @@ func _falling(dt: float) -> void:
 		keep.append(f)
 	falling = keep
 
-func _collect(m: float) -> void:
-	var p := Portion.new(sub, m, temp)
+func _collect(m: float, s: Substance) -> void:
+	mined_total += m
+	var p := Portion.new(s, m, temp)
 	var list := cargo_of(robot)
 	for q: Portion in list:
-		if q.substance == sub:
+		if q.substance == s:
 			q.absorb(p)
 			p = null
 			break
 	if p != null:
 		list.append(p)
 	var l := Label3D.new()
-	l.text = "+%.1f кг %s" % [m, sub.name]
+	l.text = "+%.1f кг %s" % [m, s.name]
 	l.billboard = BaseMaterial3D.BILLBOARD_ENABLED
 	l.font_size = 32
 	l.pixel_size = 0.0022
 	l.outline_size = 8
-	l.modulate = sub.color.lerp(Color.WHITE, 0.5)
+	l.modulate = s.color.lerp(Color.WHITE, 0.5)
 	l.no_depth_test = true
 	add_child(l)
 	l.global_position = robot.global_position + Vector3(0, 1.85, 0)

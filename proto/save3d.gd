@@ -7,6 +7,7 @@ extends Node
 ##   добытые друзы — мета "mined" корня сцены (id задаёт бурение; при загрузке
 ##   корень получает restore_mined(ids), если такой метод есть);
 ##   пневмозавод — детали, их груз, газ и капсулы (корень.pneu, если он есть);
+##   ран — цель, прокачка и события (корень.run — ProtoRun, если он есть).
 ##   знания о веществах — корень.lab_desk (известные и исключённые теги, догадки, баллон).
 ## Порции пишутся как в 2D-сохранении (SaveGame.p_to), производные материалы —
 ## тоже, чтобы продукты завода пережили перезапуск.
@@ -149,6 +150,9 @@ static func to_dict(r: Node3D) -> Dictionary:
 	var net = r.get("pneu")
 	if net != null:
 		d.pneumatics = _net_to(net)
+	var run = r.get("run")
+	if run != null:
+		d.run = run.to_dict()
 	var desk = r.get("lab_desk")
 	if desk != null:
 		d.knowledge = desk.save_dict()
@@ -182,6 +186,10 @@ static func apply(r: Node3D, d: Dictionary) -> void:
 	var net = r.get("pneu")
 	if net != null and d.has("pneumatics"):
 		_net_from(net, planet, d.pneumatics)
+	# Ран (цель, прокачка, события) — ProtoRun; счётчики сверяет по заводу.
+	var run = r.get("run")
+	if run != null and d.has("run"):
+		run.from_dict(d.run)
 	var desk = r.get("lab_desk")
 	if desk != null and d.has("knowledge"):
 		desk.load_dict(d.knowledge)
@@ -196,6 +204,7 @@ static func _net_to(net) -> Dictionary:
 		var part: Dictionary = net.parts[c]
 		var pd := {"kind": part.kind, "cell": [c.x, c.y], "dir": part.dir, "sub": part.sub.id,
 			"items": part.items.map(func(p): return SaveGame.p_to(p)),
+			"out_q": part.get("out_q", []).map(func(p): return SaveGame.p_to(p)),
 			"busy": SaveGame.p_to(part.busy) if part.get("busy") != null else null,
 			"progress": part.get("progress", 0.0), "cd": part.get("cd", 0.0),
 			"gas": net.gas.amount(part.id)}
@@ -220,6 +229,11 @@ static func _net_from(net, planet: Planet, d: Dictionary) -> void:
 			var p := _p_from(planet, a)
 			if p != null:
 				part.items.append(p)
+		part.out_q = []
+		for a in pd.get("out_q", []):
+			var oq := _p_from(planet, a)
+			if oq != null:
+				part.out_q.append(oq)
 		part.busy = _p_from(planet, pd.busy)
 		part.progress = float(pd.progress)
 		part.cd = float(pd.cd)
