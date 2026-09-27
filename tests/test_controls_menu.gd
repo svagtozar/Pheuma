@@ -74,3 +74,15 @@ func test_menu_captures_key_and_cancels():
 	assert_eq(m._rows[C.FIST][0].text, "H")
 	m.close()
 	assert_false(m.is_open())
+
+func test_pad_a_only_jumps_in_walk_mode():
+	# A — прыжок; «коснуться» — B (A у карточки нажимает кнопку, в стройке — ставит).
+	assert_eq(C.binding(C.JUMP, true).button_index, JOY_BUTTON_A)
+	assert_eq(C.binding(ProtoLabPanel.TOUCH, true).button_index, JOY_BUTTON_B)
+	var walk := [C.JUMP, C.SPRINT, C.WORK, C.FIST, ProtoLabPanel.TOUCH, ProtoLabPanel.ANALYZE, &"build_mode", &"cargo_unload"]
+	var seen := {}
+	for a in walk:
+		var e := C.binding(a, true)
+		var k := C.event_to_str(e)
+		assert_false(seen.has(k), "%s и %s на одной кнопке" % [a, seen.get(k, "")])
+		seen[k] = a

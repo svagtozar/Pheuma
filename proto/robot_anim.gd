@@ -37,7 +37,6 @@ var speed_ref := 1.0         # множитель скорости планет�
 var airborne := false        # задаёт игрок: робот в воздухе
 var vy := 0.0                # вертикальная скорость (м/с): взлёт > 0, спуск < 0
 var land := 0.0              # 0..1 — присед от приземления (затухает)
-var ground := Callable()     # (точка в мире) → высота пола под ней; стопы ставятся по рельефу
 var run_k := 0.0             # 0..1 — доля бега в походке
 var air_k := 0.0             # 0..1 — доля позы полёта
 var aim_w := 0.0             # 0..1 — прицел левой рукой
@@ -45,6 +44,7 @@ var aim_target := Vector3.ZERO   # в пространстве робота
 var work_target := Vector3.INF   # точка работы бура (пространство робота); INF — просто вперёд
 var fill_drop := 0.0         # просадка давления после выстрела (затухает)
 var ap_kick := 0.0           # «щелчок» диафрагмой (затухает)
+var ground: RobotGround      # стопы по рельефу (RobotGround.attach), если есть
 var bit: Node3D              # сверло бура, если есть
 var drill: Node3D            # бур в предплечье (выдвигается), если есть
 var drill_rest := Transform3D()
@@ -66,7 +66,6 @@ var hips_rest := Transform3D()
 var chest_rest := Transform3D()
 var _sim_t := 0.0
 var _root_y := 0.0
-var _gnd := Vector2.ZERO     # сглаженный сдвиг пола под левой/правой стопой (м)
 var _fixed_started := false
 
 func _ready() -> void:
@@ -198,32 +197,11 @@ func _apply() -> void:
 		pa.pole_l = Vector3(-0.3, -1, -0.2)
 		pa.head_rot = Vector3(-0.05, clampf(atan2(d.x, d.z), -0.8, 0.8) * 0.6, 0.0)
 		p = _blend(p, pa, aim_w)
+	if ground and not airborne:
+		ground.fit(p)
 	p.fill -= fill_drop
 	p.ap -= 0.3 * sin(ap_kick * PI)
-	if ground.is_valid():
-		_fit_ground(p)
 	_apply_pose(p)
-
-## Стопы — на пол под ними (склон, ступень, край настила): каждая поднимается
-## или опускается к своему полу, таз садится на столько, чтобы нижняя нога
-## дотянулась. В воздухе не действует.
-func _fit_ground(p: Dictionary) -> void:
-	var k := 1.0 - air_k
-	var xf := root.global_transform
-	var y0 := xf.origin.y
-	var want := Vector2.ZERO
-	if k > 0.01:
-		var i := 0
-		for key in ["foot_l", "foot_r"]:
-			var w := xf * Vector3(p[key].x, 0.0, p[key].z)
-			var gy: float = ground.call(Vector3(w.x, y0 + 0.5, w.z))
-			want[i] = clampf(gy - y0, -0.3, 0.3) * k
-			i += 1
-	_gnd = _gnd.lerp(want, 0.35)
-	var s_ := root.scale.y if root.scale.y > 0.0 else 1.0
-	p.foot_l = p.foot_l + Vector3(0, _gnd.x / s_, 0)
-	p.foot_r = p.foot_r + Vector3(0, _gnd.y / s_, 0)
-	p.hips_off = p.hips_off + Vector3(0, minf(0.0, minf(_gnd.x, _gnd.y)) / s_, 0)
 
 # ---------------------------------------------------------------- позы
 

@@ -7,11 +7,13 @@ extends CanvasLayer
 ## B / Esc — назад. Переназначение: выбрать ячейку, нажать клавишу (или кнопку,
 ## или наклонить стик/курок); Esc или View — отмена.
 ## Размеры — под Steam Deck (1280×800), на большем экране масштабируется целиком.
-## pause_tree — ставить дерево на паузу, пока меню открыто (прототип); в игре
-## пауза своя.
+## pause_tree — ставить дерево на паузу, пока меню открыто, если оно ещё не на
+## паузе (меню рана уже поставило — тогда и снимать не нам). Открытое меню —
+## в группе GROUP: окна под ним не забирают фокус.
+
+const GROUP := &"controls_menu_open"
 
 signal closed
-signal quit_requested
 
 const BASE := Vector2(1280, 800)
 const FONT := 20
@@ -22,7 +24,7 @@ const DIM := Color(0.66, 0.69, 0.73)
 const ACCENT := Color(0.98, 0.76, 0.3)
 
 var pause_tree := true
-var quit_text := ""              # непусто — кнопка выхода из игры с этим текстом
+var _paused_here := false
 var _frame: Control
 var _rows := {}                  # действие → [кнопка клавиатуры, кнопка геймпада]
 var _mouse: HSlider
@@ -54,7 +56,9 @@ func open() -> void:
 	visible = true
 	_refresh()
 	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
-	if pause_tree:
+	add_to_group(GROUP)
+	_paused_here = pause_tree and not get_tree().paused
+	if _paused_here:
 		get_tree().paused = true
 	_first.grab_focus.call_deferred()
 
@@ -63,8 +67,10 @@ func close() -> void:
 		return
 	_cancel_wait()
 	visible = false
-	if pause_tree:
+	remove_from_group(GROUP)
+	if _paused_here:
 		get_tree().paused = false
+	_paused_here = false
 	closed.emit()
 
 func toggle() -> void:
@@ -216,8 +222,6 @@ func _build() -> void:
 	v.add_child(bottom)
 	bottom.add_child(_button("Готово", close))
 	bottom.add_child(_button("Сбросить всё", func(): ProtoControls.reset_defaults(); _save(); _refresh()))
-	if quit_text != "":
-		bottom.add_child(_button(quit_text, func(): quit_requested.emit()))
 	_cancel_wait()
 
 func _refresh() -> void:

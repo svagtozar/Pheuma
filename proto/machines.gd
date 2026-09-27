@@ -186,23 +186,15 @@ static func slab(size: Vector3, col: Color) -> MeshInstance3D:
 	mi.material_override = m
 	return mi
 
-## Слои столкновений: рельеф и машины (ProtoPlayer ищет пол и упирается в них).
-const LAYER_GROUND := 1
-const LAYER_MACHINES := 2
-
-## Твёрдое тело по видимой сетке (рельеф): робот ставит ноги ровно на неё.
-static func trimesh_body(mesh: Mesh) -> StaticBody3D:
-	var b := StaticBody3D.new()
-	b.collision_layer = LAYER_GROUND
-	b.collision_mask = 0
-	var cs := CollisionShape3D.new()
-	cs.shape = mesh.create_trimesh_shape()
-	b.add_child(cs)
-	return b
+## Слои столкновений: рельеф (RobotGround.LAYER — по нему лучи стоп и корпуса)
+## и машины (в них упирается корпус ProtoPlayer). Машины лежат на обоих слоях:
+## на верх трубы или настила робот встаёт, как на рельеф.
+const LAYER_GROUND := RobotGround.LAYER
+const LAYER_MACHINES := 1 << 18
 
 ## Коробка столкновений по всем сеткам узла n (и его самого), в его пространстве.
 ## Низкую коробку (трубу, настил) робот перешагивает как уступ, высокую обходит.
-static func add_box_collider(n: Node3D, layer := LAYER_MACHINES) -> StaticBody3D:
+static func add_box_collider(n: Node3D, layer := LAYER_MACHINES | LAYER_GROUND) -> StaticBody3D:
 	var box := AABB()
 	var first := true
 	var meshes: Array = n.find_children("*", "MeshInstance3D", true, false)

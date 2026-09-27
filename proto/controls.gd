@@ -9,8 +9,10 @@ extends RefCounted
 ##   RT / F (держать) — работать инструментом (бур)
 ##   LT / G — выстрелить кистью и подтянуться, ещё раз — отпустить
 ##   D-pad вверх-вниз / колесо мыши — дистанция камеры
-##   Мышь — камера (курсор захвачен; клик — захватить, Esc — отпустить);
-##   чувствительность — mouse_sens (--sens=1.5 в предпросмотре)
+##   B / Z — коснуться того, что рядом (карточка материала, ProtoLabPanel)
+##   Мышь — камера (курсор захвачен; клик — захватить)
+##   Start / Esc — меню рана (цель, прокачка, итоги, «Управление»); K — прокачка
+## Окна (ensure_ui): A — нажать кнопку, B — назад, D-pad и левый стик — выбор.
 ## Действия регистрируются кодом (ensure()), если их ещё нет в InputMap, —
 ## так их видят и прототип, и игра, и тесты без правки project.godot.
 ## Переназначенные кнопки и чувствительность хранятся в user://controls.cfg
@@ -33,6 +35,8 @@ const SPRINT := &"sprint"
 const WORK := &"tool_work"
 const FIST := &"fist_fire"
 const JUMP := &"jump"
+const MENU := &"run_menu"
+const SKILLS := &"run_skills"
 
 ## Чувствительность мыши и стика (1 — по умолчанию) и инверсия вертикали.
 static var mouse_sens := 1.0
@@ -52,6 +56,10 @@ const REBIND := [
 	[&"build_mode", "Стройка вкл/выкл"], [&"build_next", "Следующая деталь"], [&"build_prev", "Предыдущая деталь"],
 	[&"build_rotate", "Повернуть деталь"], [&"build_material", "Материал детали"],
 	[&"build_place", "Поставить"], [&"build_remove", "Разобрать"], [&"cargo_unload", "Выгрузить груз"],
+	[&"lab_touch", "Коснуться (карточка материала)"], [&"lab_analyze", "Анализатор"],
+	[&"lab_prev", "Карточка: предыдущий образец"], [&"lab_next", "Карточка: следующий образец"],
+	[&"lab_close", "Карточка: закрыть"],
+	[MENU, "Меню рана"], [SKILLS, "Прокачка"],
 ]
 
 ## Действие → [мёртвая зона, события...]. Клавиши — физические (раскладка не важна).
@@ -71,6 +79,8 @@ static func _layout() -> Dictionary:
 		WORK: [TRIGGER_DEADZONE, _key(KEY_F), _axis(JOY_AXIS_TRIGGER_RIGHT, 1.0)],
 		FIST: [TRIGGER_DEADZONE, _key(KEY_G), _axis(JOY_AXIS_TRIGGER_LEFT, 1.0)],
 		JUMP: [0.5, _key(KEY_SPACE), _button(JOY_BUTTON_A)],
+		MENU: [0.5, _key(KEY_ESCAPE), _button(JOY_BUTTON_START)],
+		SKILLS: [0.5, _key(KEY_K)],
 	}
 
 ## Добавляет недостающие действия (свои и стройки). Уже заданные (в
@@ -85,6 +95,7 @@ static func ensure() -> void:
 		for i in range(1, spec.size()):
 			InputMap.action_add_event(action, spec[i])
 	ProtoBuilder.ensure_actions()
+	ProtoLabPanel.ensure_actions()
 	if not _loaded:
 		_loaded = true
 		load_settings()
@@ -127,14 +138,10 @@ static func _normalize(e: InputEvent) -> InputEvent:
 
 ## Всё как по умолчанию: раскладка, чувствительность, инверсия.
 static func reset_defaults() -> void:
-	var all := _layout()
-	var build := ProtoBuilder.layout()
-	for a in all:
-		if InputMap.has_action(a):
-			InputMap.erase_action(a)
-	for a in build:
-		if InputMap.has_action(a):
-			InputMap.erase_action(a)
+	for lay: Dictionary in [_layout(), ProtoBuilder.layout(), ProtoLabPanel.layout()]:
+		for a in lay:
+			if InputMap.has_action(a):
+				InputMap.erase_action(a)
 	mouse_sens = 1.0
 	stick_sens = 1.0
 	mouse_invert_y = false
@@ -201,6 +208,26 @@ static func load_settings() -> void:
 		for e in evs:
 			InputMap.action_add_event(a, e)
 
+## Окна интерфейса с геймпада: A нажимает кнопку в фокусе, B — назад.
+## Встроенные ui_accept и ui_cancel в Godot 4 знают только клавиатуру.
+static func ensure_ui() -> void:
+	for pair in [[&"ui_accept", JOY_BUTTON_A], [&"ui_cancel", JOY_BUTTON_B]]:
+		var has := InputMap.action_get_events(pair[0]).any(func(e): return e is InputEventJoypadButton and e.button_index == pair[1])
+		if not has:
+			InputMap.action_add_event(pair[0], _button(pair[1]))
+
+## Первая видимая доступная кнопка внутри узла (для фокуса геймпада).
+static func first_button(n: Node) -> Control:
+	for c in n.get_children():
+		if c is CanvasItem and not c.visible:
+			continue
+		if c is BaseButton and not c.disabled and c.focus_mode != Control.FOCUS_NONE:
+			return c
+		var b := first_button(c)
+		if b != null:
+			return b
+	return null
+
 ## Ходьба: x — вправо, y — вперёд; длина 0..1 (стик наполовину — полшага).
 static func move_vector() -> Vector2:
 	return Input.get_vector(MOVE_LEFT, MOVE_RIGHT, MOVE_BACK, MOVE_FORWARD)
@@ -217,6 +244,17 @@ static func mouse_look(rel: Vector2) -> Vector2:
 	var k := 0.0032 * mouse_sens
 	# Мышь вверх — смотреть вверх: тангаж (высота камеры над роботом) убывает.
 	return Vector2(-rel.x * k, rel.y * k * (-1.0 if mouse_invert_y else 1.0))
+
+## Только правый стик (без клавиш): там, где Q/E заняты другим (игра, F3).
+static func stick_look() -> Vector2:
+	var v := Vector2.ZERO
+	for d in Input.get_connected_joypads():
+		var s := Vector2(Input.get_joy_axis(d, JOY_AXIS_RIGHT_X), -Input.get_joy_axis(d, JOY_AXIS_RIGHT_Y))
+		if s.length() > STICK_DEADZONE and s.length() > v.length():
+			v = s
+	if stick_invert_y:
+		v.y = -v.y
+	return v * minf(v.length(), 1.0) * stick_sens
 
 static func _key(code: Key) -> InputEventKey:
 	var e := InputEventKey.new()
