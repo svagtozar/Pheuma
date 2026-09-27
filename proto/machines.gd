@@ -2,7 +2,10 @@ class_name ProtoMachines
 extends RefCounted
 ## Процедурные машины из простых тел: бак со стеклянным окном и уровнем груза,
 ## печь с раскалённым окном, насос, пушка, трубы с бусинами газа, машина на втором
-## этаже. Поверхность корпуса — из тегов материала; неизученный — голограмма.
+## этаже. Поверхность корпуса — из тегов материала, изучен он или нет: что о
+## материале ещё не известно, показывает метка «?» (unknown_badge) у залежи и
+## друзы и карточка материала, а не прозрачность. Голограмма — только призрак
+## детали в режиме стройки.
 
 const CELL := 2.0
 
@@ -22,15 +25,34 @@ void fragment() {
 
 static var _holo: Shader
 
+## Голограмма: призрак детали в режиме стройки.
+static func hologram() -> Material:
+	if _holo == null:
+		_holo = Shader.new()
+		_holo.code = HOLO
+	var h := ShaderMaterial.new()
+	h.shader = _holo
+	return h
+
+## Метка «ещё не опознан»: янтарный «?» над залежью или друзой, всегда лицом к
+## камере, видна вблизи (до BADGE_RANGE м). Сам предмет выглядит как обычно.
+const BADGE_RANGE := 10.0
+
+static func unknown_badge() -> Label3D:
+	var l := Label3D.new()
+	l.name = "unknown_badge"
+	l.text = "?"
+	l.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+	l.font_size = 72
+	l.pixel_size = 0.004
+	l.outline_size = 14
+	l.modulate = Color(1.0, 0.8, 0.3)
+	l.outline_modulate = Color(0.1, 0.07, 0.02, 0.9)
+	l.visibility_range_end = BADGE_RANGE
+	return l
+
 ## Поверхность из тегов материала.
-static func surface(s: Substance, known: bool = true) -> Material:
-	if not known:
-		if _holo == null:
-			_holo = Shader.new()
-			_holo.code = HOLO
-		var h := ShaderMaterial.new()
-		h.shader = _holo
-		return h
+static func surface(s: Substance) -> Material:
 	var m := StandardMaterial3D.new()
 	m.albedo_color = s.color
 	m.roughness = 0.7
