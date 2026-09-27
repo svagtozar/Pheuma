@@ -6,6 +6,8 @@ extends Node3D
 ##   --auto=cave --screenshot=путь.png — маршрут в пещеру, кадры путь_1..4.png
 ##   --robot=clean (по умолчанию; другой вариант из RobotDesigns или old — прежний
 ##   каркас; корпус — металл планеты)
+## Сборка для проверки (фича play3d в export_presets.cfg) стартует прямо сюда,
+## сразу с управлением: Select/View или Tab — другая планета, Start или Esc — выход.
 ## Планета — настоящий генератор: теги задают небо, свет и дымку, жидкие при её
 ## температуре материалы — реки и озёра, твёрдые — корпуса машин.
 
@@ -22,7 +24,13 @@ var play := false            # --play: управление от третьег�
 var auto := ""               # --auto=cave: скриптовый маршрут с кадрами
 var env: Environment
 
+## Сид следующей планеты в сборке для проверки (переживает перезагрузку сцены).
+static var build_seed := 14
+
 func _ready() -> void:
+	if OS.has_feature("play3d"):
+		play = true
+		seed_value = build_seed
 	for a in OS.get_cmdline_user_args():
 		if a.begins_with("--seed="): seed_value = int(a.substr(7))
 		elif a.begins_with("--view="): view = a.substr(7)
@@ -546,6 +554,31 @@ func _caption() -> void:
 		", ".join(PackedStringArray(planet.tags.map(func(t): return PlanetTags.display(t)))), planet.ambient_temp, planet.atm_pressure, view,
 		"; ".join(PackedStringArray(liq)) if not liq.is_empty() else "нет"]
 	layer.add_child(l)
+	if OS.has_feature("play3d"):
+		var h := Label.new()
+		h.anchor_top = 1.0
+		h.anchor_bottom = 1.0
+		h.offset_left = 16
+		h.offset_top = -34
+		h.add_theme_font_size_override("font_size", 14)
+		h.add_theme_color_override("font_outline_color", Color(0, 0, 0))
+		h.add_theme_constant_override("outline_size", 4)
+		h.text = "Стик — ходьба, правый стик — камера, L3 — бег, RT — бур, LT — кисть, D-pad — дистанция, Select — другая планета, Start — выход"
+		layer.add_child(h)
+
+## Сборка для проверки: другая планета и выход с геймпада или клавиатуры.
+func _unhandled_input(e: InputEvent) -> void:
+	if not OS.has_feature("play3d") or not e.is_pressed() or e.is_echo():
+		return
+	var next: bool = (e is InputEventJoypadButton and e.button_index == JOY_BUTTON_BACK) \
+		or (e is InputEventKey and e.physical_keycode == KEY_TAB)
+	var quit: bool = (e is InputEventJoypadButton and e.button_index == JOY_BUTTON_START) \
+		or (e is InputEventKey and e.physical_keycode == KEY_ESCAPE)
+	if next:
+		build_seed = seed_value + 1
+		get_tree().reload_current_scene()
+	elif quit:
+		get_tree().quit()
 
 func _process(dt: float) -> void:
 	_t += dt
