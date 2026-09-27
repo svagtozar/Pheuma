@@ -11,6 +11,8 @@ extends Node3D
 ##   (для проверки звука); --record=путь.wav — записать звук, --mute — без звука
 ##   --hud — HUD (груз, завод, стройка, кнопки; в --play он есть всегда), --pad —
 ##   подсказки для геймпада, --cargo — положить роботу образцы груза (для кадра)
+##   В --play игра сохраняется (ProtoSave): сама раз в минуту и при выходе, F5 / R3 —
+##   сейчас, F9 — вернуться к сохранённому; --fresh — начать планету заново
 ##   --robot=clean (по умолчанию; другой вариант из RobotDesigns или old — прежний
 ##   каркас; корпус — металл планеты)
 ## Сборка для проверки (фича play3d в export_presets.cfg) стартует прямо сюда,
@@ -39,13 +41,22 @@ var demo_cargo := false      # --cargo: образцы груза у робот�
 var pneu: ProtoPneumatics
 var pneu_view: ProtoPneumaticsView
 var build := false           # --build: режим стройки (с --play или для кадра)
+var fresh := false           # --fresh: не загружать сохранение
+var saves: ProtoSave
 
 ## Сид следующей планеты в сборке для проверки (переживает перезагрузку сцены).
 static var build_seed := 14
+static var _booted := false
 
 func _ready() -> void:
 	if OS.has_feature("play3d"):
 		play = true
+		if not _booted:
+			# Первый запуск сборки — с планеты, где играли в прошлый раз.
+			_booted = true
+			var last := ProtoSave.last_seed()
+			if last >= 0:
+				build_seed = last
 		seed_value = build_seed
 	for a in OS.get_cmdline_user_args():
 		if a.begins_with("--seed="): seed_value = int(a.substr(7))
@@ -61,6 +72,7 @@ func _ready() -> void:
 		elif a == "--pad": hud_pad = true
 		elif a == "--cargo": demo_cargo = true
 		elif a == "--build": build = true
+		elif a == "--fresh": fresh = true
 	if auto == "sound" and RobotDesigns.tool_r == "":
 		RobotDesigns.tool_r = "drill"
 	planet = PlanetGen.generate(seed_value)
@@ -105,6 +117,11 @@ func _ready() -> void:
 		_builder()
 	if play or auto != "" or show_hud:
 		_hud()
+	if play and auto == "":
+		saves = ProtoSave.new()
+		saves.name = "saves"
+		add_child(saves)
+		saves.setup(self, fresh)
 
 # ---------------------------------------------------------------- палитра и свет
 
@@ -497,7 +514,7 @@ func _hud() -> void:
 	if hud_pad:
 		hud.pad = true
 	if OS.has_feature("play3d"):
-		hud.extra_hints = [["Другая планета", "Tab", "View"], ["Выход", "Esc", "Menu"]]
+		hud.extra_hints = [["Сохранить", "F5", "R3"], ["Другая планета", "Tab", "View"], ["Выход", "Esc", "Menu"]]
 	add_child(hud)
 
 ## Сборка для проверки: другая планета и выход с геймпада или клавиатуры.
@@ -508,6 +525,8 @@ func _unhandled_input(e: InputEvent) -> void:
 		or (e is InputEventKey and e.physical_keycode == KEY_TAB)
 	var quit: bool = (e is InputEventJoypadButton and e.button_index == JOY_BUTTON_START) \
 		or (e is InputEventKey and e.physical_keycode == KEY_ESCAPE)
+	if (next or quit) and saves != null:
+		saves.save_now(true)
 	if next:
 		build_seed = seed_value + 1
 		get_tree().reload_current_scene()
