@@ -53,7 +53,9 @@ const ORDER := ["pipe", "pump", "intake", "cannon", "crusher", "furnace", "filte
 	"irradiator", "cryochamber", "resonator", "loom", "tank", "lab", "launch_silo", "beacon", "dome"]
 
 const PUMP_RATE := 1.6          # газа в секунду при 1 атм снаружи
-const PUMP_SAFE := 0.9          # насос не качает выше этой доли своего предела
+## Насос не качает выше этой доли своего предела. Запас — на события: при 0,9
+## «сдвиг температуры» (+40 °C) и гейзер рвали сразу всю сеть из одного металла.
+const PUMP_SAFE := 0.75
 const MOVE_P := 0.25            # избыток давления над атмосферой, с которого капсулы едут
 const SPEED := 1.4              # клеток в секунду на 1 атм избытка
 const MAX_SPEED := 3.0
@@ -454,7 +456,12 @@ func _accept(part: Dictionary, p: Portion, from: Vector2i) -> bool:
 		"tank":
 			if mass_in(part.cell) + p.mass > KINDS.tank.cap + 0.001:
 				part.status = "полон"
-				return false
+				# Полный бак пропускает капсулу вперёд, если там что-то стоит:
+				# ещё один бак на выходе продолжает линию.
+				if part.cap != null or not parts.has(front):
+					return false
+				part.cap = {"p": p, "cell": part.cell, "from": from, "t": 0.0}
+				return true
 			produced[p.substance.id] = produced.get(p.substance.id, 0.0) + p.mass
 			delivered += 1
 			for it in part.items:

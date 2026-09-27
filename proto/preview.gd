@@ -79,6 +79,7 @@ var hud_pad := false         # --pad: подсказки для геймпада
 var demo_cargo := false      # --cargo: образцы груза у робота
 var pneu: ProtoPneumatics
 var pneu_view: ProtoPneumaticsView
+var factory_mat: Substance    # из чего стоит завод (стройка начинает с него)
 var build := false           # --build: режим стройки (с --play или для кадра)
 var fresh := false           # --fresh: не загружать сохранение
 var saves: ProtoSave
@@ -794,14 +795,15 @@ func _factory() -> void:
 	add_child(slab)
 	ProtoMachines.add_box_collider(slab, ProtoMachines.LAYER_GROUND)
 	pneu = ProtoPneumatics.new(planet)
+	factory_mat = a
 	pneu.build_demo(Vector2i(-3, 0), a)
 	# Вторая труба линии — лаборатория: груз из приёмника проходит пробы.
 	pneu.remove(Vector2i(-1, 0))
 	pneu.place("lab", Vector2i(-1, 0), 0, a)
-	pneu.feed(Vector2i(-3, 0), Portion.new(ore, 30.0, planet.ambient_temp))
+	# Приёмник пуст: сырьё для завода добывает робот (с 30 кг на старте первый
+	# этап цели выполнялся сам за 20 с). Пушке — одна капсула: видно, как она бьёт.
 	var cannon := pneu.build_logistics(Vector2i(-4, 3), a)
-	for i in 3:
-		cannon.items.append(Portion.new(ore, 2.0, planet.ambient_temp))
+	cannon.items.append(Portion.new(ore, 2.0, planet.ambient_temp))
 	if goals_row:
 		pneu.build_goals(Vector2i(-4, 7), a, ore)
 	pneu_view = ProtoPneumaticsView.new()
@@ -944,6 +946,11 @@ func _builder() -> void:
 	b.name = "builder"
 	add_child(b)
 	b.setup(pneu_view, robot, _solid_mats())
+	# Сначала — материал, из которого стоит завод: насос из более прочного
+	# поднимает давление всей сети выше предела её деталей, и они лопаются разом.
+	var i := b.mats.find(factory_mat)
+	if i >= 0:
+		b.mat_i = i
 	b.active = build
 
 ## Пол пещеры под точкой: вниз по полю плотности до породы.
@@ -1031,7 +1038,7 @@ func _health(pl: ProtoPlayer) -> void:
 	health.input_enabled = play and auto == ""
 	var pc := terrain.plateau()
 	health.base = start_spot()
-	health.factory_at = pc
+	health.factory_at = pc + Vector3(0, 0, 2.5)    # центр площадки завода
 	pl.health = health
 	add_child(health)
 	var fx := ProtoHurtFx.new()

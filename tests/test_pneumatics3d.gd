@@ -28,6 +28,29 @@ func test_demo_line_crushes_and_fills_tank():
 	assert_false(got.has("crystalline"), "кристалличность ушла при дроблении")
 	assert_true(n.events.any(func(e): return e.kind == "done" and e.cell == Vector2i(3, 0)))
 
+## Полный бак не глушит линию: с баком перед ним груз идёт дальше; без него — стоит.
+func test_full_tank_passes_capsules_to_next_tank():
+	var n := ProtoPneumatics.new(planet)
+	n.build_demo(Vector2i.ZERO, steel)
+	var tank := Vector2i(6, 0)
+	n.parts[tank].items.append(Portion.new(crystal, ProtoPneumatics.KINDS.tank.cap - 0.5))
+	n.feed(Vector2i.ZERO, Portion.new(crystal, 4.0))
+	_run(n, 40.0)
+	assert_eq(n.delivered, 0, "полный бак без продолжения груз не берёт")
+	n.place("tank", tank + Vector2i(1, 0), 0, steel)
+	_run(n, 40.0)
+	assert_almost_eq(n.mass_in(tank + Vector2i(1, 0)), 4.0, 0.05, "груз прошёл сквозь полный бак во второй")
+	assert_eq(n.delivered, 2, "капсулы засчитаны во втором баке")
+
+## Запас насосов переживает событие «сдвиг температуры»: сеть не рвётся целиком.
+func test_net_survives_temp_shift():
+	var n := ProtoPneumatics.new(planet)
+	n.build_demo(Vector2i.ZERO, steel)
+	_run(n, 90.0)
+	n.gas.ambient += 40.0
+	_run(n, 60.0)
+	assert_eq(n.burst_log.size(), 0, "ни одна деталь не лопнула")
+
 func test_no_pump_no_movement():
 	var n := ProtoPneumatics.new(planet)
 	n.build_demo(Vector2i.ZERO, steel)

@@ -323,6 +323,24 @@ func net_pressure() -> float:
 		best = maxf(best, pneu.pressure(c))
 	return best
 
+## Полные баки, у которых впереди пусто: линия за ними встала.
+func full_tanks() -> Array:
+	var out: Array = []
+	if pneu == null:
+		return out
+	for c in pneu.parts:
+		var p: Dictionary = pneu.parts[c]
+		if p.kind == "tank" and pneu.mass_in(c) > ProtoPneumatics.KINDS.tank.cap - ProtoPneumatics.CAPSULE_KG \
+				and not pneu.parts.has(c + ProtoPneumatics.DIRS[p.dir]):
+			out.append(c)
+	return out
+
+## Лопнувшие или разбитые детали, на месте которых пусто: [kind, cell, dir, sub].
+func broken_parts() -> Array:
+	if pneu == null:
+		return []
+	return pneu.burst_log.filter(func(b): return not pneu.parts.has(b[1]))
+
 func cargo() -> Array:
 	return ProtoMining.cargo_of(body) if body != null else []
 
@@ -505,7 +523,9 @@ func _event_active(dt: float) -> void:
 				for c in pneu.parts:
 					var wp: Vector3 = ProtoPneumatics.cell_pos(pneu_origin(), c)
 					if in_zone(wp):
-						pneu.gas.add_gas(pneu.parts[c].id, 0.6 * dt)
+						# Бесплатный насос: доливает до того же запаса, что насосы, а не рвёт сеть.
+						if pneu.pressure(c) < pneu.max_p(c) * ProtoPneumatics.PUMP_SAFE:
+							pneu.gas.add_gas(pneu.parts[c].id, 0.6 * dt)
 						break
 		"acid":
 			if pneu != null:
@@ -719,8 +739,15 @@ func advise(glyph: Callable) -> String:
 					return "Шахте мало давления для старта: нужно %.1f атм — ещё насос рядом." % pneu.silo_p(part)
 			if cg > 0.5:
 				return "Выгрузите груз в приёмник (%s): линия довезёт его до шахты." % unload
-	# Этапы завода: сначала сырьё, потом давление, потом место в баках.
+	# Этапы завода: сначала целая линия и место в баках, потом сырьё и давление.
 	if pneu != null:
+		var broken := broken_parts()
+		if not broken.is_empty():
+			return "Разбита деталь завода (%s): поставьте её на место (%s — стройка), иначе груз высыпается." % [
+				ProtoPneumatics.KINDS[broken[0][0]].n, build]
+		# Бак считаем по отдельности: пустой бак другой линии полному не поможет.
+		if not full_tanks().is_empty():
+			return "Бак полон — поставьте ещё бак вплотную перед ним: груз пойдёт дальше в новый."
 		var intake_kg := 0.0
 		for c in pneu.parts:
 			if pneu.parts[c].kind == "intake":
@@ -731,12 +758,6 @@ func advise(glyph: Callable) -> String:
 			return "Отнесите груз к приёмнику и выгрузите (%s)." % unload
 		if net_pressure() - planet.atm_pressure < ProtoPneumatics.MOVE_P:
 			return "Капсулы стоят — нет давления. Поставьте насос у труб (%s — стройка)." % build
-		var free := 0.0
-		for c in pneu.parts:
-			if pneu.parts[c].kind == "tank":
-				free += ProtoPneumatics.KINDS.tank.cap - pneu.mass_in(c)
-		if free < 2.0:
-			return "Баки полны — поставьте ещё бак на выходе линии."
 		if cg > 0.5:
 			return "Выгрузите груз в приёмник (%s), завод всё переработает." % unload
 	return "Завод работает. Пока он крутится — добудьте ещё кристаллов (%s)." % drill
