@@ -7,6 +7,8 @@ extends Node
 ##   инструментом: бур выдвигается из правого предплечья, отпустить — уходит.
 ##   G — выстрелить кистью туда, куда смотрит камера, и подтянуться (G ещё
 ##   раз — отпустить).
+##   Геймпад: левый стик — ходьба, правый — камера, L3 — быстрее, RT — бур,
+##   LT — кисть, D-pad вверх/вниз — дистанция (раскладка — ProtoControls).
 ## Высота под ногами — по полю плотности (снаружи и в пещере), в породу и на
 ## слишком крутые уступы не заходит. Камера на пружинной штанге. Под сводом сама
 ## включает фару и сгущает тёмный туман.
@@ -34,7 +36,6 @@ var shot_n := 0
 var route_len := 0.0
 var route_done := 0.0
 var fist: RobotFist
-var _g_was := false
 var finale := -1.0           # --auto=sound: время после конца маршрута (бур, кисть)
 
 func setup(r: Node3D, c: Camera3D, t: ProtoTerrain, e: Environment) -> void:
@@ -49,6 +50,7 @@ func setup(r: Node3D, c: Camera3D, t: ProtoTerrain, e: Environment) -> void:
 		anim.mode = "play"
 	cam_yaw = robot.rotation.y
 	fist = robot.get_node_or_null("fist")
+	ProtoControls.ensure()
 
 ## Маршрут: от площадки завода по склону к входу в пещеру и по ходу в зал.
 func auto_cave(prefix: String) -> void:
@@ -115,30 +117,28 @@ func _process(dt: float) -> void:
 	var want := Vector3.ZERO
 	var top_speed := RobotAnim.WALK_SPEED
 	if route.is_empty():
-		var inp := Vector2.ZERO
-		if Input.is_physical_key_pressed(KEY_W): inp.y += 1
-		if Input.is_physical_key_pressed(KEY_S): inp.y -= 1
-		if Input.is_physical_key_pressed(KEY_A): inp.x -= 1
-		if Input.is_physical_key_pressed(KEY_D): inp.x += 1
-		if Input.is_physical_key_pressed(KEY_Q): cam_yaw += dt * 1.8
-		if Input.is_physical_key_pressed(KEY_E): cam_yaw -= dt * 1.8
-		if Input.is_physical_key_pressed(KEY_SHIFT): top_speed *= 1.9
+		var inp := ProtoControls.move_vector()
+		var look := ProtoControls.look_vector()
+		cam_yaw -= look.x * dt * 2.4
+		cam_pitch = clampf(cam_pitch + look.y * dt * 1.6, -1.1, 0.2)
+		if Input.is_action_pressed(ProtoControls.CAM_ZOOM_IN): cam_dist = maxf(2.0, cam_dist - dt * 4.0)
+		if Input.is_action_pressed(ProtoControls.CAM_ZOOM_OUT): cam_dist = minf(12.0, cam_dist + dt * 4.0)
+		if Input.is_action_pressed(ProtoControls.SPRINT): top_speed *= 1.9
 		if anim:
-			anim.work = move_toward(anim.work, 1.0 if Input.is_physical_key_pressed(KEY_F) else 0.0, dt * 5.0)
-		var g := Input.is_physical_key_pressed(KEY_G)
-		if g and not _g_was and fist:
+			anim.work = move_toward(anim.work, Input.get_action_strength(ProtoControls.WORK), dt * 5.0)
+		if Input.is_action_just_pressed(ProtoControls.FIST) and fist:
 			if fist.state == "dock":
 				var hit := _aim_point()
 				if hit != Vector3.INF:
 					fist.fire(robot.to_local(hit), true)
 			else:
 				fist.release()
-		_g_was = g
 		if inp != Vector2.ZERO:
 			# Вперёд — от камеры: камера смотрит вдоль (sin yaw, cos yaw).
 			var fwd := Vector3(sin(cam_yaw), 0, cos(cam_yaw))
 			var right := Vector3(-fwd.z, 0, fwd.x)
-			want = (fwd * inp.y - right * inp.x).normalized()
+			# Длина inp — наклон стика (клавиши дают 1): лёгкий наклон — медленный шаг.
+			want = (fwd * inp.y - right * inp.x).normalized() * minf(1.0, inp.length())
 	else:
 		want = _follow_route()
 		top_speed *= 1.7
