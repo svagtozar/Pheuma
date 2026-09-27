@@ -32,24 +32,29 @@ func tick(w, dt: float) -> void:
 	status = "пробы %d%%" % int(clamp(_t / DUR, 0.0, 1.0) * 100)
 	if _t < DUR:
 		return
-	var s: Substance = busy.substance
-	var before: int = ww.unknown_count(s) + ww.possible_of(s).size()
-	for pid in Probes.ORDER:
-		if ww.is_identified(s) or busy.mass < Probes.SAMPLE_KG + 0.01:
-			break
-		if not _useful(ww, s, pid):
-			continue
-		busy.mass -= Probes.SAMPLE_KG
-		ww.probe(s.id, pid, true)
-	if ww.unknown_count(s) + ww.possible_of(s).size() < before:
+	if run_probes(ww, busy):
 		_pulse = PULSE
 		signal_out = true
 	if busy.mass > 0.01:
 		out_queue.append([busy, 0])
 	busy = null
 
+## Все пробы, которые ещё что-то скажут, по 0.5 кг с порции (общая для 2D-машины
+## и лаборатории 3D-пневмозавода). true — узнали новое.
+static func run_probes(ww: World, p: Portion) -> bool:
+	var s: Substance = p.substance
+	var before: int = ww.unknown_count(s) + ww.possible_of(s).size()
+	for pid in Probes.ORDER:
+		if ww.is_identified(s) or p.mass < Probes.SAMPLE_KG + 0.01:
+			break
+		if not useful(ww, s, pid):
+			continue
+		p.mass -= Probes.SAMPLE_KG
+		ww.probe(s.id, pid, true)
+	return ww.unknown_count(s) + ww.possible_of(s).size() < before
+
 ## Проба что-то скажет: в её наборе есть теги, о которых ещё ничего не известно.
-func _useful(ww, s: Substance, pid: String) -> bool:
+static func useful(ww: World, s: Substance, pid: String) -> bool:
 	var k: Dictionary = ww.robot.sub_known.get(s.id, {})
 	for t in Probes.PROBES[pid].tags:
 		if not k.has(t):

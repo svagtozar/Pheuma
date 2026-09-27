@@ -163,7 +163,11 @@ func _process(dt: float) -> void:
 	var want := Vector3.ZERO
 	# Тяжёлая планета — шаг медленнее, лёгкая — быстрее (ProtoWorldStyle).
 	var top_speed := RobotAnim.WALK_SPEED * terrain.style.walk_mult()
-	if route.is_empty():
+	# Открыта карточка материала (ProtoLabPanel): стик и D-pad заняты ею.
+	var busy: bool = robot.get_meta("ui_busy", false)
+	if route.is_empty() and busy:
+		pass
+	elif route.is_empty():
 		var inp := ProtoControls.move_vector()
 		var look := ProtoControls.look_vector()
 		# Стик вверх — смотреть вверх: камера опускается за спину.
