@@ -103,6 +103,7 @@ func _ready() -> void:
 		ground.mesh = m
 		ground.material_override = tm
 		add_child(ground)
+		RobotGround.add_collision(ground)
 	_environment()
 	_liquids()
 	_cave_crystals()
