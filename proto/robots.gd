@@ -1,6 +1,6 @@
 extends Node3D
 ## Витрина вариантов робота (к игре не подключена).
-##   godot --path . res://proto/robots.tscn -- --shot=front|back|top|close:N --screenshot=путь.png
+##   godot --path . res://proto/robots.tscn -- --shot=front|back|top|close:N|closeback:N|head:N --screenshot=путь.png
 
 var shot := "front"
 var shot_path := ""
@@ -39,7 +39,7 @@ func _ready() -> void:
 		l.rotation = Vector3(-PI / 2.0 + 0.5, 0, 0)
 		l.modulate = Color(0.9, 0.93, 1.0)
 		l.outline_size = 8
-		if shot == "back":
+		if shot == "back" or shot.begins_with("closeback:"):
 			l.rotation.y = PI
 			l.position.z = -0.75
 		add_child(l)
@@ -97,12 +97,18 @@ func _camera(n: int) -> void:
 	cam.fov = 40.0
 	add_child(cam)
 	var width := (n - 1) * GAP
-	if shot.begins_with("close:"):
-		var i := int(shot.substr(6))
+	if shot.begins_with("close:") or shot.begins_with("closeback:"):
+		var back := shot.begins_with("closeback:")
+		var i := int(shot.substr(shot.find(":") + 1))
 		var x := (i - (n - 1) / 2.0) * GAP
-		cam.position = Vector3(x + 1.5, 1.35, 3.3)
+		cam.position = Vector3(x + (-1.5 if back else 1.5), 1.35, -3.3 if back else 3.3)
 		cam.look_at(Vector3(x, 0.92, 0))
 		cam.fov = 36.0
+	if shot.begins_with("head:"):
+		var hx := (int(shot.substr(5)) - (n - 1) / 2.0) * GAP
+		cam.position = Vector3(hx + 0.35, 1.85, 1.0)
+		cam.look_at(Vector3(hx, 1.7, 0))
+		cam.fov = 40.0
 	match shot:
 		"front":
 			cam.position = Vector3(1.5, 2.0, width * 0.95 + 1.0)

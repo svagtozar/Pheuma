@@ -3,11 +3,16 @@ extends RefCounted
 ## Варианты дизайна робота для витрины (proto/robots.tscn). Всё из простых тел:
 ## стержни между точками скелета, шарниры, капсулы, короба, торы, шланги по Безье.
 ## Гибрид «каркас, обрастающий планетой» — в трёх уровнях детальности (h1, h2, h3),
-## плюс концепции pneumat, geologist, miner, jumper.
+## плюс концепции pneumat, geologist, miner, jumper и concept — по концепт-арту
+## (concept_b — он же с корпусом из металла другой планеты).
 
-const DESIGNS := ["h1", "h2", "h3", "pneumat", "geologist", "miner", "jumper"]
+const DESIGNS := ["h1", "h2", "h3", "concept", "concept_b", "pneumat", "geologist", "miner", "jumper"]
 const NAMES := {"h1": "Гибрид · Н1 силуэт", "h2": "Гибрид · Н2 рабочий", "h3": "Гибрид · Н3 детальный",
+	"concept": "Концепт · медь", "concept_b": "Концепт · другой металл",
 	"pneumat": "A · Пневмат", "geologist": "B · Геолог", "miner": "D · Горняк", "jumper": "E · Прыгун"}
+## Металл корпуса по умолчанию — медь; в игре — металл планеты.
+const COPPER := Color(0.78, 0.47, 0.29)
+const ALT_METAL := Color(0.42, 0.55, 0.72)
 
 static var _mats := {}
 
@@ -26,6 +31,10 @@ static func mat(key: String) -> Material:
 		"glow":
 			m.albedo_color = Color(0.3, 0.9, 1.0); m.emission_enabled = true
 			m.emission = Color(0.3, 0.9, 1.0); m.emission_energy_multiplier = 3.0
+		"steel": m.albedo_color = Color(0.72, 0.74, 0.77); m.metallic = 0.7; m.roughness = 0.28
+		"iris":
+			m.albedo_color = Color(0.2, 0.85, 1.0); m.emission_enabled = true
+			m.emission = Color(0.15, 0.8, 1.0); m.emission_energy_multiplier = 1.4
 		"glow_warm":
 			m.albedo_color = Color(1.0, 0.75, 0.35); m.emission_enabled = true
 			m.emission = Color(1.0, 0.7, 0.3); m.emission_energy_multiplier = 3.0
@@ -36,7 +45,7 @@ static func mat(key: String) -> Material:
 		"gas":
 			m.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 			m.albedo_color = Color(0.5, 0.85, 1.0, 0.55); m.emission_enabled = true
-			m.emission = Color(0.4, 0.8, 1.0); m.emission_energy_multiplier = 0.8
+			m.emission = Color(0.4, 0.8, 1.0); m.emission_energy_multiplier = 1.3
 		"copper": m.albedo_color = Color(0.78, 0.45, 0.28); m.metallic = 0.9; m.roughness = 0.3
 		"crystal":
 			m.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
@@ -54,7 +63,9 @@ static func mat(key: String) -> Material:
 			m.uv1_triplanar = true
 			m.uv1_scale = Vector3(3, 3, 3)
 		_:
-			if key.begins_with("pod:"):
+			if key.begins_with("metal:"):
+				m.albedo_color = Color(key.substr(6)); m.metallic = 0.9; m.roughness = 0.32
+			elif key.begins_with("pod:"):
 				var c := Color(key.substr(4))
 				m.albedo_color = c; m.emission_enabled = true; m.emission = c; m.emission_energy_multiplier = 0.6
 	_mats[key] = m
@@ -207,10 +218,13 @@ static func _flask(n: Node3D, base: Vector3, h: float, r: float, level: float, s
 
 # ---------------------------------------------------------------- варианты
 
-static func build(design: String) -> Node3D:
+## hull — цвет металла корпуса (для concept); прозрачный — по умолчанию.
+static func build(design: String, hull := Color(0, 0, 0, 0)) -> Node3D:
 	var n := Node3D.new()
 	n.name = design
 	match design:
+		"concept": _concept(n, COPPER if hull.a == 0.0 else hull)
+		"concept_b": _concept(n, ALT_METAL if hull.a == 0.0 else hull)
 		"h1": _h1(n)
 		"h2": _h2(n, false)
 		"h3": _h2(n, true)
@@ -460,3 +474,187 @@ static func _jumper(n: Node3D) -> void:
 		rod(n, noz + Vector3(0, -0.1, -0.02), noz + Vector3(0, -0.11, -0.02), 0.04, "glow_warm")
 	# Небольшой баллон.
 	_flask(n, Vector3(0, 1.16, -0.16), 0.34, 0.07, 0.8)
+
+# ---------------------------------------------------------------- концепт-арт
+
+## Точка крепления для игры: модуль, пластина, уровень газа.
+static func _socket(n: Node3D, sname: String, pos: Vector3) -> void:
+	var m := Marker3D.new()
+	m.name = sname
+	m.position = pos
+	n.add_child(m)
+
+## Плоская скошенная пластина: вдоль +Y длиной l, ширина w0 у основания и w1 у
+## конца, толщина t, конец сдвинут по X на skew.
+static func blade(p: Node3D, l: float, w0: float, w1: float, t: float, skew: float, m: String) -> MeshInstance3D:
+	var b := [Vector3(-w0 / 2, 0, -t / 2), Vector3(w0 / 2, 0, -t / 2), Vector3(w0 / 2, 0, t / 2), Vector3(-w0 / 2, 0, t / 2)]
+	var u := [Vector3(-w1 / 2 + skew, l, -t / 2), Vector3(w1 / 2 + skew, l, -t / 2), Vector3(w1 / 2 + skew, l, t / 2), Vector3(-w1 / 2 + skew, l, t / 2)]
+	var faces := [[u[3], u[2], b[2], b[3]], [u[1], u[0], b[0], b[1]], [u[2], u[1], b[1], b[2]],
+		[u[0], u[3], b[3], b[0]], [u[0], u[1], u[2], u[3]], [b[3], b[2], b[1], b[0]]]
+	var st := SurfaceTool.new()
+	st.begin(Mesh.PRIMITIVE_TRIANGLES)
+	st.set_smooth_group(0xFFFFFFFF)   # плоские грани, без сглаживания рёбер
+	for f in faces:
+		for k in [0, 1, 2, 0, 2, 3]:
+			st.add_vertex(f[k])
+	st.generate_normals()
+	var mi := MeshInstance3D.new()
+	mi.mesh = st.commit()
+	mi.material_override = mat(m)
+	p.add_child(mi)
+	return mi
+
+## Антенна-«ухо»: узел-шарнир (поворачивается в игре) и плоская пластина по
+## диагонали вверх-назад-наружу со светящимся внутренним ребром.
+static func _ear(n: Node3D, pivot: Vector3, sg: float, hull: String) -> Node3D:
+	var e := Node3D.new()
+	e.name = "ear_l" if sg < 0.0 else "ear_r"
+	var y := Vector3(sg * 0.62, 0.74, -0.26).normalized()
+	var x := y.cross(Vector3.FORWARD).normalized()
+	e.transform = Transform3D(Basis(x, y, x.cross(y).normalized()), pivot)
+	n.add_child(e)
+	ball(e, Vector3.ZERO, 0.022, "dark")
+	ring(e, Vector3(0, 0.01, 0), Vector3.UP, 0.02, 0.03, hull)
+	var l := 0.21
+	var w0 := 0.09
+	var w1 := 0.05
+	blade(e, l, w0, w1, 0.012, sg * (w0 - w1) / 2.0, "dark")
+	blade(e, l * 0.35, w0 * 1.05, w0 * 0.9, 0.016, 0.0, hull)
+	for z in [-0.0075, 0.0075]:
+		box(e, Vector3(sg * (w0 / 2.0 - 0.006), l * 0.62, z), Vector3(0.008, l * 0.7, 0.003), "glow")
+	return e
+
+## По концепт-арту: голова-объектив с антеннами-ушами, тонкий каркас с открытым
+## позвоночником, шарниры-шары с бандажами, колба за правым плечом, под ней кассета
+## капсул, тяжёлые ботинки. hull — металл корпуса (медь по умолчанию).
+static func _concept(n: Node3D, hull_col: Color) -> void:
+	var hull := "metal:#" + hull_col.to_html(false)
+	var s := skeleton()
+	s.el_l = Vector3(-0.28, 1.17, -0.03)
+	s.el_r = Vector3(0.29, 1.18, 0.02)
+	s.ha_l = Vector3(-0.29, 0.91, 0.03)
+	s.ha_r = Vector3(0.31, 0.93, 0.1)
+	var hc := Vector3(0, 1.68, 0.02)
+	# --- Голова-объектив.
+	rod(n, hc + Vector3(0, 0, -0.08), hc + Vector3(0, 0, 0.07), 0.15, hull)
+	ball(n, hc + Vector3(0, 0, -0.08), 0.15, hull).scale = Vector3(1, 1, 0.55)
+	ring(n, hc + Vector3(0, 0, -0.02), Vector3(0, 0, 1), 0.15, 0.162, "dark")
+	ring(n, hc + Vector3(0, 0, 0.07), Vector3(0, 0, 1), 0.122, 0.158, hull)
+	rod(n, hc + Vector3(0, 0, 0.07), hc + Vector3(0, 0, 0.088), 0.126, "dark")
+	ring(n, hc + Vector3(0, 0, 0.09), Vector3(0, 0, 1), 0.084, 0.1, "accent")
+	rod(n, hc + Vector3(0, 0, 0.088), hc + Vector3(0, 0, 0.097), 0.056, "iris")
+	rod(n, hc + Vector3(0, 0, 0.097), hc + Vector3(0, 0, 0.101), 0.022, "dark")
+	ball(n, hc + Vector3(0, 0, 0.09), 0.084, "glass").scale = Vector3(1, 1, 0.3)
+	box(n, hc + Vector3(0, 0.15, -0.04), Vector3(0.07, 0.03, 0.08), hull)
+	for sg in [-1.0, 1.0]:
+		_ear(n, hc + Vector3(sg * 0.125, 0.085, -0.03), sg, hull)
+	# --- Шея.
+	rod(n, Vector3(0, 1.42, -0.01), hc + Vector3(0, -0.12, -0.02), 0.026, "dark")
+	ring(n, Vector3(0, 1.5, -0.01), Vector3.UP, 0.028, 0.042, hull)
+	for sg in [-1.0, 1.0]:
+		hose(n, Vector3(sg * 0.05, 1.4, -0.05), Vector3(sg * 0.07, 1.48, -0.08), hc + Vector3(sg * 0.06, -0.2, -0.08), hc + Vector3(sg * 0.05, -0.13, -0.06), 0.01, "rubber", 6)
+	# --- Позвоночник: хромированный стержень и позвонки.
+	rod(n, s.pelvis + Vector3(0, 0, -0.03), Vector3(0, 1.45, -0.03), 0.018, "steel")
+	for k in 8:
+		var y := 1.0 + k * 0.064
+		box(n, Vector3(0, y, -0.03 - sin(k * 0.4) * 0.012), Vector3(0.075 - k * 0.002, 0.04, 0.065), hull if k % 2 == 0 else "dark")
+	# Грудная клетка: рёбра, грудные пластины, механизм в центре.
+	for k in 3:
+		ring(n, Vector3(0, 1.22 + k * 0.08, 0.0), Vector3.UP, 0.125 + k * 0.005, 0.138 + k * 0.005, "dark").scale = Vector3(1.25, 1, 0.8)
+	for sg in [-1.0, 1.0]:
+		plate(n, Vector3(sg * 0.075, 1.23, 0.105), Vector3(sg * 0.1, 1.42, 0.09), 0.07, 0.016, Vector3.ZERO, hull)
+	ring(n, Vector3(0, 1.32, 0.105), Vector3(0, 0, 1), 0.028, 0.048, "dark")
+	ball(n, Vector3(0, 1.32, 0.11), 0.024, "steel")
+	rod(n, s.sh_l, s.sh_r, 0.03, hull)
+	box(n, Vector3(0, 1.08, -0.01), Vector3(0.12, 0.07, 0.08), "dark")
+	# Таз и V-щиток.
+	box(n, s.pelvis, Vector3(0.26, 0.1, 0.15), "dark")
+	for sg in [-1.0, 1.0]:
+		plate(n, Vector3(sg * 0.12, 1.0, 0.085), Vector3(0, 0.88, 0.085), 0.05, 0.018, Vector3.ZERO, hull)
+	# --- Конечности: хромированные кости, шары с бандажами, пластины корпуса.
+	for side in ["l", "r"]:
+		var sg: float = -1.0 if side == "l" else 1.0
+		var sh: Vector3 = s["sh_" + side]
+		var el: Vector3 = s["el_" + side]
+		var ha: Vector3 = s["ha_" + side]
+		var hi: Vector3 = s["hi_" + side]
+		var kn: Vector3 = s["kn_" + side]
+		var an: Vector3 = s["an_" + side]
+		rod(n, sh, el, 0.03, "steel")
+		rod(n, el, ha, 0.026, "steel")
+		rod(n, hi, kn, 0.036, "steel")
+		rod(n, kn, an, 0.031, "steel")
+		for j in [[sh, 0.056], [el, 0.045], [hi, 0.05], [kn, 0.055], [an, 0.042]]:
+			var jp: Vector3 = j[0]
+			var jr: float = j[1]
+			ball(n, jp, jr, "steel")
+			ring(n, jp, Vector3(1, 0, 0), jr * 0.85, jr * 1.08, hull)
+		# Бандажи и пластины.
+		for bone in [[sh, el, 0.034], [el, ha, 0.03], [hi, kn, 0.041], [kn, an, 0.036]]:
+			var a: Vector3 = bone[0]
+			var b: Vector3 = bone[1]
+			var r: float = bone[2]
+			for t in [0.3, 0.7]:
+				ring(n, a.lerp(b, t), (b - a).normalized(), r, r + 0.012, hull)
+		plate(n, sh.lerp(el, 0.25), sh.lerp(el, 0.75), 0.045, 0.016, Vector3(sg * 0.035, 0, 0), hull)
+		plate(n, el.lerp(ha, 0.25), el.lerp(ha, 0.7), 0.042, 0.016, Vector3(sg * 0.03, 0, 0.005), hull)
+		plate(n, hi.lerp(kn, 0.2), hi.lerp(kn, 0.75), 0.05, 0.016, Vector3(0, 0, 0.045), hull)
+		ball(n, kn + Vector3(0, 0, 0.05), 0.03, hull)
+		piston(n, kn, an, Vector3(0, 0, 0.055), 0.022)
+		piston(n, el, ha, Vector3(0, 0, 0.04), 0.016)
+		# Кисть: ладонь и пальцы.
+		ring(n, ha, (ha - el).normalized(), 0.026, 0.038, hull)
+		var pc := ha + Vector3(0, -0.05, 0)
+		box(n, pc, Vector3(0.025, 0.07, 0.055), "dark")
+		for f in 3:
+			var fz := -0.018 + f * 0.018
+			rod(n, pc + Vector3(0, -0.03, fz), pc + Vector3(sg * -0.012, -0.09, fz + 0.01), 0.007, "steel")
+		rod(n, pc + Vector3(sg * -0.01, 0.0, 0.03), pc + Vector3(sg * -0.03, -0.04, 0.05), 0.008, "steel")
+		# Шланг по ноге: от таза к колену снаружи.
+		hose(n, hi + Vector3(sg * 0.06, 0.02, -0.05), hi + Vector3(sg * 0.12, -0.15, -0.08), kn + Vector3(sg * 0.1, 0.15, -0.06), kn + Vector3(sg * 0.05, 0.02, -0.03), 0.011, "rubber", 8)
+		# Ботинок.
+		var bc := Vector3(an.x, 0.065, an.z + 0.045)
+		box(n, bc, Vector3(0.12, 0.08, 0.24), hull)
+		box(n, Vector3(an.x, 0.015, an.z + 0.045), Vector3(0.13, 0.03, 0.26), "dark")
+		box(n, bc + Vector3(0, 0.03, 0.09), Vector3(0.115, 0.03, 0.08), hull, Vector3(-0.35, 0, 0))
+		box(n, bc + Vector3(0, 0.0, -0.1), Vector3(0.1, 0.1, 0.05), "dark")
+		ring(n, Vector3(an.x, 0.12, an.z), Vector3.UP, 0.045, 0.062, hull)
+	# --- Колба за правым плечом на ремнях, крышки из корпуса.
+	var fb := Vector3(0.14, 1.1, -0.22)
+	var fh := 0.5
+	rod(n, fb, fb + Vector3(0, 0.05, 0), 0.122, hull)
+	rod(n, fb + Vector3(0, 0.05, 0), fb + Vector3(0, fh - 0.05, 0), 0.115, "glass")
+	rod(n, fb + Vector3(0, 0.06, 0), fb + Vector3(0, 0.06 + (fh - 0.12) * 0.8, 0), 0.1, "gas")
+	rod(n, fb + Vector3(0, fh - 0.05, 0), fb + Vector3(0, fh, 0), 0.122, hull)
+	rod(n, fb + Vector3(0, fh, 0), fb + Vector3(0, fh + 0.04, 0), 0.03, "steel")
+	ball(n, fb + Vector3(0, fh + 0.045, 0), 0.028, hull)
+	for t in [0.15, 0.3]:
+		ring(n, fb + Vector3(0, fh * t / 0.45 + 0.05, 0), Vector3.UP, 0.115, 0.132, hull)
+	for y in [1.25, 1.4]:
+		rod(n, Vector3(0.02, y, -0.06), Vector3(0.12, y, -0.2), 0.012, hull)
+	# Кассета капсул под колбой.
+	var pc2 := Vector3(0.14, 1.02, -0.22)
+	box(n, pc2 + Vector3(0, 0.068, 0), Vector3(0.25, 0.014, 0.08), hull)
+	box(n, pc2 + Vector3(0, -0.068, 0), Vector3(0.25, 0.014, 0.08), hull)
+	box(n, pc2 + Vector3(0, 0, 0.035), Vector3(0.25, 0.13, 0.01), "dark")
+	var pods := ["#e8c547", "#9b5de5", "#e05a4a", "#5ad17a"]
+	for i in pods.size():
+		var c := pc2 + Vector3(-0.09 + i * 0.06, 0, -0.005)
+		caps(n, c + Vector3(0, -0.035, 0), c + Vector3(0, 0.035, 0), 0.026, "glass")
+		caps(n, c + Vector3(0, -0.03, 0), c + Vector3(0, 0.02, 0), 0.02, "pod:" + pods[i])
+	# Шланги от колбы: к затылку, к обоим плечам, к правому бедру.
+	var top := fb + Vector3(0, fh + 0.045, 0)
+	hose(n, top, top + Vector3(0, 0.12, 0), hc + Vector3(0.05, -0.02, -0.24), hc + Vector3(0.02, -0.06, -0.12), 0.012)
+	hose(n, fb + Vector3(-0.06, fh - 0.02, -0.03), fb + Vector3(-0.18, fh + 0.08, -0.02), s.sh_l + Vector3(0.1, 0.12, -0.12), s.sh_l + Vector3(0.02, 0.03, -0.04), 0.011)
+	hose(n, fb + Vector3(0.07, fh - 0.03, 0.0), fb + Vector3(0.14, fh + 0.03, 0.0), s.sh_r + Vector3(0.06, 0.1, -0.1), s.sh_r + Vector3(0.0, 0.03, -0.04), 0.011)
+	hose(n, fb + Vector3(0.07, 0.02, 0.0), fb + Vector3(0.12, -0.2, 0.0), s.hi_r + Vector3(0.12, 0.1, -0.12), s.hi_r + Vector3(0.05, 0.0, -0.04), 0.011)
+	# --- Точки крепления.
+	_socket(n, "socket_flask", fb + Vector3(0, fh / 2.0, 0))
+	_socket(n, "socket_pods", pc2)
+	_socket(n, "socket_hand_l", s.ha_l + Vector3(0, -0.1, 0))
+	_socket(n, "socket_hand_r", s.ha_r + Vector3(0, -0.1, 0))
+	_socket(n, "socket_plate_chest", Vector3(0, 1.33, 0.12))
+	_socket(n, "socket_plate_sh_l", s.sh_l + Vector3(-0.02, 0.06, 0))
+	_socket(n, "socket_plate_sh_r", s.sh_r + Vector3(0.02, 0.06, 0))
+	_socket(n, "socket_plate_thigh_l", s.hi_l.lerp(s.kn_l, 0.5) + Vector3(0, 0, 0.06))
+	_socket(n, "socket_plate_thigh_r", s.hi_r.lerp(s.kn_r, 0.5) + Vector3(0, 0, 0.06))

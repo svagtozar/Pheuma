@@ -1,6 +1,7 @@
 extends Node3D
 ## Предпросмотр объёмного 3D-визуала (к игре не подключён).
 ##   godot --path . res://proto/preview.tscn -- --seed=14 --view=third|plan|cave --screenshot=путь.png
+##   --robot=concept (или другой вариант из RobotDesigns; корпус — металл планеты)
 ## Планета — настоящий генератор: теги задают небо, свет и дымку, жидкие при её
 ## температуре материалы — реки и озёра, твёрдые — корпуса машин.
 
@@ -9,7 +10,8 @@ var view := "third"
 var shot_path := ""
 var planet: Planet
 var terrain: ProtoTerrain
-var robot: ProtoRobot
+var robot: Node3D
+var robot_design := ""
 var cam: Camera3D
 var _t := 0.0
 
@@ -18,6 +20,7 @@ func _ready() -> void:
 		if a.begins_with("--seed="): seed_value = int(a.substr(7))
 		elif a.begins_with("--view="): view = a.substr(7)
 		elif a.begins_with("--screenshot="): shot_path = a.substr(13)
+		elif a.begins_with("--robot="): robot_design = a.substr(8)
 	planet = PlanetGen.generate(seed_value)
 	var t0 := Time.get_ticks_msec()
 	terrain = ProtoTerrain.new(seed_value)
@@ -294,7 +297,10 @@ func _label(s: Substance) -> String:
 
 func _robot_and_camera() -> void:
 	var drill = _mat_with("metallic")
-	robot = ProtoRobot.new(Color(0.78, 0.8, 0.84), drill.color if drill != null else Color(0.6, 0.6, 0.65), Color(0.9, 0.55, 0.2))
+	if robot_design != "":
+		robot = RobotDesigns.build(robot_design, drill.color if drill != null else Color(0, 0, 0, 0))
+	else:
+		robot = ProtoRobot.new(Color(0.78, 0.8, 0.84), drill.color if drill != null else Color(0.6, 0.6, 0.65), Color(0.9, 0.55, 0.2))
 	add_child(robot)
 	cam = Camera3D.new()
 	cam.fov = 62.0
@@ -325,8 +331,9 @@ func _robot_and_camera() -> void:
 			var rp3 := Vector3(cc.x - 2.0, cc.y, cc.z + 2.0)
 			rp3.y = _floor_at(rp3)
 			robot.position = rp3
-			robot.walk = false
-			robot.eye_light.light_energy = 2.5
+			if robot is ProtoRobot:
+				(robot as ProtoRobot).walk = false
+				(robot as ProtoRobot).eye_light.light_energy = 2.5
 			var tg3 := Vector3(cc.x + 3.0, rp3.y, cc.z - 3.0)
 			robot.look_at(tg3, Vector3.UP, true)
 			var f3 := (tg3 - rp3).normalized()
