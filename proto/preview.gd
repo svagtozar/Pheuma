@@ -1,6 +1,9 @@
 extends Node3D
 ## Предпросмотр объёмного 3D-визуала (к игре не подключён).
 ##   godot --path . res://proto/preview.tscn -- --seed=14 --view=third|plan|cave --screenshot=путь.png
+##   --play — ходить самому (WASD, Shift, Q/E или мышь с ПКМ, колесо; F — бур,
+##   G — выстрел кистью и подтягивание); --tool=drill — бур в правой руке
+##   --auto=cave --screenshot=путь.png — маршрут в пещеру, кадры путь_1..4.png
 ##   --robot=clean (по умолчанию; другой вариант из RobotDesigns или old — прежний
 ##   каркас; корпус — металл планеты)
 ## Планета — настоящий генератор: теги задают небо, свет и дымку, жидкие при её
@@ -15,6 +18,9 @@ var robot: Node3D
 var robot_design := "clean"
 var cam: Camera3D
 var _t := 0.0
+var play := false            # --play: управление от третьего лица
+var auto := ""               # --auto=cave: скриптовый маршрут с кадрами
+var env: Environment
 
 func _ready() -> void:
 	for a in OS.get_cmdline_user_args():
@@ -22,6 +28,9 @@ func _ready() -> void:
 		elif a.begins_with("--view="): view = a.substr(7)
 		elif a.begins_with("--screenshot="): shot_path = a.substr(13)
 		elif a.begins_with("--robot="): robot_design = a.substr(8)
+		elif a == "--play": play = true
+		elif a.begins_with("--tool="): RobotDesigns.tool_r = a.substr(7)
+		elif a.begins_with("--auto="): auto = a.substr(7)
 	planet = PlanetGen.generate(seed_value)
 	var t0 := Time.get_ticks_msec()
 	terrain = ProtoTerrain.new(seed_value)
@@ -44,6 +53,14 @@ func _ready() -> void:
 	_factory()
 	_robot_and_camera()
 	_caption()
+	if play or auto != "":
+		var pl := ProtoPlayer.new()
+		pl.name = "player"
+		add_child(pl)
+		pl.setup(robot, cam, terrain, env)
+		if auto == "cave":
+			pl.auto_cave(shot_path.get_basename() if shot_path != "" else "user://route")
+			shot_path = ""
 
 # ---------------------------------------------------------------- палитра и свет
 
@@ -101,6 +118,7 @@ func _environment() -> void:
 		# Под землёй: тёмный плотный воздух — дальние стены уходят в темноту.
 		env.fog_light_color = Color(0.04, 0.045, 0.055)
 		env.fog_density = 0.06
+	self.env = env
 	var we := WorldEnvironment.new()
 	we.environment = env
 	add_child(we)

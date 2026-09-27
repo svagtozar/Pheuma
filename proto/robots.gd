@@ -1,6 +1,6 @@
 extends Node3D
 ## Витрина вариантов робота (к игре не подключена).
-##   godot --path . res://proto/robots.tscn -- --shot=front|back|top|close:N|closeback:N|head:N|hand:N|far:N|tank:N|side:N  [--anim=idle|walk] [--t=сек] [--sheet=кадров] [--only=N] --screenshot=путь.png
+##   godot --path . res://proto/robots.tscn -- --shot=front|back|top|close:N|closeback:N|head:N|hand:N|far:N|tank:N|side:N|tools:N  [--anim=idle|walk|demo|drill|fist] [--tool=drill] [--t=сек] [--sheet=кадров] [--only=N] --screenshot=путь.png
 
 var shot := "front"
 var shot_path := ""
@@ -20,6 +20,7 @@ func _ready() -> void:
 		elif a.begins_with("--t="): RobotAnim.fixed_t = float(a.substr(4))
 		elif a.begins_with("--sheet="): sheet = int(a.substr(8))
 		elif a.begins_with("--only="): only = int(a.substr(7))
+		elif a.begins_with("--tool="): RobotDesigns.tool_r = a.substr(7)
 	_stage()
 	var n := RobotDesigns.DESIGNS.size()
 	for i in n:
@@ -123,9 +124,15 @@ func _camera(n: int) -> void:
 		cam.fov = 62.0
 	if shot.begins_with("hand:"):
 		var kx := (int(shot.substr(5)) - (n - 1) / 2.0) * GAP
-		cam.position = Vector3(kx + 0.75, 1.0, 0.5)
-		cam.look_at(Vector3(kx + 0.3, 0.88, 0.08))
-		cam.fov = 30.0
+		cam.position = Vector3(kx + 0.75, 1.15, 0.8)
+		cam.look_at(Vector3(kx + 0.25, 1.0, 0.15))
+		cam.fov = 34.0
+	if shot.begins_with("tools:"):
+		# Руки с модулями: спереди-слева и чуть сверху, с запасом для полёта кисти.
+		var ox := (int(shot.substr(6)) - (n - 1) / 2.0) * GAP
+		cam.position = Vector3(ox - 2.6, 2.0, 3.4)
+		cam.look_at(Vector3(ox + 0.3, 1.1, 1.3))
+		cam.fov = 45.0
 	if shot.begins_with("tank:"):
 		var gx := (int(shot.substr(5)) - (n - 1) / 2.0) * GAP
 		cam.position = Vector3(gx + 0.75, 1.6, -0.9)
@@ -186,7 +193,12 @@ func _sheet_step() -> void:
 		shot_path = ""
 		get_tree().quit(0)
 		return
-	var period := 1.0 / 0.95 if RobotAnim.default_mode == "walk" else 8.0
+	var period := 8.0
+	match RobotAnim.default_mode:
+		"walk": period = RobotAnim.CYCLE / RobotAnim.WALK_SPEED
+		"demo": period = 4.8
+		"fist": period = 2.4
+		"drill": period = 1.0
 	RobotAnim.fixed_t = sheet_i * period / sheet
 	sheet_i += 1
 	sheet_wait = 2

@@ -17,6 +17,8 @@ const COPPER := Color(0.78, 0.47, 0.29)
 const ALT_METAL := Color(0.42, 0.55, 0.72)
 
 static var _mats := {}
+## Инструмент в правой руке «Хард-серфейса»: "" или "drill". Ставится до build().
+static var tool_r := ""
 # ---------------------------------------------------------------- материалы
 
 static func mat(key: String) -> Material:
@@ -571,48 +573,62 @@ static func disc(p: Node3D, c: Vector3, axis: Vector3, r: float, h: float, m: St
 	return lathe(p, c, axis, [Vector2(0, -h / 2), Vector2(r * 0.8, -h / 2), Vector2(r, -h / 4), Vector2(r, h / 4), Vector2(r * 0.8, h / 2), Vector2(0, h / 2)], m, 16)
 
 ## Кисть с фалангами: ладонь, четыре пальца по три фаланги и большой палец.
-## dn — вниз вдоль кисти, side — к ладонной стороне.
-static func hand(p: Node3D, wrist: Vector3, dn: Vector3, side: Vector3, hull: String, k: float = 1.0) -> void:
-	if k != 1.0:
-		var h := Node3D.new()
-		h.position = wrist
-		h.scale = Vector3.ONE * k
-		p.add_child(h)
-		p = h
-		wrist = Vector3.ZERO
+## dn — вниз вдоль кисти, side — к ладонной стороне. Всё в узле-кисти в точке
+## запястья (hname); фаланги — узлы-суставы, их сгибает set_grip().
+static func hand(p: Node3D, wrist: Vector3, dn: Vector3, side: Vector3, hull: String, k: float = 1.0, hname := "hand") -> Node3D:
+	var h := Node3D.new()
+	h.name = hname
+	h.position = wrist
+	h.scale = Vector3.ONE * k
+	p.add_child(h)
 	dn = dn.normalized()
 	side = (side - dn * dn.dot(side)).normalized()
 	var fw := dn.cross(side).normalized()
 	if fw.z < 0.0:
 		fw = -fw
-	var pc := wrist + dn * 0.04
-	ellipsoid(p, pc, side * 0.016, dn * 0.036, fw * 0.03, "dark")
-	ellipsoid(p, pc - side * 0.009 + dn * 0.004, side * 0.009, dn * 0.03, fw * 0.03, hull)
+	var pc := dn * 0.04
+	ellipsoid(h, pc, side * 0.016, dn * 0.036, fw * 0.03, "dark")
+	ellipsoid(h, pc - side * 0.009 + dn * 0.004, side * 0.009, dn * 0.03, fw * 0.03, hull)
+	var joints := []
 	var lens := [0.85, 1.0, 0.95, 0.78]
 	for i in 4:
-		var fk: float = lens[i]
 		var q := pc + dn * 0.032 + fw * (-0.024 + i * 0.016)
-		ball(p, q, 0.0085, "dark")
-		var spread := fw * (i - 1.5) * 0.06
-		var curl := 0.25
-		for sl in [0.026, 0.019, 0.015]:
-			var d := (dn * cos(curl) + side * sin(curl) + spread).normalized()
-			var q2: Vector3 = q + d * sl * fk
-			rod(p, q, q2, 0.0062, "steel")
-			ball(p, q2, 0.0072, "dark")
-			q = q2
-			curl += 0.3
+		ball(h, q, 0.0085, "dark")
+		var y0 := (dn + fw * (i - 1.5) * 0.06).normalized()
+		_finger(h, q, y0, side, [0.026, 0.019, 0.015], lens[i], 0.0062, [0.25, 0.3, 0.3], joints)
 	# Большой палец: отходит вперёд и к ладони.
 	var tq := pc + fw * 0.026 - dn * 0.012 + side * 0.006
-	ball(p, tq, 0.009, "dark")
-	var tc := 0.2
-	for sl in [0.024, 0.018, 0.014]:
-		var d := (dn * 0.7 + fw * 0.45 * cos(tc) + side * (0.3 + sin(tc))).normalized()
-		var t2: Vector3 = tq + d * sl
-		rod(p, tq, t2, 0.0068, "steel")
-		ball(p, t2, 0.0076, "dark")
-		tq = t2
-		tc += 0.35
+	ball(h, tq, 0.009, "dark")
+	_finger(h, tq, (dn * 0.7 + fw * 0.45 + side * 0.3).normalized(), side, [0.024, 0.018, 0.014], 1.0, 0.0068, [0.2, 0.35, 0.35], joints)
+	h.set_meta("joints", joints)
+	return h
+
+## Палец — цепочка суставов: каждый узел сгибается вокруг своей оси X к ладони.
+static func _finger(h: Node3D, at: Vector3, y0: Vector3, side: Vector3, segs: Array, fk: float, r: float, curls: Array, joints: Array) -> void:
+	var z := (side - y0 * y0.dot(side)).normalized()
+	var j := Node3D.new()
+	j.transform = Transform3D(Basis(y0.cross(z), y0, z), at)
+	h.add_child(j)
+	for si in segs.size():
+		var l: float = segs[si] * fk
+		j.rotation = Vector3.ZERO if si == 0 else j.rotation
+		var jr := Node3D.new()
+		jr.rotation.x = curls[si]
+		j.add_child(jr)
+		joints.append([jr, curls[si]])
+		rod(jr, Vector3.ZERO, Vector3(0, l, 0), r, "steel")
+		ball(jr, Vector3(0, l, 0), r * 1.16, "dark")
+		var nx := Node3D.new()
+		nx.position = Vector3(0, l, 0)
+		jr.add_child(nx)
+		j = nx
+
+## Сжать кисть: 0 — расслаблена, 1 — кулак.
+static func set_grip(h: Node3D, g: float) -> void:
+	if h == null or not h.has_meta("joints"):
+		return
+	for jd in h.get_meta("joints"):
+		(jd[0] as Node3D).rotation.x = jd[1] + g * 1.15
 
 ## Точка крепления для игры: модуль, пластина, уровень газа.
 static func _socket(n: Node3D, sname: String, pos: Vector3) -> void:
@@ -950,6 +966,28 @@ static func _scheme(hull_col: Color) -> Array:
 	var paint := hull_col.lerp(Color(0.86, 0.84, 0.8), 0.55).darkened(0.08)
 	return ["paint:#" + paint.to_html(false), "metal:#" + hull_col.to_html(false)]
 
+## Бур вместо кисти: муфта, корпус с медными кольцами, сверло в узле bit
+## (крутится при работе), у острия — узел drill_tip для пыли.
+static func _tool_drill(n: Node3D, at: Vector3, ax: Vector3, metal: String) -> void:
+	ring(n, at, ax, 0.03, 0.045, metal)
+	rod(n, at, at + ax * 0.13, 0.048, "dark", 0.042)
+	for t in [0.03, 0.09]:
+		ring(n, at + ax * t, ax, 0.045, 0.055, metal)
+	var bit := Node3D.new()
+	bit.name = "bit"
+	var y := ax
+	var ref := Vector3.FORWARD if absf(y.dot(Vector3.FORWARD)) < 0.9 else Vector3.RIGHT
+	var x := y.cross(ref).normalized()
+	bit.transform = Transform3D(Basis(x, y, x.cross(y)), at + ax * 0.13)
+	n.add_child(bit)
+	rod(bit, Vector3.ZERO, Vector3(0, 0.24, 0), 0.04, "steel", 0.0)
+	for k in 4:
+		var yy := 0.04 + k * 0.045
+		var rr := 0.036 * (1.0 - yy / 0.24)
+		var sp := ring(bit, Vector3(0, yy, 0), Vector3(0.25, 1, 0).normalized(), rr, rr + 0.008, "accent")
+		sp.rotation.y += k * 0.8
+	_socket(bit, "drill_tip", Vector3(0, 0.25, 0))
+
 ## Кость рига: узел в точке сустава (в покое без поворота).
 static func _bone(bname: String, pos: Vector3, parent: Node3D = null, parent_pos := Vector3.ZERO) -> Node3D:
 	var b := Node3D.new()
@@ -1095,8 +1133,17 @@ static func _clean(n: Node3D, hull_col: Color) -> void:
 				ring(n, t0.lerp(t1, t), ax, 0.024, 0.031, "dark")
 			hose(n, el + Vector3(0.05, 0.02, -0.05), el + Vector3(0.1, -0.02, -0.06), t0 + Vector3(0.03, 0.04, -0.04), t0 + Vector3(0.0, 0.0, -0.02), 0.011, "rubber", 6)
 		ball(n, ha, 0.03, "dark")
-		hand(n, ha, (ha - el).normalized() + Vector3(0, -0.6, 0), Vector3(-sg, 0, 0), paint, 1.25)
+		var hnd := hand(n, ha, (ha - el).normalized() + Vector3(0, -0.6, 0), Vector3(-sg, 0, 0), paint, 1.25, "hand_" + side)
 		_socket(n, "socket_hand_" + side, ha + Vector3(0, -0.12, 0))
+		var ax := (ha - el).normalized()
+		if side == "l":
+			# Ствол-гнездо выстреливающейся кисти: тёмный цилиндр с медным ободом.
+			rod(n, el.lerp(ha, 0.78), ha - ax * 0.005, 0.047, "dark")
+			ring(n, ha - ax * 0.01, ax, 0.04, 0.052, metal)
+			_socket(n, "fist_mouth", ha - ax * 0.01)
+		elif tool_r == "drill":
+			hnd.visible = false
+			_tool_drill(n, ha, ax, metal)
 		_grab(n, k0, elb, el)
 	# --- Ноги.
 	for side in ["l", "r"]:
@@ -1135,6 +1182,9 @@ static func _clean(n: Node3D, hull_col: Color) -> void:
 	var anim := RobotAnim.new()
 	anim.name = "anim"
 	n.add_child(anim)
+	var fist := RobotFist.new()
+	fist.name = "fist"
+	n.add_child(fist)
 
 ## «Компаньон»: коренастый, торс-яйцо, крупная голова на плечах, короткие толстые
 ## конечности, крупные кисти и ступни.
