@@ -146,8 +146,9 @@ func reveal(p: Vector3, under := false) -> void:
 			if v > img.get_pixel(i, j).r:
 				img.set_pixel(i, j, Color(v, v, v))
 				_fog_dirty = true
+	# Подземное находится только снизу: с поверхности друз в зале не видно.
 	for m in markers:
-		if not m.found and m.pos.distance_to(p) < (FIND_R if m.under or under else REVEAL_R):
+		if not m.found and (under or not m.under) and m.pos.distance_to(p) < (FIND_R if under else REVEAL_R):
 			m.found = true
 
 ## Разведано ли место (0..1) на поверхности или под землёй.

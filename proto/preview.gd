@@ -771,6 +771,8 @@ func _lab() -> void:
 		lab_panel.pad = true
 	if hud != null:
 		hud.knowledge = lab_desk
+		if hud.radar != null:
+			lab_panel._feed.offset_top += ProtoRadar.D + 10.0   # лента находок — под радаром и заводом
 	if lab_demo:
 		_lab_demo.call_deferred()
 
