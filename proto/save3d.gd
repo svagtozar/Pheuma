@@ -6,7 +6,8 @@ extends Node
 ##   робот — место, поворот, камера; груз — robot.get_meta("cargo") (Array[Portion]);
 ##   добытые друзы — мета "mined" корня сцены (id задаёт бурение; при загрузке
 ##   корень получает restore_mined(ids), если такой метод есть);
-##   пневмозавод — детали, их груз, газ и капсулы (корень.pneu, если он есть).
+##   пневмозавод — детали, их груз, газ и капсулы (корень.pneu, если он есть);
+##   ран — цель, прокачка и события (корень.run — ProtoRun, если он есть).
 ## Порции пишутся как в 2D-сохранении (SaveGame.p_to), производные материалы —
 ## тоже, чтобы продукты завода пережили перезапуск.
 ## Когда: раз в AUTOSAVE_SEC, при смене планеты и выходе, по F5 / R3 (нажать
@@ -148,6 +149,9 @@ static func to_dict(r: Node3D) -> Dictionary:
 	var net = r.get("pneu")
 	if net != null:
 		d.pneumatics = _net_to(net)
+	var run = r.get("run")
+	if run != null:
+		d.run = run.to_dict()
 	return d
 
 static func apply(r: Node3D, d: Dictionary) -> void:
@@ -178,6 +182,10 @@ static func apply(r: Node3D, d: Dictionary) -> void:
 	var net = r.get("pneu")
 	if net != null and d.has("pneumatics"):
 		_net_from(net, planet, d.pneumatics)
+	# Ран (цель, прокачка, события) — ProtoRun; счётчики сверяет по заводу.
+	var run = r.get("run")
+	if run != null and d.has("run"):
+		run.from_dict(d.run)
 
 # ---------------------------------------------------------------- пневмозавод
 

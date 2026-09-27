@@ -36,6 +36,7 @@ const HINTS_WALK := [
 	["Бур", &"tool_work"],
 	["Кисть", &"fist_fire"],
 	["Стройка", &"build_mode"],
+	["Меню", &"run_menu"],
 ]
 const HINTS_BUILD := [
 	["Деталь", &"build_prev", &"build_next"],
