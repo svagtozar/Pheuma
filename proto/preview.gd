@@ -36,6 +36,9 @@ extends Node3D
 ##   Разведка материалов (ProtoLabDesk, ProtoLabPanel): Z / B — коснуться друзы, машины
 ##   или груза и открыть карточку (пробы, догадки), V / RB — анализатор; в линии
 ##   завода — лаборатория. --lab — открыть карточку сразу (для кадра)
+##   Карта (ProtoMapData): радар в углу HUD и полноэкранная 3D-карта (ProtoMapView) —
+##   M / View; туман над неразведанным, пещеры рентгеном. --map — открыть карту
+##   сразу (для кадра; разведан путь от завода к пещере), --map=all — всё разведано
 ##   Обучение первых минут (ProtoTutorial) — в --play, пока не пройдено; --tutorial —
 ##   заново, --tutorial=N — с шага N (для кадра), --no-tutorial — без него
 ##   --robot=clean (по умолчанию; другой вариант из RobotDesigns или old — прежний
@@ -44,6 +47,7 @@ extends Node3D
 ## меню (ProtoMainMenu, proto/menu.tscn): продолжить, новая планета, настройки;
 ## оттуда — сюда, сразу с управлением. Start или Esc — пауза (меню рана: настройки,
 ## сохранить, новая планета, в главное меню, выход). С --screenshot меню пропускается.
+## M / View — карта; в ней Y — новая планета (тот же выбор планеты, что в меню).
 ## Планета — настоящий генератор: теги задают небо, свет и дымку, жидкие при её
 ## температуре материалы — реки и озёра, твёрдые — корпуса машин. Форма рельефа,
 ## тип пещеры, облик кристаллов и гравитация — по тегам (ProtoWorldStyle).
@@ -89,6 +93,13 @@ var _strike_seen = null
 var lab_desk: ProtoLabDesk   # знания о веществах (касание, пробы, догадки, лаборатория)
 var lab_panel: ProtoLabPanel
 var lab_demo := false        # --lab: карточка материала открыта с самого начала
+var map_data: ProtoMapData   # рельеф сверху, разведанное, метки — для радара и карты
+var map_view: ProtoMapView
+var map_demo := ""           # --map / --map=all: карта открыта с самого начала
+var _map_meshes: Array = []  # сетки рельефа: карта рисует их же
+var _map_caves: Array = []
+var _map_water: Array = []   # [[сетка, цвет]]
+var _map_t := 0.0
 var bench_out := ""          # --bench=путь.json: куда записать отчёт --auto=bench
 var load_ms := {}            # время загрузки по этапам (для --auto=bench и лога)
 var _lap_t := 0
@@ -147,6 +158,8 @@ func _ready() -> void:
 			open_win = a.substr(7)
 			want_run = true
 		elif a == "--lab": lab_demo = true
+		elif a == "--map": map_demo = "route"
+		elif a.begins_with("--map="): map_demo = a.substr(6)
 		elif a.begins_with("--bench="): bench_out = a.substr(8)
 		elif a == "--deck": ProtoDeck.active = true
 		elif a == "--tutorial": tutorial_mode = "0"
@@ -178,6 +191,8 @@ func _ready() -> void:
 	print("Рельеф %d×%d×%d: %d мс, вершин %d + пещера %d" % [terrain.sx, terrain.sy, terrain.sz, Time.get_ticks_msec() - t0,
 		mesh.surface_get_array_len(0), cmesh.surface_get_array_len(0)])
 	var tm := terrain.material()
+	_map_meshes = [mesh, cmesh]
+	_map_caves = [cmesh]
 	for m in [mesh, cmesh]:
 		var ground := MeshInstance3D.new()
 		ground.name = "ground" if m == mesh else "ground_cave"
@@ -197,6 +212,7 @@ func _ready() -> void:
 	_lap("factory")
 	_robot_and_camera()
 	_caption()
+	_map_data()
 	_lap("robot")
 	if play or auto != "":
 		var pl := ProtoPlayer.new()
@@ -256,6 +272,7 @@ func _ready() -> void:
 	_tutorial()
 	if play and auto == "" and show_menu:
 		_controls_menu()
+	_map_view()
 	if play and auto == "":
 		saves = ProtoSave.new()
 		saves.name = "saves"
@@ -327,6 +344,7 @@ func _liquids() -> void:
 		func(x, z): return abs(z - terrain.river_z(x)) < 6.0 and x > terrain.lake_c.x + 2.0)
 	rv.material_override = ProtoLiquids.material(river_mat, planet.ambient_temp)
 	add_child(rv)
+	_map_water.append([rv.mesh, river_mat.color])
 	var rl := ProtoLiquids.look(river_mat, planet.ambient_temp)
 	if rl.vapor or rl.haze:
 		add_child(ProtoLiquids.vapor(Vector3(40, terrain.river_level_at(40) + 0.8, 58), Vector3(38, 0.5, 5), river_mat.color, rl.haze))
@@ -352,6 +370,7 @@ func _liquid_surface(s: Substance, level: float, area: Callable, vpos: Vector3, 
 	mi.mesh = ProtoLiquids.surface_mesh(terrain, level, area)
 	mi.material_override = ProtoLiquids.material(s, planet.ambient_temp)
 	add_child(mi)
+	_map_water.append([mi.mesh, s.color])
 	var look := ProtoLiquids.look(s, planet.ambient_temp)
 	if look.vapor or look.haze:
 		add_child(ProtoLiquids.vapor(vpos, vext, s.color, look.haze))
@@ -1073,6 +1092,7 @@ func _hud() -> void:
 	if OS.has_feature("play3d"):
 		# Выход — из меню рана (Esc / Menu, строка «Меню» в HUD).
 		hud.extra_hints = [["Сохранить", "F5", "R3"]]
+	hud.map = map_data
 	add_child(hud)
 
 ## Обучение первых минут: в игре — пока не пройдено или не закрыто
@@ -1105,6 +1125,11 @@ func _lab() -> void:
 		lab_panel.pad = true
 	if hud != null:
 		hud.knowledge = lab_desk
+		if hud.radar != null:
+			# Лента находок — слева от радара (справа под ним завод и подсказки).
+			lab_panel._feed.offset_top = ProtoHud.PAD
+			lab_panel._feed.offset_left -= ProtoRadar.D + 12.0
+			lab_panel._feed.offset_right -= ProtoRadar.D + 12.0
 	if lab_demo:
 		_lab_demo.call_deferred()
 
@@ -1164,6 +1189,10 @@ func _controls_menu() -> void:
 
 func _process(dt: float) -> void:
 	_t += dt
+	_map_t -= dt
+	if map_data != null and _map_t <= 0.0:
+		_map_t = 0.5
+		_map_mined()
 	if hurt_prefix != "" and health != null:
 		_hurt_demo(dt)
 	if run != null:
@@ -1179,6 +1208,96 @@ func _process(dt: float) -> void:
 		print("Кадров в секунду: ", Engine.get_frames_per_second(), " — скриншот: ", shot_path)
 		shot_path = ""
 		get_tree().quit(0)
+
+# ---------------------------------------------------------------- карта
+
+## Карта сверху: рельеф и цвет грунта (как у сетки), вода, пустоты под землёй
+## и метки — завод, вход в пещеру, зал, друзы.
+func _map_data() -> void:
+	var t0 := Time.get_ticks_msec()
+	map_data = ProtoMapData.new(Vector2.ZERO, Vector2(terrain.sx, terrain.sz))
+	map_data.name = planet.name
+	var liq := _liquid_mats()
+	var river_c: Color = liq[0].color if not liq.is_empty() else Color(0, 0, 0, 0)
+	var lake_c: Color = liq[1].color if liq.size() > 1 else river_c
+	map_data.bake(func(x, z): return terrain.surface_h(x, z),
+		func(x, z, h, n):
+			var c: Color = terrain._color(Vector3(x, h, z), n)
+			if river_c.a > 0.0:
+				if Vector2(x, z).distance_to(terrain.lake_c) < terrain.lake_r + 4.5 and h < terrain.lake_level:
+					c = lake_c.darkened(0.15)
+				elif absf(z - terrain.river_z(x)) < 6.0 and x > terrain.lake_c.x + 2.0 and h < terrain.river_level_at(x):
+					c = river_c.darkened(0.15)
+			return c)
+	map_data.bake_caves(func(x, z):
+		var top := terrain.surface_h(x, z) - 2.5
+		var y := 2.0
+		while y < top:
+			if not terrain.solid(x, y, z):
+				return true
+			y += 1.0
+		return false)
+	if pneu_view != null:
+		map_data.add_marker("factory", pneu_view.origin)
+	map_data.add_marker("cave", terrain.cave_entry)
+	map_data.add_marker("hall", terrain.cave_c, "", true)
+	if mining != null:
+		for d in mining.druses:
+			if d.crystals.is_empty():
+				continue
+			var p := Vector3.ZERO
+			for c in d.crystals:
+				p += c.global_position / d.crystals.size()
+			var m := map_data.add_marker("druse", p, "", p.y < terrain.surface_h(p.x, p.z) - 2.0)
+			m.druse = d
+	print("Карта: %d мс, меток %d" % [Time.get_ticks_msec() - t0, map_data.markers.size()])
+
+## Выбуренные друзы — серым.
+func _map_mined() -> void:
+	for m in map_data.markers:
+		if m.kind == "druse" and m.has("druse"):
+			var left: Array = m.druse.crystals.filter(func(c): return is_instance_valid(c) and not c.has_meta("broken"))
+			if left.is_empty():
+				m.kind = "mined"
+				m.color = ProtoMapData.KINDS.mined[1]
+
+## Полноэкранная 3D-карта (M / View). Узел — последним: кнопки сначала ей.
+func _map_view() -> void:
+	if not (play or map_demo != ""):
+		return
+	map_view = ProtoMapView.new()
+	map_view.name = "map"
+	add_child(map_view)
+	map_view.setup(map_data, robot, _map_meshes, _map_caves, _map_water)
+	map_view.cam_main = cam
+	if hud_pad:
+		map_view.pad = true
+	if OS.has_feature("play3d"):
+		map_view.on_next_planet = _next_planet
+	if map_demo != "":
+		_map_demo.call_deferred()
+
+## Кадр карты: разведан путь от робота к заводу, ко входу в пещеру и в зал.
+func _map_demo() -> void:
+	if map_demo == "all":
+		map_data.reveal_all()
+	else:
+		var pts: Array = [robot.global_position, pneu_view.origin if pneu_view else robot.global_position, terrain.cave_entry]
+		for i in pts.size() - 1:
+			var a: Vector3 = pts[i]
+			var b: Vector3 = pts[i + 1]
+			for k in 21:
+				var p := a.lerp(b, k / 20.0)
+				map_data.reveal(Vector3(p.x, terrain.surface_h(p.x, p.z), p.z))
+		var hall := terrain.cave_c
+		for k in 21:
+			var p := terrain.cave_entry.lerp(hall, k / 20.0) + Vector3(0, -1.5, 0)
+			map_data.reveal(p, true)
+		for k in 12:
+			var an := TAU * k / 12.0
+			map_data.reveal(hall + Vector3(cos(an), 0, sin(an)) * terrain.cave_r * 0.6, true)
+	map_data.flush()
+	map_view.show_map()
 
 # ---------------------------------------------------------------- ран
 

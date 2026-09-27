@@ -39,6 +39,9 @@ var _yaw := PI
 var cam_yaw := 0.0               # 0 — камера смотрит на север, как 2D
 var cam_tilt := 0.0              # -1..1 — ниже/выше обычного
 var build_ms := 0
+var map_data: ProtoMapData      # радар (ProtoRadar) в левом нижнем углу
+var radar: ProtoRadar
+var _radar_layer: CanvasLayer
 var hurt: ProtoHurtFx
 var _hp_last := -1.0
 var _hurt_acc := 0.0
@@ -92,6 +95,7 @@ func set_world(w: World) -> void:
 	_zone.material_override = ProtoMachines.glow(Color(1.0, 0.45, 0.2), 1.5)
 	_zone.visible = false
 	_content.add_child(_zone)
+	_map()
 	cam = Camera3D.new()
 	cam.fov = 55.0
 	cam.far = 400.0
@@ -122,6 +126,8 @@ func activate(on: bool) -> void:
 			cam.clear_current(false)
 	if _world_env != null:
 		_world_env.environment = env if on else null
+	if _radar_layer != null:
+		_radar_layer.visible = on
 
 # ---------------------------------------------------------------- построение
 
@@ -425,6 +431,56 @@ func _sync(dt: float, force := false) -> void:
 		var seen: bool = world.revealed.has(c) or world.near_robot(c, 4.5)
 		_deposits[c][0].visible = left and seen
 		_deposits[c][1].visible = left and not seen
+	_map_markers()
+
+# ---------------------------------------------------------------- радар
+
+## Радар как в 3D-прототипе. Тумана в игре нет (2D-карта видна целиком) —
+## радар показывает рельеф, машины и найденные залежи.
+func _map() -> void:
+	if _radar_layer != null:
+		_radar_layer.queue_free()
+	map_data = ProtoMapData.new(Vector2.ZERO, Vector2(terrain.sx, terrain.sz), 1.0)
+	map_data.name = world.planet.name
+	map_data.bake(terrain.surface_h, func(x, z, h, n): return terrain._color(Vector3(x, h, z), n))
+	map_data.reveal_all()
+	_radar_layer = CanvasLayer.new()
+	_radar_layer.layer = 4
+	add_child(_radar_layer)
+	radar = ProtoRadar.new()
+	radar.setup(map_data, robot)
+	radar.cam = cam
+	radar.span = 40.0
+	radar.icon_k = 0.7
+	_radar_layer.add_child(radar)
+	get_viewport().size_changed.connect(_fit_radar)
+	_fit_radar()
+
+## Левый нижний угол (слева от нижней панели игры), масштаб — как у HUD прототипа.
+func _fit_radar() -> void:
+	if radar == null:
+		return
+	var vs := get_viewport().get_visible_rect().size
+	var k := clampf(minf(vs.x / ProtoHud.BASE.x, vs.y / ProtoHud.BASE.y), 0.75, 2.0)
+	radar.scale = Vector2(k, k)
+	radar.position = Vector2(ProtoHud.PAD, vs.y - (ProtoHud.PAD + ProtoRadar.D) * k)
+
+func _map_markers() -> void:
+	if map_data == null:
+		return
+	map_data.markers.clear()
+	for id in world.machines:
+		var m: Machine = world.machines[id]
+		if m.kind != "pipe":
+			map_data.add_marker("machine", terrain.cell_pos(m.cell)).found = true
+	for c in _deposits:
+		if _deposits[c][0].visible:
+			var dep: Dictionary = world.planet.deposits[c]
+			var s: Substance = world.db.get_sub(dep.sub)
+			var mk := map_data.add_marker("deposit", terrain.cell_pos(c))
+			mk.found = true
+			if s != null:
+				mk.color = s.color.lerp(Color.WHITE, 0.2)
 
 func _process(dt: float) -> void:
 	if world == null or not visible:

@@ -59,7 +59,7 @@ const REBIND := [
 	[&"lab_touch", "Коснуться (карточка материала)"], [&"lab_analyze", "Анализатор"],
 	[&"lab_prev", "Карточка: предыдущий образец"], [&"lab_next", "Карточка: следующий образец"],
 	[&"lab_close", "Карточка: закрыть"],
-	[MENU, "Меню рана"], [SKILLS, "Прокачка"],
+	[MENU, "Меню рана"], [SKILLS, "Прокачка"], [&"map_toggle", "Карта"],
 ]
 
 ## Действие → [мёртвая зона, события...]. Клавиши — физические (раскладка не важна).
@@ -96,6 +96,7 @@ static func ensure() -> void:
 			InputMap.action_add_event(action, spec[i])
 	ProtoBuilder.ensure_actions()
 	ProtoLabPanel.ensure_actions()
+	ProtoMapView.ensure_actions()
 	if not _loaded:
 		_loaded = true
 		load_settings()
@@ -138,7 +139,7 @@ static func _normalize(e: InputEvent) -> InputEvent:
 
 ## Всё как по умолчанию: раскладка, чувствительность, инверсия.
 static func reset_defaults() -> void:
-	for lay: Dictionary in [_layout(), ProtoBuilder.layout(), ProtoLabPanel.layout()]:
+	for lay: Dictionary in [_layout(), ProtoBuilder.layout(), ProtoLabPanel.layout(), ProtoMapView.layout()]:
 		for a in lay:
 			if InputMap.has_action(a):
 				InputMap.erase_action(a)
