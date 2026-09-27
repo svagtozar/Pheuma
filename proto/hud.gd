@@ -9,6 +9,7 @@ extends CanvasLayer
 ##   robot.get_meta("cargo")        — Array[Portion], груз робота
 ##   factory: pressure/max_p/parts  — ProtoPneumatics (если есть)
 ##   builder: active/kind()/material()/note — ProtoBuilder (если есть)
+##   robot.get_meta("health"): hp/max_hp/status/tone — ProtoHealth (если есть)
 
 const BASE := Vector2(1280, 800)
 const PAD := 16.0
@@ -33,6 +34,8 @@ const PAD_COLORS := {"A": Color(0.33, 0.66, 0.2), "B": Color(0.78, 0.2, 0.18),
 const HINTS_WALK := [
 	["Ходьба", &"move_forward", &"move_left", &"move_back", &"move_right"],
 	["Камера", &"cam_left", &"cam_right", &"cam_up", &"cam_down"],
+	["Бег", &"sprint"],
+	["Прыжок", &"jump"],
 	["Бур", &"tool_work"],
 	["Кисть", &"fist_fire"],
 	["Стройка", &"build_mode"],
@@ -49,6 +52,7 @@ const HINTS_BUILD := [
 	["Выйти из стройки", &"build_mode"],
 ]
 const UNLOAD := &"cargo_unload"
+const REPAIR := &"repair"
 
 var robot: Node3D
 var factory: Object              # ProtoPneumatics или null
@@ -59,6 +63,8 @@ var extra_hints: Array = []      # [[подпись, клавиша, кнопк�
 
 var _root: Control
 var _cargo_box: VBoxContainer
+var _health_panel: PanelContainer
+var _health_box: VBoxContainer
 var _cargo_title: Label
 var _factory_panel: PanelContainer
 var _factory_box: VBoxContainer
@@ -77,12 +83,22 @@ func _ready() -> void:
 	_root = Control.new()
 	_root.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	add_child(_root)
+	# Слева внизу столбиком: прочность корпуса над грузом.
+	var left := VBoxContainer.new()
+	left.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	left.add_theme_constant_override("separation", 8)
+	_root.add_child(left)
+	left.set_anchors_preset(Control.PRESET_BOTTOM_LEFT)
+	left.grow_vertical = Control.GROW_DIRECTION_BEGIN
+	_health_panel = _panel()
+	_health_box = _health_panel.get_child(0)
+	_health_panel.custom_minimum_size.x = 260
+	_health_panel.visible = false
+	left.add_child(_health_panel)
 	var cargo := _panel()
 	_cargo_box = cargo.get_child(0)
 	_cargo_title = _label("", FONT, TEXT)
-	_root.add_child(cargo)
-	cargo.set_anchors_preset(Control.PRESET_BOTTOM_LEFT)
-	cargo.grow_vertical = Control.GROW_DIRECTION_BEGIN
+	left.add_child(cargo)
 	_factory_panel = _panel()
 	_factory_box = _factory_panel.get_child(0)
 	_root.add_child(_factory_panel)
@@ -107,7 +123,7 @@ func _ready() -> void:
 	_toast.grow_vertical = Control.GROW_DIRECTION_BEGIN
 	_toast.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_root.add_child(_toast)
-	for p in [cargo, _factory_panel, hints]:
+	for p in [left, _factory_panel, hints]:
 		_margins(p)
 	get_viewport().size_changed.connect(_fit)
 	_fit()
@@ -155,7 +171,8 @@ func refresh() -> void:
 		for r in cg.rows:
 			kn += knowledge.short_label(r.sub)
 	var busy: bool = robot != null and bool(robot.get_meta("ui_busy", false))
-	var key := str([cg, fs, part, note, pad, building, kn, busy])
+	var hs := health_summary(_health())
+	var key := str([cg, fs, part, note, pad, building, kn, busy, hs])
 	if key == _key:
 		return
 	_key = key
@@ -163,10 +180,14 @@ func refresh() -> void:
 	# Открыта карточка материала (ProtoLabPanel) — груз виден в ней, панель прячем.
 	_cargo_box.get_parent().visible = not (robot != null and bool(robot.get_meta("ui_busy", false)))
 	_fill_factory(fs)
+	_fill_health(hs)
 	_fill_build(part)
-	_fill_hints(building, cg.kg > 0.0)
+	_fill_hints(building, cg.kg > 0.0, hs.get("repair", false))
 	_toast.text = note
 	_toast.offset_bottom = -PAD - (_build_panel.size.y + 12.0 if building else 12.0)
+
+func _health() -> Object:
+	return robot.get_meta("health", null) if robot != null else null
 
 func _cargo() -> Array:
 	if robot == null or not robot.has_meta("cargo"):
@@ -190,6 +211,16 @@ static func cargo_summary(cargo: Array) -> Dictionary:
 	var rows: Array = by.values()
 	rows.sort_custom(func(a, b): return a.kg > b.kg)
 	return {"kg": total, "rows": rows}
+
+## Прочность корпуса: {hp, max, frac, status, tone, repair}; пусто — нет ProtoHealth.
+## Числа округлены — HUD перестраивается, только когда меняется видимое.
+static func health_summary(h: Object) -> Dictionary:
+	if h == null:
+		return {}
+	var mx: float = maxf(float(h.max_hp), 1.0)
+	var hp: float = clampf(float(h.hp), 0.0, mx)
+	return {"hp": roundi(hp), "max": roundi(mx), "frac": snappedf(hp / mx, 0.01), "status": str(h.status),
+		"tone": str(h.tone), "repair": h.has_method("can_repair_from_cargo") and h.can_repair_from_cargo()}
 
 ## Состояние завода: {built, parts, pumps, p, max_p, load, state, tone, stored}.
 ## load — самая нагруженная деталь (давление / предел её материала);
@@ -316,16 +347,22 @@ static func _event_glyph(e: InputEvent, for_pad: bool) -> String:
 	return ""
 
 ## Строки подсказок для текущего режима: [[подпись, клавиша]].
-func hint_rows(building: bool, has_cargo: bool) -> Array:
+func hint_rows(building: bool, has_cargo: bool, can_repair := false) -> Array:
 	var rows: Array = []
 	for h in (HINTS_BUILD if building else HINTS_WALK):
 		var g := glyph(h.slice(1), pad)
+		if h[1] == &"cam_left" and not pad:
+			g = "Мышь" + (" " + g if g != "" else "")   # камера — мышью (ProtoPlayer)
 		if g != "":
 			rows.append([h[0], g])
 	if has_cargo and not building:
 		var g := glyph([UNLOAD], pad)
 		if g != "":
 			rows.append(["Выгрузить в приёмник", g])
+	if can_repair and not building:
+		var g := glyph([REPAIR], pad)
+		if g != "":
+			rows.append(["Починить из груза", g])
 	for h in extra_hints:
 		rows.append([h[0], h[2] if pad else h[1]])
 	return rows
@@ -356,6 +393,32 @@ func _fill_cargo(cg: Dictionary) -> void:
 		_cargo_box.add_child(line)
 	if rows.size() > CARGO_ROWS:
 		_cargo_box.add_child(_label("и ещё %d" % (rows.size() - CARGO_ROWS), FONT_SMALL, DIM))
+
+func _fill_health(hs: Dictionary) -> void:
+	_health_panel.visible = not hs.is_empty()
+	if hs.is_empty():
+		return
+	_clear(_health_box)
+	var tone: Color = {"ok": OK, "warn": WARN, "bad": BAD}.get(hs.tone, DIM)
+	var head := HBoxContainer.new()
+	head.add_theme_constant_override("separation", 10)
+	head.add_child(_label("КОРПУС", FONT_SMALL, DIM))
+	var v := _label("%d / %d" % [hs.hp, hs.max], FONT, TEXT)
+	v.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	v.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	head.add_child(v)
+	_health_box.add_child(head)
+	var bar := Control.new()
+	bar.custom_minimum_size = Vector2(232, 12)
+	var frac: float = hs.frac
+	var fill := OK if frac > 0.6 else (WARN if frac > 0.3 else BAD)
+	bar.draw.connect(func():
+		var r := Rect2(Vector2.ZERO, bar.size)
+		bar.draw_rect(r, Color(1, 1, 1, 0.12))
+		bar.draw_rect(Rect2(r.position, Vector2(r.size.x * frac, r.size.y)), fill))
+	_health_box.add_child(bar)
+	if hs.status != "":
+		_health_box.add_child(_label(hs.status, FONT_SMALL, tone if hs.tone != "ok" else OK))
 
 func _fill_factory(fs: Dictionary) -> void:
 	_factory_panel.visible = fs.built
@@ -428,9 +491,9 @@ func _fill_build(part: Dictionary) -> void:
 	_build_panel.offset_top = -PAD - _build_panel.get_combined_minimum_size().y
 	_build_panel.offset_bottom = -PAD
 
-func _fill_hints(building: bool, has_cargo: bool) -> void:
+func _fill_hints(building: bool, has_cargo: bool, can_repair := false) -> void:
 	_clear(_hints_box)
-	for r in hint_rows(building, has_cargo):
+	for r in hint_rows(building, has_cargo, can_repair):
 		var line := HBoxContainer.new()
 		line.add_theme_constant_override("separation", 10)
 		var chips := HBoxContainer.new()

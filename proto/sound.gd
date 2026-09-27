@@ -424,6 +424,57 @@ func clank() -> PackedFloat32Array:
 		out[i] = v * 0.3 * minf(1.0, t * 3000.0)
 	return out
 
+## Удар по корпусу (падение, поломка): глухой бум, скрежет вмятины и звон.
+## Статические — их зовёт и ProtoHurtFx в F3-виде игры, без узла звука.
+static func crunch() -> PackedFloat32Array:
+	var r := RandomNumberGenerator.new()
+	r.seed = 21
+	var out := _sbuf(0.6)
+	var y := 0.0
+	var ph := 0.0
+	for i in out.size():
+		var t := float(i) / RATE
+		ph += TAU * lerpf(90.0, 42.0, minf(t / 0.2, 1.0)) / RATE
+		y += 0.35 * (r.randf_range(-1.0, 1.0) - y)
+		var v := sin(ph) * 0.7 * exp(-t * 9.0)
+		v += y * 0.6 * exp(-t * 16.0)
+		v += (sin(TAU * 830.0 * t) + 0.6 * sin(TAU * 2270.0 * t)) * 0.1 * exp(-t * 7.0)
+		out[i] = v * minf(1.0, t * 2000.0)
+	return out
+
+## Шипение и треск (жар, кислота): петля ровно в секунду.
+static func sizzle_loop() -> PackedFloat32Array:
+	var r := RandomNumberGenerator.new()
+	r.seed = 22
+	var out := _sbuf(1.0)
+	var y := 0.0
+	var hp := 0.0
+	for i in out.size():
+		var t := float(i) / RATE
+		y += 0.8 * (r.randf_range(-1.0, 1.0) - y)
+		hp = y - hp * 0.2
+		out[i] = hp * 0.22 * (0.7 + 0.3 * sin(TAU * 7.0 * t))
+	for c in 40:
+		var at := r.randi_range(0, out.size() - 200)
+		var amp := r.randf_range(0.2, 0.6)
+		for i in 160:
+			out[at + i] += r.randf_range(-1.0, 1.0) * amp * exp(-i / 25.0)
+	return out
+
+## Тревога: два коротких писка (корпус почти разрушен).
+static func alarm() -> PackedFloat32Array:
+	var out := _sbuf(0.5)
+	for i in out.size():
+		var t := float(i) / RATE
+		var on := 1.0 if fmod(t, 0.25) < 0.12 else 0.0
+		out[i] = sin(TAU * (1320.0 if t < 0.25 else 990.0) * t) * 0.25 * on
+	return out
+
+static func _sbuf(dur: float) -> PackedFloat32Array:
+	var b := PackedFloat32Array()
+	b.resize(int(dur * RATE))
+	return b
+
 ## Петля без щелчка: хвост длиной xf сводится крест-накрест с началом.
 static func loopify(buf: PackedFloat32Array, xf: int) -> PackedFloat32Array:
 	var n := buf.size() - xf
