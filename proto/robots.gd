@@ -1,6 +1,6 @@
 extends Node3D
 ## Витрина вариантов робота (к игре не подключена).
-##   godot --path . res://proto/robots.tscn -- --shot=front|back|top|close:N|closeback:N|head:N|hand:N|far:N|tank:N|side:N|tools:N  [--anim=idle|walk|demo|drill|fist] [--tool=drill] [--t=сек] [--sheet=кадров] [--only=N] --screenshot=путь.png
+##   godot --path . res://proto/robots.tscn -- --shot=front|back|top|close:N|closeback:N|head:N|hand:N|drill:N|far:N|tank:N|side:N|tools:N  [--anim=idle|walk|demo|drill|fist] [--tool=drill] [--t=сек] [--sheet=кадров] [--only=N] --screenshot=путь.png
 
 var shot := "front"
 var shot_path := ""
@@ -133,6 +133,12 @@ func _camera(n: int) -> void:
 		cam.position = Vector3(ox - 2.6, 2.0, 3.4)
 		cam.look_at(Vector3(ox + 0.3, 1.1, 1.3))
 		cam.fov = 45.0
+	if shot.begins_with("drill:"):
+		# Правое предплечье с буром в рабочей позе: справа-спереди.
+		var dx := (int(shot.substr(6)) - (n - 1) / 2.0) * GAP
+		cam.position = Vector3(dx + 1.35, 1.6, 1.25)
+		cam.look_at(Vector3(dx + 0.1, 1.15, 0.25))
+		cam.fov = 42.0
 	if shot.begins_with("tank:"):
 		var gx := (int(shot.substr(5)) - (n - 1) / 2.0) * GAP
 		cam.position = Vector3(gx + 0.75, 1.6, -0.9)
@@ -198,7 +204,7 @@ func _sheet_step() -> void:
 		"walk": period = RobotAnim.CYCLE / RobotAnim.WALK_SPEED
 		"demo": period = 4.8
 		"fist": period = 2.4
-		"drill": period = 1.0
+		"drill": period = 3.0
 	RobotAnim.fixed_t = sheet_i * period / sheet
 	sheet_i += 1
 	sheet_wait = 2
