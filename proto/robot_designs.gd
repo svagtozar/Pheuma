@@ -505,12 +505,14 @@ static func blade(p: Node3D, l: float, w0: float, w1: float, t: float, skew: flo
 	return mi
 
 ## Антенна-«ухо»: узел-шарнир (поворачивается в игре) и плоская пластина по
-## диагонали вверх-назад-наружу со светящимся внутренним ребром.
+## диагонали вверх-назад-наружу, плоскостью поперёк объектива, со светящимся
+## передним ребром.
 static func _ear(n: Node3D, pivot: Vector3, sg: float, hull: String) -> Node3D:
 	var e := Node3D.new()
 	e.name = "ear_l" if sg < 0.0 else "ear_r"
 	var y := Vector3(sg * 0.62, 0.74, -0.26).normalized()
-	var x := y.cross(Vector3.FORWARD).normalized()
+	# Плоскость пластины перпендикулярна объективу: ширина — вперёд, толщина — вбок.
+	var x := (Vector3.BACK - y * y.dot(Vector3.BACK)).normalized()
 	e.transform = Transform3D(Basis(x, y, x.cross(y).normalized()), pivot)
 	n.add_child(e)
 	ball(e, Vector3.ZERO, 0.022, "dark")
@@ -518,10 +520,10 @@ static func _ear(n: Node3D, pivot: Vector3, sg: float, hull: String) -> Node3D:
 	var l := 0.21
 	var w0 := 0.09
 	var w1 := 0.05
-	blade(e, l, w0, w1, 0.012, sg * (w0 - w1) / 2.0, "dark")
+	blade(e, l, w0, w1, 0.012, (w0 - w1) / 2.0, "dark")
 	blade(e, l * 0.35, w0 * 1.05, w0 * 0.9, 0.016, 0.0, hull)
 	for z in [-0.0075, 0.0075]:
-		box(e, Vector3(sg * (w0 / 2.0 - 0.006), l * 0.62, z), Vector3(0.008, l * 0.7, 0.003), "glow")
+		box(e, Vector3(w0 / 2.0 - 0.006, l * 0.62, z), Vector3(0.008, l * 0.7, 0.003), "glow")
 	return e
 
 ## По концепт-арту: голова-объектив с антеннами-ушами, тонкий каркас с открытым
