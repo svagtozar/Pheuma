@@ -36,6 +36,7 @@ var shot_n := 0
 var route_len := 0.0
 var route_done := 0.0
 var fist: RobotFist
+var finale := -1.0           # --auto=sound: время после конца маршрута (бур, кисть)
 
 func setup(r: Node3D, c: Camera3D, t: ProtoTerrain, e: Environment) -> void:
 	robot = r
@@ -69,6 +70,37 @@ func auto_cave(prefix: String) -> void:
 		route_len += Vector2(route[i].x, route[i].z).distance_to(Vector2(route[i - 1].x, route[i - 1].z))
 	shots = [0.08, 0.42, 0.72, 1.0]
 	route_i = 1
+
+## Маршрут для проверки звука: снаружи в пещеру, в конце бур у стены и выстрел кистью.
+func auto_sound() -> void:
+	auto_cave("")
+	shots = []
+	finale = 0.0
+
+## Конец маршрута --auto=sound: повернуться к стене, сверлить, выстрелить кистью.
+func _finale(dt: float) -> void:
+	finale += dt
+	if finale < 0.1:
+		var best := Vector3.FORWARD
+		var best_d := 99.0
+		for k in 16:
+			var dir := Vector3(sin(TAU * k / 16.0), 0, cos(TAU * k / 16.0))
+			for d in range(1, 30):
+				var q := robot.position + Vector3(0, 1.1, 0) + dir * (d * 0.25)
+				if terrain.solid(q.x, q.y, q.z):
+					if d < best_d:
+						best_d = d
+						best = dir
+					break
+		robot.rotation.y = atan2(best.x, best.z)
+		cam_yaw = robot.rotation.y
+	if anim:
+		anim.work = move_toward(anim.work, 1.0 if finale > 0.5 and finale < 4.5 else 0.0, dt * 5.0)
+	if fist and finale > 5.5 and fist.state == "dock" and finale < 6.0:
+		var hit := _aim_point()
+		fist.fire(robot.to_local(hit) if hit != Vector3.INF else Vector3(0.9, 1.5, 3.2), false)
+	if finale > 9.0:
+		get_tree().quit(0)
 
 func _unhandled_input(e: InputEvent) -> void:
 	if e is InputEventMouseMotion and Input.is_mouse_button_pressed(MOUSE_BUTTON_RIGHT):
@@ -110,6 +142,8 @@ func _process(dt: float) -> void:
 	else:
 		want = _follow_route()
 		top_speed *= 1.7
+		if finale >= 0.0 and route_i >= route.size():
+			_finale(dt)
 	# Подтягивание: трос тянет робота к кисти.
 	if fist and fist.state == "pull":
 		var tw := robot.to_global(fist.target)
