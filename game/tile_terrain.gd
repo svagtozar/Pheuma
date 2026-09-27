@@ -207,11 +207,28 @@ func cell_pos(c: Vector2i) -> Vector3:
 	var z := (c.y + 0.5) * S
 	return Vector3(x, surface_h(x, z), z)
 
-## Позиция робота игры (в клетках) в 3D.
+## Позиция робота игры (в клетках) в 3D — на видимой сетке рельефа.
 func world_pos(p: Vector2) -> Vector3:
 	var x := p.x * S
 	var z := p.y * S
-	return Vector3(x, surface_h(x, z), z)
+	return Vector3(x, mesh_h(x, z), z)
+
+## Высота видимой сетки (build_height_mesh) в точке: те же узлы через STEP и то
+## же деление квадрата на треугольники, поэтому стопы стоят ровно на ней.
+func mesh_h(x: float, z: float) -> float:
+	var gx := x / STEP
+	var gz := z / STEP
+	var ix := floori(gx)
+	var iz := floori(gz)
+	var fx := gx - ix
+	var fz := gz - iz
+	var a := surface_h(ix * STEP, iz * STEP)
+	var b := surface_h((ix + 1) * STEP, iz * STEP)
+	var c := surface_h(ix * STEP, (iz + 1) * STEP)
+	var d := surface_h((ix + 1) * STEP, (iz + 1) * STEP)
+	if fx >= fz:
+		return a + (b - a) * fx + (d - b) * fz     # треугольник a-b-d
+	return a + (d - c) * fx + (c - a) * fz         # треугольник a-d-c
 
 ## Гладь жидкости на уровне level сеткой STEP в области r: у клеток типа tile (с
 ## запасом в шаг сетки) и там, где рельеф ниже уровня. Край прячется под берегом.

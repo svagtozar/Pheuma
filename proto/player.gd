@@ -37,7 +37,7 @@ var _captured_once := false
 
 const SPRINT_MULT := 2.3     # бег — во столько раз быстрее шага
 const G := 14.0              # м/с² при 1 g (чуть «игровее» настоящих 9.8)
-const JUMP_V := 5.0          # м/с при отрыве: ≈0.9 м на 1 g, на лёгкой планете выше
+const JUMP_V := 5.5          # м/с при отрыве: ≈1.1 м на 1 g (выше трубы), на лёгкой планете выше
 const JUMP_MAX_H := 2.4      # потолок высоты прыжка на совсем лёгкой планете
 const PITCH_MIN := -0.6
 const PITCH_MAX := 1.2
@@ -67,6 +67,13 @@ var jump_t := 0.0
 var jump_prefix := ""
 var jump_shots := 0
 var _was_air := false
+# Проверка столкновений (--auto=bump): упереться в дробилку, перешагнуть трубу.
+var bump_view: ProtoPneumaticsView
+var bump_t := 0.0
+var bump_prefix := ""
+var bump_min := INF
+var bump_top := -INF
+var bump_shot2 := false
 var cam_focus := Vector3.INF # точка, на которую смотрит камера (скрипт добычи); INF — на робота
 var finale := -1.0           # --auto=sound: время после конца маршрута (бур, кисть)
 
@@ -80,6 +87,7 @@ func setup(r: Node3D, c: Camera3D, t: ProtoTerrain, e: Environment) -> void:
 	anim = robot.get_node_or_null("anim")
 	if anim:
 		anim.mode = "play"
+		anim.ground = func(q: Vector3) -> float: return ground_at(q)
 	cam_yaw = robot.rotation.y
 	fist = robot.get_node_or_null("fist")
 	ProtoControls.ensure()
@@ -184,6 +192,11 @@ func _process(dt: float) -> void:
 		if Input.is_action_pressed(ProtoControls.SPRINT): top_speed *= SPRINT_MULT
 		if Input.is_action_just_pressed(ProtoControls.JUMP) and _can_jump():
 			jump()
+		if bump_view != null:
+			inp = Vector2(0, 1)
+			if bump_t > 4.0:
+				top_speed *= SPRINT_MULT
+			_auto_bump(dt)
 		if jump_auto:
 			inp = Vector2(0, 1)
 			top_speed *= SPRINT_MULT
@@ -398,12 +411,12 @@ func _move(d: Vector3) -> void:
 		_settle()
 		return
 	var np := robot.position + d
-	var g := terrain.floor_at(np + Vector3(0, 0.7, 0))
-	# Уступ выше колена за шаг или порода на уровне груди — не пройти
+	var g := ground_at(np + Vector3(0, 0.7, 0))
+	# Уступ выше колена за шаг, порода на уровне груди или машина — не пройти
 	# (в прыжке — порода на уровне ног или груди там, где робот сейчас).
 	var body := maxf(g, robot.position.y)
 	if (g - robot.position.y) > maxf(terrain.style.step_height(), d.length() * 1.6) or terrain.solid(np.x, body + 1.2, np.z) \
-			or (air and terrain.solid(np.x, robot.position.y + 0.3, np.z)):
+			or (air and terrain.solid(np.x, robot.position.y + 0.3, np.z)) or (_hits_machine(Vector3(np.x, body, np.z)) and not _hits_machine(robot.position)):
 		vel *= 0.3
 		return
 	robot.position.x = np.x
@@ -413,7 +426,7 @@ func _move(d: Vector3) -> void:
 func _settle() -> void:
 	if air:
 		return
-	var g := terrain.floor_at(robot.position + Vector3(0, 0.6, 0))
+	var g := ground_at(robot.position + Vector3(0, 0.6, 0))
 	# Пол ушёл вниз больше чем на уступ — не «съезжать», а падать.
 	if robot.position.y - g > terrain.style.step_height() * 1.5 + 0.2:
 		air = true
@@ -485,6 +498,81 @@ func _auto_jump(dt: float) -> void:
 		print("Прыжок: время вышло")
 		get_tree().quit(1)
 
+const BODY_R := 0.3          # радиус корпуса для столкновений с машинами
+
+## Пол под точкой p: первая видимая поверхность вниз — сетка рельефа, настил,
+## деталь завода (тела ProtoMachines); если тел нет — по полю плотности.
+func ground_at(p: Vector3) -> float:
+	var w := robot.get_world_3d() if robot and robot.is_inside_tree() else null
+	if w != null:
+		var q := PhysicsRayQueryParameters3D.create(p, p - Vector3(0, 8.0, 0),
+			ProtoMachines.LAYER_GROUND | ProtoMachines.LAYER_MACHINES)
+		var hit := w.direct_space_state.intersect_ray(q)
+		if not hit.is_empty():
+			return hit.position.y
+	return terrain.floor_at(p)
+
+## Корпус (шары у ног, у пояса и у груди) в машине — не пройти.
+func _hits_machine(at: Vector3) -> bool:
+	var w := robot.get_world_3d() if robot and robot.is_inside_tree() else null
+	if w == null:
+		return false
+	var sp := SphereShape3D.new()
+	sp.radius = BODY_R - 0.02
+	var q := PhysicsShapeQueryParameters3D.new()
+	q.shape = sp
+	q.collision_mask = ProtoMachines.LAYER_MACHINES
+	for h: float in [0.35, 0.8, 1.35]:
+		q.transform = Transform3D(Basis(), at + Vector3(0, h, 0))
+		if not w.direct_space_state.intersect_shape(q, 1).is_empty():
+			return true
+	return false
+
+## Скрипт столкновений: робот идёт на дробилку (клетка 0,0 демо-завода) —
+## должен остановиться у корпуса; потом бежит на трубу (−1,0): она по пояс,
+## перешагнуть нельзя — перепрыгивает. Кадры путь_1/2.png, итог в консоль.
+func auto_bump(view: ProtoPneumaticsView, prefix: String) -> void:
+	bump_view = view
+	bump_prefix = prefix
+	_bump_start(Vector2i(0, 0))
+
+func _bump_start(c: Vector2i) -> void:
+	var at := ProtoPneumatics.cell_pos(bump_view.origin, c)
+	robot.position = Vector3(at.x, at.y + 0.3, at.z + 3.6)
+	robot.position.y = ground_at(robot.position + Vector3(0, 1.0, 0))
+	robot.rotation.y = PI
+	cam_yaw = PI           # вперёд — на −z, к линии завода
+	cam_pitch = 0.35
+	cam_dist = 4.5
+	vel = Vector3.ZERO
+
+func _auto_bump(dt: float) -> void:
+	bump_t += dt
+	var crusher := ProtoPneumatics.cell_pos(bump_view.origin, Vector2i(0, 0))
+	var pipe := ProtoPneumatics.cell_pos(bump_view.origin, Vector2i(-1, 0))
+	if bump_t < 4.0:
+		bump_min = minf(bump_min, Vector2(robot.position.x - crusher.x, robot.position.z - crusher.z).length())
+		if bump_t + dt >= 4.0:
+			_shot("%s_1.png" % bump_prefix)
+			_bump_start(Vector2i(-1, 0))
+	elif bump_t < 9.0:
+		if robot.position.z - pipe.z < 1.15 and robot.position.z > pipe.z and _can_jump():
+			jump()
+		if absf(robot.position.z - pipe.z) < 0.3:
+			bump_top = maxf(bump_top, robot.position.y - pipe.y)
+			if bump_top > 0.05 and not bump_shot2:
+				bump_shot2 = true
+				_shot("%s_2.png" % bump_prefix)
+	else:
+		var passed := robot.position.z < pipe.z - 1.0
+		print("Столкновения: до дробилки %.2f м (упёрся: %s); над трубой +%.2f м, перепрыгнул: %s" % [
+			bump_min, "да" if bump_min > 0.9 else "НЕТ", bump_top, "да" if passed else "НЕТ"])
+		get_tree().quit(0 if bump_min > 0.9 and passed else 1)
+
+func _shot(path: String) -> void:
+	get_viewport().get_texture().get_image().save_png(path)
+	print("кадр: ", path)
+
 ## Прыгать можно с земли и когда руки свободны: не в стройке, не на тросе, не с буром.
 func _can_jump() -> bool:
 	if air or not route.is_empty() or drill_auto:
@@ -512,7 +600,7 @@ func _vertical(dt: float) -> void:
 	if vy > 0.0 and terrain.solid(p.x, p.y + 2.0 + vy * dt, p.z):
 		vy = 0.0
 	robot.position.y += vy * dt
-	var g := terrain.floor_at(robot.position + Vector3(0, 0.6, 0))
+	var g := ground_at(robot.position + Vector3(0, 0.6, 0))
 	if vy <= 0.0 and robot.position.y <= g:
 		robot.position.y = g
 		air = false

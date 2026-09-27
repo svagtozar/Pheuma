@@ -186,6 +186,55 @@ static func slab(size: Vector3, col: Color) -> MeshInstance3D:
 	mi.material_override = m
 	return mi
 
+## Слои столкновений: рельеф и машины (ProtoPlayer ищет пол и упирается в них).
+const LAYER_GROUND := 1
+const LAYER_MACHINES := 2
+
+## Твёрдое тело по видимой сетке (рельеф): робот ставит ноги ровно на неё.
+static func trimesh_body(mesh: Mesh) -> StaticBody3D:
+	var b := StaticBody3D.new()
+	b.collision_layer = LAYER_GROUND
+	b.collision_mask = 0
+	var cs := CollisionShape3D.new()
+	cs.shape = mesh.create_trimesh_shape()
+	b.add_child(cs)
+	return b
+
+## Коробка столкновений по всем сеткам узла n (и его самого), в его пространстве.
+## Низкую коробку (трубу, настил) робот перешагивает как уступ, высокую обходит.
+static func add_box_collider(n: Node3D, layer := LAYER_MACHINES) -> StaticBody3D:
+	var box := AABB()
+	var first := true
+	var meshes: Array = n.find_children("*", "MeshInstance3D", true, false)
+	if n is MeshInstance3D:
+		meshes.append(n)
+	for mi in meshes:
+		var m := mi as MeshInstance3D
+		if m.mesh == null or not m.visible:
+			continue
+		var x := Transform3D()
+		var c: Node = m
+		while c != n and c is Node3D and c != null:
+			x = (c as Node3D).transform * x
+			c = c.get_parent()
+		var bb := x * m.mesh.get_aabb()
+		box = bb if first else box.merge(bb)
+		first = false
+	if first:
+		return null
+	var b := StaticBody3D.new()
+	b.name = "collider"
+	b.collision_layer = layer
+	b.collision_mask = 0
+	var cs := CollisionShape3D.new()
+	var sh := BoxShape3D.new()
+	sh.size = box.size
+	cs.shape = sh
+	cs.position = box.get_center()
+	b.add_child(cs)
+	n.add_child(b)
+	return b
+
 ## Этажерка: четыре стойки и настил на высоте h.
 static func frame(body: Material, h: float) -> Node3D:
 	var n := Node3D.new()

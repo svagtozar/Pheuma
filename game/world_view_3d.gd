@@ -38,6 +38,7 @@ var cam_tilt := 0.0              # -1..1 — ниже/выше обычного
 var build_ms := 0
 
 func set_world(w: World) -> void:
+	ProtoControls.ensure()
 	world = w
 	if _content != null:
 		_content.queue_free()
@@ -245,6 +246,7 @@ func _robot() -> void:
 	anim = robot.get_node_or_null("anim")
 	if anim:
 		anim.mode = "play"          # скорость задаёт вид — по движению робота в мире
+		anim.ground = func(q: Vector3) -> float: return terrain.mesh_h(q.x, q.z)
 	_content.add_child(robot)
 	var lamp := robot.find_child("head_lamp", true, false) as SpotLight3D
 	if lamp:

@@ -71,6 +71,8 @@ func _rebuild() -> void:
 		n.position = ProtoPneumatics.cell_pos(origin, c)
 		add_child(n)
 		_nodes[part.id] = n
+		# Робот не проходит сквозь детали: трубы низкие — на них можно наступить.
+		ProtoMachines.add_box_collider(n)
 		var g := n.find_child("gauge", true, false) as MeshInstance3D
 		if g:
 			_gauges[part.id] = g.material_override

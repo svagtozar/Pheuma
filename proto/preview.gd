@@ -13,6 +13,8 @@ extends Node3D
 ##   --view=factory — пневмозавод крупно; --build — режим стройки (призрак детали)
 ##   В --play: B — стройка, T — деталь, R — повернуть, Пробел — поставить,
 ##   X — разобрать, C — выгрузить груз в приёмник (подробно — ProtoBuilder)
+##   --auto=bump --screenshot=путь.png — упереться в дробилку и перешагнуть трубу
+##   (проверка столкновений), кадры путь_1..2.png
 ##   --auto=jump --screenshot=путь.png — разбег и прыжок, кадры путь_1..4.png
 ##   --auto=sound — тот же маршрут без кадров, в конце бур у стены и выстрел кистью
 ##   (для проверки звука); --record=путь.wav — записать звук, --mute — без звука
@@ -111,6 +113,8 @@ func _ready() -> void:
 		ground.mesh = m
 		ground.material_override = tm
 		add_child(ground)
+		# Пол для робота — та же сетка, что видна (ProtoPlayer.ground_at).
+		add_child(ProtoMachines.trimesh_body(m))
 	_environment()
 	_liquids()
 	_cave_crystals()
@@ -133,6 +137,9 @@ func _ready() -> void:
 			shot_path = ""
 		elif auto == "sound":
 			pl.auto_sound()
+		elif auto == "bump":
+			pl.auto_bump(pneu_view, shot_path.get_basename() if shot_path != "" else "user://bump")
+			shot_path = ""
 		elif auto == "jump":
 			pl.auto_jump(shot_path.get_basename() if shot_path != "" else "user://jump")
 			shot_path = ""
@@ -547,6 +554,7 @@ func _factory() -> void:
 	var slab := ProtoMachines.slab(Vector3(15, 0.6, 9), terrain.ground.lerp(Color(0.5, 0.5, 0.52), 0.6))
 	slab.position = Vector3(pc.x, top - 0.28, pc.z)
 	add_child(slab)
+	ProtoMachines.add_box_collider(slab, ProtoMachines.LAYER_GROUND)
 	pneu = ProtoPneumatics.new(planet)
 	pneu.build_demo(Vector2i(-3, 0), a)
 	pneu.feed(Vector2i(-3, 0), Portion.new(ore, 30.0, planet.ambient_temp))
