@@ -6,6 +6,7 @@ config_version=5
 config/name="Pneuma"
 config/description="Робот, процедурная планета, пневматика и теги материалов."
 run/main_scene="res://game/main.tscn"
+run/main_scene.play3d="res://proto/preview.tscn"
 config/features=PackedStringArray("4.4", "GL Compatibility")
 
 [display]
@@ -13,6 +14,9 @@ config/features=PackedStringArray("4.4", "GL Compatibility")
 window/size/viewport_width=1600
 window/size/viewport_height=900
 window/stretch/aspect="expand"
+window/size/viewport_width.steamdeck=1280
+window/size/viewport_height.steamdeck=800
+window/size/mode.steamdeck=3
 
 [editor_plugins]
 
@@ -23,3 +27,5 @@ enabled=PackedStringArray("res://addons/gut/plugin.cfg")
 renderer/rendering_method="gl_compatibility"
 renderer/rendering_method.mobile="gl_compatibility"
 environment/defaults/default_clear_color=Color(0.07, 0.07, 0.09, 1)
+lights_and_shadows/directional_shadow/size.steamdeck=2048
+lights_and_shadows/directional_shadow/soft_shadow_filter_quality.steamdeck=1
