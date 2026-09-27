@@ -311,7 +311,7 @@ func _machine_node(m: Machine, body: Material) -> Node3D:
 	return n
 
 ## Склад и пневмобатарея 2×2: главная секция несёт общую крышу или тяжёлый ствол.
-func _structure_node(m: Machine, body: Material) -> Node3D:
+func _structure_node(m: Machine, _body: Material) -> Node3D:
 	var n := Node3D.new()
 	n.position = (terrain.cell_pos(m.cell) + terrain.cell_pos(m.cell + Vector2i(1, 1))) / 2.0
 	if m.kind == "warehouse_section":
@@ -319,7 +319,7 @@ func _structure_node(m: Machine, body: Material) -> Node3D:
 		var pr := PrismMesh.new()
 		pr.size = Vector3(4.0, 0.8, 4.0)
 		roof.mesh = pr
-		roof.material_override = body
+		roof.material_override = MachineKit.paint("store")
 		roof.position = Vector3(0, 1.75, 0)
 		n.add_child(roof)
 	else:
@@ -329,7 +329,7 @@ func _structure_node(m: Machine, body: Material) -> Node3D:
 		cyl.height = 3.4
 		var barrel := MeshInstance3D.new()
 		barrel.mesh = cyl
-		barrel.material_override = body
+		barrel.material_override = MachineKit.paint("store")
 		var d: Vector2i = Machine.DIRS[m.facing]
 		barrel.position = Vector3(d.x, 0, d.y) * 0.9 + Vector3(0, 2.6, 0)
 		barrel.rotation.y = atan2(float(d.x), float(d.y))
@@ -413,7 +413,7 @@ func _rebuild_machines() -> void:
 				var b := terrain.cell_pos(m.cell + d) + Vector3(0, 0.4, 0)
 				if o.kind != "pipe":
 					b = a.lerp(b, 0.6)
-				ProtoMachines.pipe(pipes, a, b, mats[sub.id], 2)
+				ProtoMachines.pipe(pipes, a, b, MachineKit.paint("pneu"), 2)
 	# Неподвижные части всей базы — общими сетками по материалу (ProtoBatch);
 	# лампа, «spin» и «fill» названы и остаются живыми в своих машинах.
 	for n: Node3D in roots:

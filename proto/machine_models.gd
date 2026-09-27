@@ -1,8 +1,11 @@
 class_name MachineModels
 extends RefCounted
-## Объёмные модели всех машин 2D-игры (Buildings.KINDS) из простых тел — у
-## каждой свой силуэт, чтобы с камеры было понятно, что где стоит. Начало
-## координат — центр клетки на земле, выход машины смотрит в +Z.
+## Объёмные модели всех машин 2D-игры (Buildings.KINDS) — у каждой свой силуэт,
+## чтобы с камеры было понятно, что где стоит. Облик — индустриальный набор
+## MachineKit: у машин 3D-завода там же своя модель, остальные силуэты отсюда
+## строятся краской назначения и одеваются в набор (MachineKit.dress: основание
+## из материала планеты, рама, скосы, панели). Начало координат — центр клетки
+## на земле, выход машины смотрит в +Z.
 ##
 ## Живые части модель отдаёт по именам детей, их двигает вид:
 ##   "spin"  — Node3D, крутится вокруг своей оси Y, пока машина работает;
@@ -12,68 +15,67 @@ extends RefCounted
 
 const OUT_KINDS_NONE := ["pipe", "catch_net", "fabricator", "launch_silo", "macro", "sensor",
 	"gate_and", "gate_or", "gate_not", "dome", "beacon"]
+## Без основания-салазок: мелочь, которая стоит прямо на земле.
+const NO_BASE := ["pipe", "sensor", "gate_and", "gate_or", "gate_not"]
 
 static var _mats := {}
 
-## Модель машины вида kind. body — материал корпуса (по материалу постройки).
+## Модель машины вида kind. body — материал постройки (основание и панели).
 static func build(kind: String, body: Material) -> Node3D:
 	var n := Node3D.new()
+	if MachineKit.has_model(kind):
+		n.set_meta("h", MachineKit.build_into(n, kind, body))
+		return n
+	var pnt := MachineKit.paint(MachineKit.cat_of(kind))
+	var y0 := 0.0 if kind in NO_BASE else MachineKit.base(n, body)
+	var first := n.get_child_count()
 	var h := 1.2
 	match kind:
-		"drill": h = _drill(n, body)
-		"container": h = _container(n, body)
-		"tank": h = _tank(n, body)
-		"receiver": h = _receiver(n, body)
-		"fabricator": h = _fabricator(n, body)
-		"pump": h = _pump(n, body)
-		"pipe": h = _pipe_hub(n, body)
-		"valve": h = _valve(n, body)
-		"cannon": h = _cannon(n, body)
-		"filter": h = _filter(n, body)
-		"crusher": h = _crusher(n, body)
-		"furnace": h = _furnace(n, body)
-		"condenser": h = _condenser(n, body)
-		"treater": h = _treater(n, body)
-		"compressor": h = _compressor(n, body, false)
-		"decompressor": h = _compressor(n, body, true)
-		"distiller": h = _distiller(n, body)
-		"centrifuge": h = _centrifuge(n, body)
-		"magnet_sep": h = _magnet(n, body)
-		"electrolyzer": h = _electrolyzer(n, body)
-		"sinter": h = _sinter(n, body)
-		"irradiator": h = _irradiator(n, body)
-		"cryochamber": h = _cryo(n, body)
-		"resonator": h = _resonator(n, body)
-		"loom": h = _loom(n, body)
-		"lab": h = _lab(n, body)
-		"sensor": h = _sensor(n, body)
-		"gate_and", "gate_or", "gate_not": h = _gate(n, body, kind)
-		"battery_section": h = _battery(n, body)
-		"catch_net": h = _net(n, body)
-		"warehouse_section": h = _warehouse(n, body)
-		"macro": h = _macro(n, body)
-		"launch_silo": h = _silo(n, body)
-		"dome": h = _dome(n, body)
-		"beacon": h = _beacon(n, body)
+		"drill": h = _drill(n, pnt)
+		"container": h = _container(n, pnt)
+		"receiver": h = _receiver(n, pnt)
+		"fabricator": h = _fabricator(n, pnt)
+		"pipe": h = _pipe_hub(n, pnt)
+		"valve": h = _valve(n, pnt)
+		"cannon": h = _cannon(n, pnt)
+		"filter": h = _filter(n, pnt)
+		"condenser": h = _condenser(n, pnt)
+		"treater": h = _treater(n, pnt)
+		"compressor": h = _compressor(n, pnt, false)
+		"decompressor": h = _compressor(n, pnt, true)
+		"distiller": h = _distiller(n, pnt)
+		"magnet_sep": h = _magnet(n, pnt)
+		"electrolyzer": h = _electrolyzer(n, pnt)
+		"sinter": h = _sinter(n, pnt)
+		"irradiator": h = _irradiator(n, pnt)
+		"cryochamber": h = _cryo(n, pnt)
+		"resonator": h = _resonator(n, pnt)
+		"loom": h = _loom(n, pnt)
+		"sensor": h = _sensor(n, pnt)
+		"gate_and", "gate_or", "gate_not": h = _gate(n, pnt, kind)
+		"battery_section": h = _battery(n, pnt)
+		"catch_net": h = _net(n, pnt)
+		"warehouse_section": h = _warehouse(n, pnt)
+		"macro": h = _macro(n, pnt)
+		"launch_silo": h = _silo(n, pnt)
+		"dome": h = _dome(n, pnt)
+		"beacon": h = _beacon(n, pnt)
 		_:
-			_box(n, Vector3(1.6, 1.0, 1.6), body, Vector3(0, 0.5, 0))
+			_box(n, Vector3(1.6, 1.0, 1.6), pnt, Vector3(0, 0.5, 0))
 			h = 1.0
-	var info: Dictionary = Buildings.KINDS.get(kind, {})
-	if info.get("cat", -1) == 2:
-		# Обработка — оранжевая полоса по верху фасада, как в 2D.
-		_box(n, Vector3(1.2, 0.08, 0.04), mat("stripe"), Vector3(0, h - 0.12, 0.8))
+	MachineKit.dress(n, first, y0, pnt, body)
+	h += y0
 	if not kind in OUT_KINDS_NONE:
-		_outlet(n, Vector3(0, 0.35, 0.82))
+		MachineKit.outlet(n, Vector3(0, y0 + 0.25, 0.84))
 	if kind != "pipe":
-		var lamp := _sph(n, 0.07, mat("lamp_idle"), Vector3(-0.62, h + 0.07, -0.62))
-		lamp.name = "lamp"
+		MachineKit.lamp(n, Vector3(-0.62, h + 0.05, -0.62))
 	n.set_meta("h", h)
 	return n
 
 ## Второй выход (у процессов на два выхода) — в сторону dir_local.
 static func add_outlet(n: Node3D, dir_local: Vector3) -> void:
 	var d := dir_local.normalized()
-	var o := _outlet(n, Vector3(d.x * 0.82, 0.35, d.z * 0.82), mat("out2"))
+	var o := MachineKit.outlet(n, Vector3(d.x * 0.84, MachineKit.BASE_H + 0.25, d.z * 0.84), mat("out2"))
 	o.rotation.y = atan2(d.x, d.z)
 
 ## Общие материалы видов (лампы, стекло, свечение) — по одному на всё.
@@ -156,15 +158,6 @@ static func _ring(parent: Node3D, r: float, w: float, m: Material, pos: Vector3,
 	t.ring_segments = 8
 	return _add(parent, t, m, pos, rot)
 
-## Выходной патрубок с белым кантом — как стрелка выхода в 2D.
-static func _outlet(parent: Node3D, pos: Vector3, tip: Material = null) -> Node3D:
-	var o := Node3D.new()
-	o.position = pos
-	parent.add_child(o)
-	_box(o, Vector3(0.34, 0.3, 0.18), mat("dark"), Vector3.ZERO)
-	_box(o, Vector3(0.38, 0.05, 0.05), tip if tip != null else mat("out"), Vector3(0, 0.17, 0.08))
-	return o
-
 static func _spin(parent: Node3D, pos: Vector3) -> Node3D:
 	var s := Node3D.new()
 	s.name = "spin"
@@ -211,18 +204,6 @@ static func _container(n: Node3D, body: Material) -> float:
 	_fill(n, 0.7, 0.8, 0.1)
 	return 0.95
 
-static func _tank(n: Node3D, body: Material) -> float:
-	_cyl(n, 0.75, 0.45, body, Vector3(0, 0.22, 0))
-	_cyl(n, 0.75, 0.3, body, Vector3(0, 1.7, 0))
-	_cyl(n, 0.72, 1.1, mat("glass"), Vector3(0, 1.0, 0))
-	for a in 4:
-		var ang := a * TAU / 4.0 + PI / 4.0
-		_cyl(n, 0.05, 1.1, body, Vector3(cos(ang) * 0.74, 1.0, sin(ang) * 0.74))
-	_sph(n, 0.72, body, Vector3(0, 1.85, 0), true)
-	_cyl(n, 0.1, 0.3, body, Vector3(0, 2.6, 0))
-	_fill(n, 0.64, 1.1, 0.45)
-	return 2.75
-
 static func _receiver(n: Node3D, body: Material) -> float:
 	_box(n, Vector3(1.6, 0.6, 1.6), body, Vector3(0, 0.3, 0))
 	_cyl(n, 0.35, 0.9, body, Vector3(0, 1.05, 0), 0.85)
@@ -244,16 +225,6 @@ static func _fabricator(n: Node3D, body: Material) -> float:
 	return 2.1
 
 # ---------------------------------------------------------------- пневматика
-
-static func _pump(n: Node3D, body: Material) -> float:
-	_box(n, Vector3(1.3, 0.4, 1.0), body, Vector3(0, 0.2, 0))
-	_cyl(n, 0.28, 1.0, body, Vector3(-0.3, 0.9, 0))
-	var s := _spin(n, Vector3(-0.3, 1.45, 0))
-	_cyl(s, 0.07, 0.5, mat("cyan"), Vector3(0, 0.1, 0))
-	_ring(n, 0.34, 0.06, body, Vector3(0.35, 0.8, 0), Vector3(0, 0, PI / 2.0))
-	_cyl(n, 0.05, 0.5, mat("dark"), Vector3(0.35, 0.8, 0), -1.0, Vector3(0, 0, PI / 2.0))
-	_cyl(n, 0.06, 0.5, body, Vector3(-0.3, 0.3, -0.6), -1.0, Vector3(PI / 2.0, 0, 0))
-	return 1.5
 
 static func _pipe_hub(n: Node3D, body: Material) -> float:
 	_sph(n, 0.2, body, Vector3(0, 0.4, 0))
@@ -290,23 +261,6 @@ static func _filter(n: Node3D, body: Material) -> float:
 	_cyl(n, 0.12, 0.4, body, Vector3(0, 1.95, 0), 0.55)
 	_cyl(n, 0.5, 0.04, mat("net"), Vector3(0, 2.14, 0))
 	return 2.15
-
-static func _crusher(n: Node3D, body: Material) -> float:
-	_box(n, Vector3(1.6, 0.9, 1.4), body, Vector3(0, 0.45, 0))
-	# Бункер: усечённая пирамида (цилиндр на 4 грани).
-	_cyl(n, 0.55, 0.7, body, Vector3(0, 1.25, 0), 0.95, Vector3(0, PI / 4.0, 0), 4)
-	var s := _spin(n, Vector3(0, 0.95, 0))
-	for x in [-0.25, 0.25]:
-		_cyl(s, 0.22, 1.1, mat("dark"), Vector3(x, 0, 0), -1.0, Vector3(0, 0, PI / 2.0), 6)
-	_cyl(n, 0.25, 0.2, body, Vector3(0.85, 0.7, 0), -1.0, Vector3(0, 0, PI / 2.0))
-	return 1.6
-
-static func _furnace(n: Node3D, body: Material) -> float:
-	_box(n, Vector3(1.6, 1.4, 1.6), body, Vector3(0, 0.7, 0))
-	_box(n, Vector3(0.9, 0.5, 0.05), mat("hot"), Vector3(0, 0.75, 0.81))
-	_cyl(n, 0.2, 1.2, body, Vector3(0.45, 1.9, -0.4))
-	_cyl(n, 0.24, 0.12, mat("dark"), Vector3(0.45, 2.5, -0.4))
-	return 1.4
 
 static func _condenser(n: Node3D, body: Material) -> float:
 	_box(n, Vector3(1.5, 1.0, 1.2), body, Vector3(0, 0.5, 0))
@@ -357,18 +311,6 @@ static func _distiller(n: Node3D, body: Material) -> float:
 		_ring(n, 0.2, 0.035, mat("cold"), Vector3(0.55, 2.0 - i * 0.22, 0))
 	_cyl(n, 0.2, 0.4, body, Vector3(0.55, 0.5, 0))
 	return 2.9
-
-static func _centrifuge(n: Node3D, body: Material) -> float:
-	_cyl(n, 0.8, 0.5, body, Vector3(0, 0.25, 0), 0.7)
-	_cyl(n, 0.72, 0.6, mat("glass"), Vector3(0, 0.8, 0))
-	var s := _spin(n, Vector3(0, 0.8, 0))
-	_cyl(s, 0.08, 0.5, mat("dark"), Vector3.ZERO)
-	for i in 4:
-		var a := i * TAU / 4.0
-		_box(s, Vector3(0.55, 0.06, 0.06), body, Vector3(cos(a) * 0.3, 0.1, sin(a) * 0.3), Vector3(0, -a, 0))
-		_cyl(s, 0.1, 0.28, mat("cyan"), Vector3(cos(a) * 0.58, 0.0, sin(a) * 0.58), -1.0, Vector3(0, 0, 0.5 * cos(a)))
-	_cyl(n, 0.74, 0.08, body, Vector3(0, 1.14, 0))
-	return 1.2
 
 static func _magnet(n: Node3D, body: Material) -> float:
 	_box(n, Vector3(1.7, 0.4, 0.8), body, Vector3(0, 0.2, 0))
@@ -444,16 +386,6 @@ static func _loom(n: Node3D, body: Material) -> float:
 	var s := _spin(n, Vector3(0, 0.9, 0.05))
 	_box(s, Vector3(1.4, 0.06, 0.1), mat("dark"), Vector3.ZERO)
 	return 1.5
-
-static func _lab(n: Node3D, body: Material) -> float:
-	_box(n, Vector3(1.7, 0.8, 1.4), body, Vector3(0, 0.4, 0))
-	_sph(n, 0.55, mat("glass"), Vector3(0.2, 0.8, 0), true)
-	_sph(n, 0.2, mat("green"), Vector3(0.2, 0.98, 0))
-	_cyl(n, 0.06, 0.3, mat("glass"), Vector3(0.2, 1.3, 0))
-	_box(n, Vector3(0.5, 0.35, 0.05), mat("cyan"), Vector3(-0.5, 1.05, -0.5), Vector3(-0.3, 0, 0))
-	_cyl(n, 0.02, 1.0, mat("dark"), Vector3(-0.7, 1.3, 0.5))
-	_sph(n, 0.05, mat("lamp_sig"), Vector3(-0.7, 1.82, 0.5))
-	return 1.35
 
 # ---------------------------------------------------------------- логика
 

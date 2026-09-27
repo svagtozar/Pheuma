@@ -133,13 +133,16 @@ func test_merge_static_joins_machines_keeps_live_parts():
 	assert_eq(now[1], was[1], "треугольники те же")
 	assert_lt(after * 3, before, "сеток хотя бы втрое меньше")
 	# Склеенная сетка стоит там же, где стояли детали: общий габарит тот же.
+	# Габарит по вершинам: AABB повёрнутой сетки шире, чем она сама.
 	var aabb := func(root: Node3D) -> AABB:
 		var box := AABB()
 		var first := true
 		for mi: MeshInstance3D in root.find_children("*", "MeshInstance3D", true, false):
-			var b: AABB = mi.global_transform * mi.get_aabb()
-			box = b if first else box.merge(b)
-			first = false
+			for si in mi.mesh.get_surface_count():
+				for v: Vector3 in mi.mesh.surface_get_arrays(si)[Mesh.ARRAY_VERTEX]:
+					var p: Vector3 = mi.global_transform * v
+					box = AABB(p, Vector3.ZERO) if first else box.expand(p)
+					first = false
 		return box
 	var ref := Node3D.new()
 	add_child_autofree(ref)

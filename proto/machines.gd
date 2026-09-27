@@ -1,8 +1,8 @@
 class_name ProtoMachines
 extends RefCounted
-## Процедурные машины из простых тел: бак со стеклянным окном и уровнем груза,
-## печь с раскалённым окном, насос, пушка, трубы с бусинами газа, машина на втором
-## этаже. Поверхность корпуса — из тегов материала, изучен он или нет: в мире
+## Общее для машин: поверхность из материала, стекло, свечение, трубы с бусинами
+## газа, коробки столкновений (модели машин — MachineModels / MachineKit).
+## Поверхность корпуса — из тегов материала, изучен он или нет: в мире
 ## неизученное выглядит как обычно, что о нём ещё не известно, показывают
 ## «?N» в карточке материала, грузе и стройке. Голограмма — только призрак
 ## детали в режиме стройки.
@@ -107,55 +107,6 @@ static func _box(size: Vector3) -> BoxMesh:
 	b.size = size
 	return b
 
-## Бак: корпус, стеклянный пояс, внутри — груз до уровня.
-static func tank(body: Material, cargo: Color, level: float) -> Node3D:
-	var n := Node3D.new()
-	_mi(n, _cyl(0.75, 0.5), body, Vector3(0, 0.25, 0))
-	_mi(n, _cyl(0.75, 0.35), body, Vector3(0, 1.72, 0))
-	_mi(n, _cyl(0.72, 1.1), glass(), Vector3(0, 1.0, 0))
-	var cm := StandardMaterial3D.new()
-	cm.albedo_color = cargo
-	_mi(n, _cyl(0.64, 1.1 * level), cm, Vector3(0, 0.45 + 1.1 * level / 2.0, 0))
-	for a in 4:
-		var ang := a * TAU / 4.0
-		_mi(n, _cyl(0.05, 1.1), body, Vector3(cos(ang) * 0.74, 1.0, sin(ang) * 0.74))
-	_mi(n, _cyl(0.12, 0.3), body, Vector3(0, 2.02, 0))   # горловина
-	return n
-
-## Печь: корпус, раскалённое окно, труба.
-static func furnace(body: Material) -> Node3D:
-	var n := Node3D.new()
-	_mi(n, _box(Vector3(1.6, 1.4, 1.6)), body, Vector3(0, 0.7, 0))
-	_mi(n, _box(Vector3(0.9, 0.5, 0.05)), glow(Color(1.0, 0.45, 0.1), 4.0), Vector3(0, 0.75, 0.81))
-	_mi(n, _cyl(0.2, 1.2), body, Vector3(0.45, 1.9, -0.4))
-	var light := OmniLight3D.new()
-	light.light_color = Color(1.0, 0.5, 0.2)
-	light.light_energy = 1.2
-	light.omni_range = 3.0
-	light.position = Vector3(0, 0.75, 1.3)
-	n.add_child(light)
-	return n
-
-## Насос: основание, цилиндр с поршнем, маховик.
-static func pump(body: Material) -> Node3D:
-	var n := Node3D.new()
-	_mi(n, _box(Vector3(1.2, 0.4, 0.9)), body, Vector3(0, 0.2, 0))
-	_mi(n, _cyl(0.28, 1.0), body, Vector3(-0.25, 0.9, 0))
-	_mi(n, _cyl(0.08, 0.6), glow(Color(0.8, 0.9, 1.0), 0.3), Vector3(-0.25, 1.6, 0)).name = "piston"
-	var t := TorusMesh.new()
-	t.inner_radius = 0.28
-	t.outer_radius = 0.38
-	_mi(n, t, body, Vector3(0.35, 0.75, 0), Vector3(PI / 2.0, 0, 0))
-	return n
-
-## Пушка: станина и наклонный ствол.
-static func cannon(body: Material) -> Node3D:
-	var n := Node3D.new()
-	_mi(n, _box(Vector3(1.2, 0.5, 1.2)), body, Vector3(0, 0.25, 0))
-	_mi(n, _cyl(0.32, 0.5), body, Vector3(0, 0.7, 0))
-	_mi(n, _cyl(0.18, 1.8, 0.14), body, Vector3(0, 1.4, 0.55), Vector3(-0.85, 0, 0))
-	return n
-
 ## Труба между двумя точками, с бусинами газа.
 ## Один материал на все бусины: так их склеивает ProtoBatch.
 static var _bead_mat := glow(Color(0.7, 0.8, 1.0), 1.5)
@@ -235,11 +186,3 @@ static func add_box_collider(n: Node3D, layer := LAYER_MACHINES | LAYER_GROUND) 
 	n.add_child(b)
 	return b
 
-## Этажерка: четыре стойки и настил на высоте h.
-static func frame(body: Material, h: float) -> Node3D:
-	var n := Node3D.new()
-	for dx in [-0.9, 0.9]:
-		for dz in [-0.9, 0.9]:
-			_mi(n, _box(Vector3(0.12, h, 0.12)), body, Vector3(dx, h / 2.0, dz))
-	_mi(n, _box(Vector3(2.0, 0.12, 2.0)), body, Vector3(0, h, 0))
-	return n

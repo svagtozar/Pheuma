@@ -7,6 +7,8 @@ extends Node3D
 
 const PIPE_Y := 0.55
 const PIPE_R := 0.16
+## Масштаб моделей машин в клетке завода.
+const MODEL_SCALE := 0.9
 
 var net: ProtoPneumatics
 ## Облик сооружений целей (GoalModels.STYLES): "" — MachineModels.
@@ -117,8 +119,8 @@ func _rebuild() -> void:
 			l.outline_size = 10
 			l.modulate = Color(0.95, 0.97, 1.0)
 			var model := n.get_node_or_null("model")
-			var top: float = float(model.get_meta("h", 1.6)) * 0.85 + 0.9 if model != null else 2.2
-			l.position = Vector3(0, {"tank": 2.7, "intake": 2.5, "pump": 1.9}.get(part.kind, top), 0)
+			var top: float = float(model.get_meta("h", 1.6)) * MODEL_SCALE + 0.7 if model != null else 2.2
+			l.position = Vector3(0, top, 0)
 			l.no_depth_test = true
 			n.add_child(l)
 			_labels[part.id] = l
@@ -128,7 +130,7 @@ func _rebuild() -> void:
 	var kids := get_child_count()
 	for n in _nodes.values():
 		ProtoBatch.merge_children(n)
-	ProtoBatch.merge_static(self, _nodes.values(), ["model", "tank_body"])
+	ProtoBatch.merge_static(self, _nodes.values(), ["model"])
 	for i in range(kids, get_child_count()):
 		_batch.append(get_child(i))
 
@@ -171,46 +173,38 @@ static func build_part(kind: String, sub: Substance, dir: int, links: Array, hol
 	var n := Node3D.new()
 	n.name = kind
 	var core: Node3D
-	match kind:
-		"pipe":
-			core = Node3D.new()
-			for i in links:
-				_half_pipe(core, i, body, holo)
-			var hub := MeshInstance3D.new()
-			var s := SphereMesh.new()
-			s.radius = PIPE_R * 1.25
-			s.height = PIPE_R * 2.5
-			hub.mesh = s
-			hub.material_override = body
-			hub.position = Vector3(0, PIPE_Y, 0)
-			core.add_child(hub)
-		"pump":
-			core = ProtoMachines.pump(body)
-			core.scale = Vector3(0.85, 0.85, 0.85)
-		"intake":
-			core = _intake_mesh(body)
-		"crusher":
-			core = _crusher_mesh(body)
-		"furnace":
-			core = ProtoMachines.furnace(body)
-			core.scale = Vector3(0.8, 0.8, 0.8)
-		"tank":
-			core = ProtoMachines.tank(body, Color(0.2, 0.2, 0.22), 0.001)
-			core.name = "tank_body"
-		"lab":
-			core = _lab_mesh(body)
-		_:
-			# Пушка и машины обработки 2D-игры — общие модели (MachineModels).
-			core = GoalModels.build(kind, body, goal_style)
-			core.scale = Vector3(0.85, 0.85, 0.85)
-			core.name = "model"
+	if kind == "pipe":
+		core = Node3D.new()
+		for i in links:
+			_half_pipe(core, i, body, holo)
+		var hub := MeshInstance3D.new()
+		var s := SphereMesh.new()
+		s.radius = PIPE_R * 1.25
+		s.height = PIPE_R * 2.5
+		hub.mesh = s
+		hub.material_override = body if holo else MachineKit.m("frame")
+		hub.position = Vector3(0, PIPE_Y, 0)
+		core.add_child(hub)
+	else:
+		# Все машины — общие модели (MachineModels в наборе MachineKit;
+		# сооружения целей — в облике goal_style).
+		core = GoalModels.build(kind, body, goal_style)
+		core.scale = Vector3.ONE * MODEL_SCALE
+		core.name = "model"
+		if kind == "furnace" and not holo:
+			var light := OmniLight3D.new()
+			light.light_color = Color(1.0, 0.5, 0.2)
+			light.light_energy = 1.2
+			light.omni_range = 3.0
+			light.position = Vector3(0, 0.9, 1.3)
+			core.add_child(light)
 	# Машины смотрят выходом по dir: модель строится выходом на +Z.
 	if kind != "pipe":
 		core.rotation.y = _yaw(dir)
 		for i in links:
 			_stub(n, i, body, holo)
 	n.add_child(core)
-	if kind in ["pipe", "pump"] and not holo:
+	if kind == "pipe" and not holo:
 		var g := MeshInstance3D.new()
 		g.name = "gauge"
 		var gs := SphereMesh.new()
@@ -218,7 +212,7 @@ static func build_part(kind: String, sub: Substance, dir: int, links: Array, hol
 		gs.height = 0.14
 		g.mesh = gs
 		g.material_override = ProtoMachines.glow(Color(0.3, 1.0, 0.4), 1.5)
-		g.position = Vector3(0, PIPE_Y + PIPE_R + 0.08, 0) if kind == "pipe" else Vector3(0.3, 1.3, 0.3)
+		g.position = Vector3(0, PIPE_Y + PIPE_R + 0.08, 0)
 		n.add_child(g)
 	if holo:
 		_holo_all(n, body)
@@ -251,7 +245,7 @@ static func _half_pipe(parent: Node3D, i: int, body: Material, holo: bool) -> vo
 		tm.outer_radius = PIPE_R * 1.3
 		tm.rings = 12
 		ring.mesh = tm
-		ring.material_override = body
+		ring.material_override = body if holo else MachineKit.m("frame")
 		ring.position = Vector3(0, PIPE_Y, 0) + dv * half * k
 		ring.rotation = Vector3(PI / 2.0, _yaw(i), 0)
 		parent.add_child(ring)
@@ -260,12 +254,12 @@ static func _half_pipe(parent: Node3D, i: int, body: Material, holo: bool) -> vo
 	var lb := BoxMesh.new()
 	lb.size = Vector3(0.08, PIPE_Y, 0.08)
 	leg.mesh = lb
-	leg.material_override = body
+	leg.material_override = body if holo else MachineKit.m("frame")
 	leg.position = Vector3(0, PIPE_Y / 2.0, 0) + dv * half * 0.6
 	parent.add_child(leg)
 
 ## Короткий патрубок машины к стороне i (металл, от корпуса до края клетки).
-static func _stub(parent: Node3D, i: int, body: Material, _holo: bool) -> void:
+static func _stub(parent: Node3D, i: int, body: Material, holo: bool) -> void:
 	var d: Vector2i = ProtoPneumatics.DIRS[i]
 	var dv := Vector3(d.x, 0, d.y)
 	var mi := MeshInstance3D.new()
@@ -275,194 +269,10 @@ static func _stub(parent: Node3D, i: int, body: Material, _holo: bool) -> void:
 	cm.height = 0.45
 	cm.radial_segments = 14
 	mi.mesh = cm
-	mi.material_override = body
+	mi.material_override = body if holo else MachineKit.m("metal")
 	mi.position = Vector3(0, PIPE_Y, 0) + dv * (ProtoPneumatics.CELL / 2.0 - 0.22)
 	mi.rotation = Vector3(PI / 2.0, _yaw(i), 0)
 	parent.add_child(mi)
-
-## Приёмник: воронка на ножках, внизу — патрубок.
-static func _intake_mesh(body: Material) -> Node3D:
-	var n := Node3D.new()
-	var f := MeshInstance3D.new()
-	var cm := CylinderMesh.new()
-	cm.top_radius = 0.85
-	cm.bottom_radius = 0.25
-	cm.height = 0.8
-	cm.radial_segments = 8
-	f.mesh = cm
-	f.material_override = body
-	f.position = Vector3(0, 1.35, 0)
-	n.add_child(f)
-	var rim := MeshInstance3D.new()
-	var tm := TorusMesh.new()
-	tm.inner_radius = 0.8
-	tm.outer_radius = 0.92
-	tm.ring_segments = 8
-	rim.mesh = tm
-	rim.material_override = body
-	rim.position = Vector3(0, 1.76, 0)
-	n.add_child(rim)
-	for a in 4:
-		var ang := a * TAU / 4.0 + PI / 4.0
-		var leg := MeshInstance3D.new()
-		var lb := BoxMesh.new()
-		lb.size = Vector3(0.1, 1.1, 0.1)
-		leg.mesh = lb
-		leg.material_override = body
-		leg.position = Vector3(cos(ang) * 0.55, 0.55, sin(ang) * 0.55)
-		n.add_child(leg)
-	var neck := MeshInstance3D.new()
-	var nm := CylinderMesh.new()
-	nm.top_radius = 0.25
-	nm.bottom_radius = 0.25
-	nm.height = 0.45
-	neck.mesh = nm
-	neck.material_override = body
-	neck.position = Vector3(0, 0.75, 0)
-	n.add_child(neck)
-	# Внутри воронки — горка груза (цвет задаётся на ходу).
-	var heap := MeshInstance3D.new()
-	heap.name = "heap"
-	var hm := SphereMesh.new()
-	hm.radius = 0.6
-	hm.height = 0.5
-	heap.mesh = hm
-	heap.position = Vector3(0, 1.55, 0)
-	heap.visible = false
-	n.add_child(heap)
-	return n
-
-## Лаборатория: стол с пятью щупами (по одному на пробу) под стеклянным колпаком,
-## в центре — вращающаяся чашка с образцом, сбоку табло.
-static func _lab_mesh(body: Material) -> Node3D:
-	var n := Node3D.new()
-	var base := MeshInstance3D.new()
-	var bm := BoxMesh.new()
-	bm.size = Vector3(1.3, 0.7, 1.3)
-	base.mesh = bm
-	base.material_override = body
-	base.position = Vector3(0, 0.35, 0)
-	n.add_child(base)
-	var dome := MeshInstance3D.new()
-	var dm := SphereMesh.new()
-	dm.radius = 0.55
-	dm.height = 0.8
-	dm.is_hemisphere = true
-	dome.mesh = dm
-	dome.material_override = _shared(null)
-	dome.position = Vector3(0, 0.7, 0)
-	n.add_child(dome)
-	var cup := Node3D.new()
-	cup.name = "carousel"
-	cup.position = Vector3(0, 0.78, 0)
-	n.add_child(cup)
-	var dish := MeshInstance3D.new()
-	var cm := CylinderMesh.new()
-	cm.top_radius = 0.22
-	cm.bottom_radius = 0.14
-	cm.height = 0.08
-	dish.mesh = cm
-	dish.material_override = body
-	cup.add_child(dish)
-	var sample := MeshInstance3D.new()
-	sample.name = "sample"
-	var sm := SphereMesh.new()
-	sm.radius = 0.12
-	sm.height = 0.16
-	sm.radial_segments = 6
-	sm.rings = 3
-	sample.mesh = sm
-	sample.position = Vector3(0, 0.08, 0)
-	sample.visible = false
-	cup.add_child(sample)
-	# Пять щупов по кругу — цвета проб (нагрев, капля, магнит, ток, счётчик).
-	var cols := [Color(1.0, 0.45, 0.15), Color(0.5, 0.95, 0.4), Color(0.45, 0.55, 1.0), Color(1.0, 0.95, 0.4), Color(0.4, 1.0, 0.8)]
-	for i in 5:
-		var a := i * TAU / 5.0
-		var arm := MeshInstance3D.new()
-		var am := CylinderMesh.new()
-		am.top_radius = 0.025
-		am.bottom_radius = 0.035
-		am.height = 0.42
-		arm.mesh = am
-		arm.material_override = body
-		arm.position = Vector3(cos(a) * 0.32, 0.9, sin(a) * 0.32)
-		arm.rotation = Vector3(sin(a) * 0.6, 0, -cos(a) * 0.6)
-		n.add_child(arm)
-		var tip := MeshInstance3D.new()
-		var tm := SphereMesh.new()
-		tm.radius = 0.04
-		tm.height = 0.08
-		tip.mesh = tm
-		tip.material_override = ProtoMachines.glow(cols[i], 1.2)
-		tip.position = Vector3(cos(a) * 0.2, 0.74, sin(a) * 0.2)
-		n.add_child(tip)
-	var board := MeshInstance3D.new()
-	board.name = "lamp"
-	var pm := BoxMesh.new()
-	pm.size = Vector3(0.5, 0.22, 0.04)
-	board.mesh = pm
-	board.material_override = ProtoMachines.glow(Color(0.3, 0.3, 0.3), 0.2)
-	board.position = Vector3(0, 0.45, 0.67)
-	n.add_child(board)
-	return n
-
-## Дробилка: корпус, приёмный бункер сверху, два вала с зубьями по бокам.
-static func _crusher_mesh(body: Material) -> Node3D:
-	var n := Node3D.new()
-	var b := MeshInstance3D.new()
-	var bm := BoxMesh.new()
-	bm.size = Vector3(1.3, 1.0, 1.3)
-	b.mesh = bm
-	b.material_override = body
-	b.position = Vector3(0, 0.5, 0)
-	n.add_child(b)
-	var hop := MeshInstance3D.new()
-	var hm := CylinderMesh.new()
-	hm.top_radius = 0.6
-	hm.bottom_radius = 0.35
-	hm.height = 0.45
-	hm.radial_segments = 4
-	hop.mesh = hm
-	hop.material_override = body
-	hop.position = Vector3(0, 1.22, 0)
-	hop.rotation.y = PI / 4.0
-	n.add_child(hop)
-	for side in [-1.0, 1.0]:
-		var rot := Node3D.new()
-		rot.name = "roller"
-		rot.position = Vector3(side * 0.72, 0.62, 0)
-		n.add_child(rot)
-		var r := MeshInstance3D.new()
-		var rm := CylinderMesh.new()
-		rm.top_radius = 0.28
-		rm.bottom_radius = 0.28
-		rm.height = 0.14
-		rm.radial_segments = 10
-		r.mesh = rm
-		r.material_override = body
-		r.rotation.z = PI / 2.0
-		rot.add_child(r)
-		for k in 6:
-			var tooth := MeshInstance3D.new()
-			var tb := BoxMesh.new()
-			tb.size = Vector3(0.16, 0.12, 0.12)
-			tooth.mesh = tb
-			tooth.material_override = body
-			var a := k * TAU / 6.0
-			tooth.position = Vector3(0, cos(a) * 0.32, sin(a) * 0.32)
-			tooth.rotation.x = -a
-			rot.add_child(tooth)
-	var lamp := MeshInstance3D.new()
-	lamp.name = "lamp"
-	var lm := SphereMesh.new()
-	lm.radius = 0.07
-	lm.height = 0.14
-	lamp.mesh = lm
-	lamp.material_override = ProtoMachines.glow(Color(0.3, 0.3, 0.3), 0.2)
-	lamp.position = Vector3(0.45, 1.02, 0.45)
-	n.add_child(lamp)
-	return n
 
 static func _holo_all(n: Node, mat: Material) -> void:
 	for ch in n.get_children():
@@ -499,14 +309,11 @@ func _update_live() -> void:
 					if on:
 						r.rotation.x += 0.12 * (1.0 if r.position.x < 0 else -1.0)
 				var lamp := n.find_child("lamp", true, false) as MeshInstance3D
-				var lc := Color(0.3, 1.0, 0.4) if on else Color(0.3, 0.3, 0.3)
-				lamp.material_override.albedo_color = lc
-				lamp.material_override.emission = lc
-				lamp.material_override.emission_energy_multiplier = 2.5 if on else 0.2
+				lamp.material_override = MachineModels.mat("lamp_work" if on else "lamp_idle")
 			"pump":
 				var piston := n.find_child("piston", true, false) as MeshInstance3D
 				if piston:
-					piston.position.y = 1.6 + (sin(_t * 9.0) * 0.12 if part.hot else 0.0)
+					piston.position.y = MachineKit.PISTON_Y + (sin(_t * 9.0) * 0.12 if part.hot else 0.0)
 			"furnace":
 				for l in n.find_children("*", "OmniLight3D", true, false):
 					l.light_energy = (1.8 + sin(_t * 13.0) * 0.3) if part.hot else 0.4
@@ -552,28 +359,21 @@ func _update_live() -> void:
 				if spin and on:
 					spin.rotation.y += 0.15
 
-## Уровень груза в баке: цилиндр внутри стекла, цвет — материал.
+## Уровень груза в баке: узел "fill" модели (MachineModels._fill) — масштаб
+## по Y до доли груза, цвет — материал.
 func _tank_fill(n: Node3D, part: Dictionary) -> void:
-	var fill := n.find_child("fill", true, false) as MeshInstance3D
+	var fill := n.find_child("fill", true, false) as Node3D
 	if fill == null:
-		fill = MeshInstance3D.new()
-		fill.name = "fill"
-		var cm := CylinderMesh.new()
-		cm.top_radius = 0.64
-		cm.bottom_radius = 0.64
-		cm.height = 1.0
-		fill.mesh = cm
-		n.add_child(fill)
-	var m := net.mass_in(part.cell)
-	var lv := clampf(m / ProtoPneumatics.KINDS.tank.cap, 0.0, 1.0)
+		return
+	var lv := clampf(net.mass_in(part.cell) / ProtoPneumatics.KINDS.tank.cap, 0.0, 1.0)
 	fill.visible = lv > 0.005
 	if fill.visible:
 		var it: Portion = part.items[-1]
-		if fill.get_meta("sub", "") != it.substance.id:
-			fill.material_override = ProtoMachines.surface(it.substance)
-			fill.set_meta("sub", it.substance.id)
-		fill.scale = Vector3(1, 1.1 * lv, 1)
-		fill.position = Vector3(0, 0.45 + 1.1 * lv / 2.0, 0)
+		var fm := fill.get_node("fill_mesh") as MeshInstance3D
+		if fm.get_meta("sub", "") != it.substance.id:
+			fm.material_override = ProtoMachines.surface(it.substance)
+			fm.set_meta("sub", it.substance.id)
+		fill.scale = Vector3(1, maxf(0.001, lv * float(fill.get_meta("h", 1.0))), 1)
 
 ## Капсулы: от входной стороны клетки к центру и дальше к выходной.
 func _update_caps() -> void:
