@@ -31,7 +31,8 @@ static func mat_with(planet: Planet, tag: String):
 	return null
 
 ## Небо, солнце, дымка и частицы в parent. cave — тёмный плотный воздух подземелья.
-## Возвращает {"env": Environment, "sun": DirectionalLight3D, "particles": CPUParticles3D или null}.
+## Возвращает {"env": Environment, "world_env": WorldEnvironment, "sun": DirectionalLight3D,
+## "particles": CPUParticles3D или null}.
 static func build(planet: Planet, parent: Node, cave := false) -> Dictionary:
 	var sky_top := Color(0.25, 0.42, 0.7)
 	var horizon := Color(0.7, 0.72, 0.75)
@@ -83,7 +84,7 @@ static func build(planet: Planet, parent: Node, cave := false) -> Dictionary:
 	var p := _particles(planet)
 	if p != null:
 		parent.add_child(p)
-	return {"env": env, "sun": sun, "particles": p}
+	return {"env": env, "world_env": we, "sun": sun, "particles": p}
 
 ## Частицы в воздухе: пепел, снег, споры или пыль — по тегам.
 static func _particles(planet: Planet) -> CPUParticles3D:

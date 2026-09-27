@@ -19,6 +19,11 @@ var env: Environment
 var particles: CPUParticles3D
 var cursor: MeshInstance3D
 var _content: Node3D
+var _chunks := {}                # Vector2i → Node3D: кусок рельефа с жидкостями
+var _ground_mat: Material
+var _world_env: WorldEnvironment
+var _liquid_mats := {}
+const CHUNK := 32                # ячеек сетки рельефа в куске (16 м)
 var _machines: Node3D
 var _deposits := {}              # Vector2i → [узел залежи, узел «камешка» до разведки]
 var _machine_sig := ""
@@ -32,20 +37,23 @@ func set_world(w: World) -> void:
 	if _content != null:
 		_content.queue_free()
 	_deposits.clear()
+	_liquid_mats.clear()
 	_machine_sig = ""
 	_content = Node3D.new()
 	add_child(_content)
 	var t0 := Time.get_ticks_msec()
 	terrain = TileTerrain.new(world)
 	ProtoSky.palette(world.planet, terrain)
-	var ground := MeshInstance3D.new()
-	ground.mesh = terrain.build_height_mesh()
-	ground.material_override = terrain.material()
-	_content.add_child(ground)
+	_ground_mat = terrain.material()
+	_chunks.clear()
+	var n := terrain.grid_n()
+	for cz in ceili(float(n.y) / CHUNK):
+		for cx in ceili(float(n.x) / CHUNK):
+			_build_chunk(Vector2i(cx, cz))
 	var sky := ProtoSky.build(world.planet, _content)
 	env = sky.env
+	_world_env = sky.world_env
 	particles = sky.particles
-	_liquids()
 	_ruins()
 	_build_deposits()
 	_machines = Node3D.new()
@@ -57,40 +65,85 @@ func set_world(w: World) -> void:
 	cam.far = 400.0
 	_content.add_child(cam)
 	_last_pos = world.robot.pos
+	robot.position = terrain.world_pos(world.robot.pos)
 	_sync(0.0, true)
 	_follow(1.0)
 	build_ms = Time.get_ticks_msec() - t0
 	print("3D-вид: рельеф %d×%d м, %d мс" % [terrain.sx, terrain.sz, build_ms])
 
+## Включить или спрятать: спрятанный вид не рисуется и не держит камеру и небо.
 func activate(on: bool) -> void:
 	visible = on
-	if cam != null and on:
-		cam.make_current()
+	if cam != null:
+		if on:
+			cam.make_current()
+		else:
+			cam.clear_current(false)
+	if _world_env != null:
+		_world_env.environment = env if on else null
 
 # ---------------------------------------------------------------- построение
 
-func _liquids() -> void:
-	var lvl := terrain.liquid_level()
+## Кусок рельефа: карта высот и гладь лавы и кислоты над ним.
+func _build_chunk(k: Vector2i) -> void:
+	if _chunks.has(k):
+		_chunks[k].queue_free()
+	var r := Rect2i(k * CHUNK, Vector2i(CHUNK, CHUNK))
+	var node := Node3D.new()
+	var ground := MeshInstance3D.new()
+	ground.mesh = terrain.build_height_mesh(r)
+	ground.material_override = _ground_mat
+	node.add_child(ground)
 	for t in [Planet.Tile.LAVA, Planet.Tile.ACID]:
-		var mesh := terrain.liquid_mesh(t, lvl)
-		if mesh.get_surface_count() == 0:
+		var mesh := terrain.liquid_mesh(t, terrain.liquid_level(), r)
+		if mesh == null:
 			continue
-		# Шейдер жидкостей прототипа: лава — с коркой и свечением, кислота — с пузырями.
-		var m := ProtoLiquids.material(Substance.new("liq", "liq"), world.planet.ambient_temp)
-		if t == Planet.Tile.LAVA:
-			m.set_shader_parameter("base_color", Color(0.85, 0.28, 0.06, 1.0))
-			m.set_shader_parameter("glow", 1.4)
-			m.set_shader_parameter("crust", 1.0)
-			m.set_shader_parameter("speed", 0.3)
-			m.set_shader_parameter("rough", 0.6)
-		else:
-			m.set_shader_parameter("base_color", Color(0.45, 0.7, 0.12, 0.8))
-			m.set_shader_parameter("glow", 0.25)
-			m.set_shader_parameter("bubbles", 1.0)
 		var mi := MeshInstance3D.new()
 		mi.mesh = mesh
-		mi.material_override = m
-		_content.add_child(mi)
+		mi.material_override = _liquid_mat(t)
+		node.add_child(mi)
+	_content.add_child(node)
+	_chunks[k] = node
+
+## Клетки игры сменили тип: пересчитать сетку и перестроить задетые куски.
+func _refresh_tiles() -> void:
+	var cells := terrain.changed_cells()
+	if cells.is_empty():
+		return
+	var dirty := {}
+	var per := int(S / TileTerrain.STEP)       # узлов сетки на клетку
+	for c in cells:
+		# Высоты плавно переходят через соседние клетки — захватываем их.
+		var r := Rect2i((c - Vector2i(2, 2)) * per, Vector2i(5, 5) * per)
+		terrain.fill_grid(r)
+		for cz in range(floori(float(r.position.y - 1) / CHUNK), floori(float(r.end.y + 1) / CHUNK) + 1):
+			for cx in range(floori(float(r.position.x - 1) / CHUNK), floori(float(r.end.x + 1) / CHUNK) + 1):
+				if _chunks.has(Vector2i(cx, cz)):
+					dirty[Vector2i(cx, cz)] = true
+	for k in dirty:
+		_build_chunk(k)
+	for c in _deposits:
+		_deposits[c][0].position = terrain.cell_pos(c)
+		_deposits[c][1].position = terrain.cell_pos(c) + Vector3(0, 0.04, 0)
+	_machine_sig = ""
+
+## Шейдер жидкостей прототипа: лава — с коркой и свечением, кислота — с пузырями.
+func _liquid_mat(t: int) -> Material:
+	if _liquid_mats.has(t):
+		return _liquid_mats[t]
+	var m := ProtoLiquids.material(Substance.new("liq", "liq"), world.planet.ambient_temp)
+	if t == Planet.Tile.LAVA:
+		m.set_shader_parameter("base_color", Color(0.85, 0.28, 0.06, 1.0))
+		m.set_shader_parameter("glow", 1.4)
+		m.set_shader_parameter("crust", 1.0)
+		m.set_shader_parameter("speed", 0.3)
+		m.set_shader_parameter("rough", 0.6)
+	else:
+		m.set_shader_parameter("base_color", Color(0.45, 0.7, 0.12, 0.8))
+		m.set_shader_parameter("glow", 0.25)
+		m.set_shader_parameter("bubbles", 1.0)
+	_liquid_mats[t] = m
+	return m
 
 ## Руины: обломки колонн и плит на клетках руин.
 func _ruins() -> void:
@@ -300,6 +353,7 @@ func _sync(dt: float, force := false) -> void:
 	if _sync_t > 0.0 and not force:
 		return
 	_sync_t = 0.3
+	_refresh_tiles()
 	var sig := _machine_signature()
 	if sig != _machine_sig:
 		_machine_sig = sig

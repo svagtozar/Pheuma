@@ -260,8 +260,6 @@ func new_world(s: int, loaded: World = null) -> void:
 	audio.set_world(world)
 	_autosave_t = 0.0
 	view.world = world
-	if view3d != null:
-		view3d.set_world(world)
 	set_3d(use_3d)
 	cam.position = world.robot.pos * T
 	cam.reset_smoothing()
@@ -290,6 +288,8 @@ func set_3d(on: bool) -> void:
 		view3d = WorldView3D.new()
 		view3d.main = self
 		add_child(view3d)
+	# Объёмный мир строится при включении: в 2D новый ран его не ждёт.
+	if on and view3d != null and view3d.world != world:
 		view3d.set_world(world)
 	view.visible = not on
 	if view3d != null:
