@@ -42,7 +42,7 @@ const STEPS := [
 	{"id": "pipe", "title": "Проложите трубу",
 		"text": "Выберите «Трубу» и поставьте рядом с деталью завода, {build_rotate} — повернуть. Соседние детали — одна газовая сеть. {build_mode} — выйти из стройки."},
 	{"id": "goal", "title": "Цель планеты",
-		"text": "Слева вверху — цель планеты из трёх этапов и совет, что делать дальше. {run_menu} — меню: цель, прокачка ({run_skills}), выход. Дальше — сами!"},
+		"text": "Слева вверху — цель планеты из трёх этапов и совет, что делать дальше. {run_menu} — меню: цель, прокачка и выход. Дальше — сами!"},
 ]
 
 var root: Node                   # сцена предпросмотра
@@ -126,6 +126,7 @@ static func step_text(i: int, for_pad: bool, rich := true) -> String:
 			out += chips(g, for_pad) if rich else "[%s]" % g
 		at = m.get_end()
 	out += t.substr(at)
+	out = out.replace(" ()", "").replace("()", "")
 	while out.contains("  "):
 		out = out.replace("  ", " ")
 	return out.strip_edges()
