@@ -6,6 +6,8 @@ extends Node3D
 ##   --auto=cave --screenshot=путь.png — маршрут в пещеру, кадры путь_1..4.png
 ##   --auto=sound — тот же маршрут без кадров, в конце бур у стены и выстрел кистью
 ##   (для проверки звука); --record=путь.wav — записать звук, --mute — без звука
+##   В --play игра сохраняется (ProtoSave): сама раз в минуту и при выходе, F5 / R3 —
+##   сейчас, F9 — вернуться к сохранённому; --fresh — начать планету заново
 ##   --robot=clean (по умолчанию; другой вариант из RobotDesigns или old — прежний
 ##   каркас; корпус — металл планеты)
 ## Сборка для проверки (фича play3d в export_presets.cfg) стартует прямо сюда,
@@ -27,13 +29,22 @@ var auto := ""               # --auto=cave: скриптовый маршрут 
 var record := ""             # --record=путь.wav: записать звук (с --play или --auto)
 var mute := false            # --mute: без звука
 var env: Environment
+var fresh := false           # --fresh: не загружать сохранение
+var saves: ProtoSave
 
 ## Сид следующей планеты в сборке для проверки (переживает перезагрузку сцены).
 static var build_seed := 14
+static var _booted := false
 
 func _ready() -> void:
 	if OS.has_feature("play3d"):
 		play = true
+		if not _booted:
+			# Первый запуск сборки — с планеты, где играли в прошлый раз.
+			_booted = true
+			var last := ProtoSave.last_seed()
+			if last >= 0:
+				build_seed = last
 		seed_value = build_seed
 	for a in OS.get_cmdline_user_args():
 		if a.begins_with("--seed="): seed_value = int(a.substr(7))
@@ -45,6 +56,7 @@ func _ready() -> void:
 		elif a.begins_with("--auto="): auto = a.substr(7)
 		elif a.begins_with("--record="): record = a.substr(9)
 		elif a == "--mute": mute = true
+		elif a == "--fresh": fresh = true
 	if auto == "sound" and RobotDesigns.tool_r == "":
 		RobotDesigns.tool_r = "drill"
 	planet = PlanetGen.generate(seed_value)
@@ -85,6 +97,11 @@ func _ready() -> void:
 			snd.record_path = record
 			snd.setup(robot, terrain, pl, planet)
 			add_child(snd)
+	if play and auto == "":
+		saves = ProtoSave.new()
+		saves.name = "saves"
+		add_child(saves)
+		saves.setup(self, fresh)
 
 # ---------------------------------------------------------------- палитра и свет
 
@@ -579,7 +596,7 @@ func _caption() -> void:
 		h.add_theme_font_size_override("font_size", 14)
 		h.add_theme_color_override("font_outline_color", Color(0, 0, 0))
 		h.add_theme_constant_override("outline_size", 4)
-		h.text = "Стик — ходьба, правый стик — камера, L3 — бег, RT — бур, LT — кисть, D-pad — дистанция, Select — другая планета, Start — выход"
+		h.text = "Стик — ходьба, правый стик — камера, L3 — бег, RT — бур, LT — кисть, D-pad — дистанция, R3 — сохранить, Select — другая планета, Start — выход"
 		layer.add_child(h)
 
 ## Сборка для проверки: другая планета и выход с геймпада или клавиатуры.
@@ -590,6 +607,8 @@ func _unhandled_input(e: InputEvent) -> void:
 		or (e is InputEventKey and e.physical_keycode == KEY_TAB)
 	var quit: bool = (e is InputEventJoypadButton and e.button_index == JOY_BUTTON_START) \
 		or (e is InputEventKey and e.physical_keycode == KEY_ESCAPE)
+	if (next or quit) and saves != null:
+		saves.save_now(true)
 	if next:
 		build_seed = seed_value + 1
 		get_tree().reload_current_scene()
