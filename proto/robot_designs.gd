@@ -979,9 +979,11 @@ static func _clean(n: Node3D, hull_col: Color) -> void:
 	for sg in [-1.0, 1.0]:
 		rbox(n, Vector3(sg * 0.105, 1.41 + sg * 0.005, 0.126), Vector3(0.09, 0.013, 0.01), 0.003, "glow", tilt)
 	# Живот, поясница-гофра, таз.
-	rbox(n, Vector3(0, 1.145, -0.005), Vector3(0.18, 0.06, 0.14), 0.02, "dark")
-	for k in 3:
-		disc(n, Vector3(0, 1.07 + k * 0.022, -0.01), Vector3.UP, 0.055, 0.017, "rubber" if k % 2 else "dark")
+	# Сплошной переход грудь → таз: стойка позвоночника и гофра до самого таза.
+	rbox(n, Vector3(0, 1.145, -0.005), Vector3(0.22, 0.07, 0.15), 0.022, "dark")
+	rod(n, Vector3(0, 0.96, -0.01), Vector3(0, 1.18, -0.01), 0.045, "dark")
+	for k in 6:
+		disc(n, Vector3(0, 1.0 + k * 0.021, -0.01), Vector3.UP, 0.075 - abs(k - 2.5) * 0.004, 0.017, "rubber" if k % 2 else "dark")
 	var pb := Basis(Vector3.BACK, -0.04)
 	rbox(n, s.pelvis + Vector3(0, 0.02, 0), Vector3(0.27, 0.1, 0.17), 0.03, "dark", pb)
 	rbox(n, s.pelvis + Vector3(0, 0.01, 0.09), Vector3(0.16, 0.075, 0.03), 0.012, paint, pb * Basis(Vector3.RIGHT, -0.2))
