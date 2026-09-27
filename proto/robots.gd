@@ -1,6 +1,6 @@
 extends Node3D
 ## Витрина вариантов робота (к игре не подключена).
-##   godot --path . res://proto/robots.tscn -- --shot=front|back|top|close:N|closeback:N|head:N|hand:N --screenshot=путь.png
+##   godot --path . res://proto/robots.tscn -- --shot=front|back|top|close:N|closeback:N|head:N|hand:N|far:N  [--toon] --screenshot=путь.png
 
 var shot := "front"
 var shot_path := ""
@@ -11,6 +11,7 @@ func _ready() -> void:
 	for a in OS.get_cmdline_user_args():
 		if a.begins_with("--shot="): shot = a.substr(7)
 		elif a.begins_with("--screenshot="): shot_path = a.substr(13)
+		elif a == "--toon": RobotDesigns.toon = true
 	_stage()
 	var n := RobotDesigns.DESIGNS.size()
 	for i in n:
@@ -104,6 +105,12 @@ func _camera(n: int) -> void:
 		cam.position = Vector3(x + (-1.5 if back else 1.5), 1.35, -3.3 if back else 3.3)
 		cam.look_at(Vector3(x, 0.92, 0))
 		cam.fov = 36.0
+	if shot.begins_with("far:"):
+		# Игровая дистанция: от третьего лица, сзади-сверху, ~5 м.
+		var fx := (int(shot.substr(4)) - (n - 1) / 2.0) * GAP
+		cam.position = Vector3(fx + 1.4, 2.7, -4.3)
+		cam.look_at(Vector3(fx, 0.8, 1.5))
+		cam.fov = 62.0
 	if shot.begins_with("hand:"):
 		var kx := (int(shot.substr(5)) - (n - 1) / 2.0) * GAP
 		cam.position = Vector3(kx + 0.75, 1.0, 0.5)

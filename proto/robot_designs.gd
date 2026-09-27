@@ -4,17 +4,37 @@ extends RefCounted
 ## стержни между точками скелета, шарниры, капсулы, короба, торы, шланги по Безье.
 ## Гибрид «каркас, обрастающий планетой» — в трёх уровнях детальности (h1, h2, h3),
 ## плюс концепции pneumat, geologist, miner, jumper и concept — по концепт-арту
-## (concept_b — он же с корпусом из металла другой планеты).
+## (concept_b — он же с корпусом из металла другой планеты). clean — чистый
+## хард-серфейс, buddy — коренастый компаньон. toon — стилизованная отрисовка.
 
-const DESIGNS := ["h1", "h2", "h3", "concept", "concept_b", "pneumat", "geologist", "miner", "jumper"]
+const DESIGNS := ["h1", "h2", "h3", "concept", "concept_b", "clean", "buddy", "pneumat", "geologist", "miner", "jumper"]
 const NAMES := {"h1": "Гибрид · Н1 силуэт", "h2": "Гибрид · Н2 рабочий", "h3": "Гибрид · Н3 детальный",
 	"concept": "Концепт · медь", "concept_b": "Концепт · другой металл",
+	"clean": "Хард-серфейс", "buddy": "Компаньон",
 	"pneumat": "A · Пневмат", "geologist": "B · Геолог", "miner": "D · Горняк", "jumper": "E · Прыгун"}
 ## Металл корпуса по умолчанию — медь; в игре — металл планеты.
 const COPPER := Color(0.78, 0.47, 0.29)
 const ALT_METAL := Color(0.42, 0.55, 0.72)
 
 static var _mats := {}
+## Стилизованная отрисовка: ступенчатый свет и контур. Ставится до build().
+static var toon := false
+static var _outline_mat: ShaderMaterial
+
+const OUTLINE := """
+shader_type spatial;
+render_mode unshaded, cull_front, depth_draw_opaque;
+void vertex() {
+	vec4 wp = MODEL_MATRIX * vec4(VERTEX, 1.0);
+	vec3 wn = normalize(MODEL_NORMAL_MATRIX * NORMAL);
+	float d = length(CAMERA_POSITION_WORLD - wp.xyz);
+	wp.xyz += wn * clamp(d * 0.0035, 0.004, 0.04);
+	POSITION = PROJECTION_MATRIX * VIEW_MATRIX * wp;
+}
+void fragment() {
+	ALBEDO = vec3(0.035, 0.035, 0.045);
+}
+"""
 
 # ---------------------------------------------------------------- материалы
 
@@ -65,9 +85,24 @@ static func mat(key: String) -> Material:
 		_:
 			if key.begins_with("metal:"):
 				m.albedo_color = Color(key.substr(6)); m.metallic = 0.9; m.roughness = 0.32
+			elif key.begins_with("paint:"):
+				# Окрашенная панель корпуса: светлая, почти матовая.
+				m.albedo_color = Color(key.substr(6)); m.metallic = 0.2; m.roughness = 0.42
 			elif key.begins_with("pod:"):
 				var c := Color(key.substr(4))
 				m.albedo_color = c; m.emission_enabled = true; m.emission = c; m.emission_energy_multiplier = 0.6
+	if toon and m.transparency == BaseMaterial3D.TRANSPARENCY_DISABLED:
+		# Ступенчатый свет ярче обычного — чуть приглушаем цвет, чтобы не выгорал.
+		if not m.emission_enabled:
+			m.albedo_color = m.albedo_color.darkened(0.18)
+		m.diffuse_mode = BaseMaterial3D.DIFFUSE_TOON
+		m.specular_mode = BaseMaterial3D.SPECULAR_TOON
+		if _outline_mat == null:
+			_outline_mat = ShaderMaterial.new()
+			var sh := Shader.new()
+			sh.code = OUTLINE
+			_outline_mat.shader = sh
+		m.next_pass = _outline_mat
 	_mats[key] = m
 	return m
 
@@ -225,6 +260,8 @@ static func build(design: String, hull := Color(0, 0, 0, 0)) -> Node3D:
 	match design:
 		"concept": _concept(n, COPPER if hull.a == 0.0 else hull)
 		"concept_b": _concept(n, ALT_METAL if hull.a == 0.0 else hull)
+		"clean": _clean(n, COPPER if hull.a == 0.0 else hull)
+		"buddy": _buddy(n, COPPER if hull.a == 0.0 else hull)
 		"h1": _h1(n)
 		"h2": _h2(n, false)
 		"h3": _h2(n, true)
@@ -562,7 +599,14 @@ static func disc(p: Node3D, c: Vector3, axis: Vector3, r: float, h: float, m: St
 
 ## Кисть с фалангами: ладонь, четыре пальца по три фаланги и большой палец.
 ## dn — вниз вдоль кисти, side — к ладонной стороне.
-static func hand(p: Node3D, wrist: Vector3, dn: Vector3, side: Vector3, hull: String) -> void:
+static func hand(p: Node3D, wrist: Vector3, dn: Vector3, side: Vector3, hull: String, k: float = 1.0) -> void:
+	if k != 1.0:
+		var h := Node3D.new()
+		h.position = wrist
+		h.scale = Vector3.ONE * k
+		p.add_child(h)
+		p = h
+		wrist = Vector3.ZERO
 	dn = dn.normalized()
 	side = (side - dn * dn.dot(side)).normalized()
 	var fw := dn.cross(side).normalized()
@@ -573,14 +617,14 @@ static func hand(p: Node3D, wrist: Vector3, dn: Vector3, side: Vector3, hull: St
 	ellipsoid(p, pc - side * 0.009 + dn * 0.004, side * 0.009, dn * 0.03, fw * 0.03, hull)
 	var lens := [0.85, 1.0, 0.95, 0.78]
 	for i in 4:
-		var k: float = lens[i]
+		var fk: float = lens[i]
 		var q := pc + dn * 0.032 + fw * (-0.024 + i * 0.016)
 		ball(p, q, 0.0085, "dark")
 		var spread := fw * (i - 1.5) * 0.06
 		var curl := 0.25
 		for sl in [0.026, 0.019, 0.015]:
 			var d := (dn * cos(curl) + side * sin(curl) + spread).normalized()
-			var q2: Vector3 = q + d * sl * k
+			var q2: Vector3 = q + d * sl * fk
 			rod(p, q, q2, 0.0062, "steel")
 			ball(p, q2, 0.0072, "dark")
 			q = q2
@@ -627,13 +671,13 @@ static func blade(p: Node3D, l: float, w0: float, w1: float, t: float, skew: flo
 ## Антенна-«ухо»: узел-шарнир (поворачивается в игре) и плоская пластина по
 ## диагонали вверх-назад-наружу, плоскостью поперёк объектива, со светящимся
 ## передним ребром.
-static func _ear(n: Node3D, pivot: Vector3, sg: float, hull: String) -> Node3D:
+static func _ear(n: Node3D, pivot: Vector3, sg: float, hull: String, k: float = 1.0) -> Node3D:
 	var e := Node3D.new()
 	e.name = "ear_l" if sg < 0.0 else "ear_r"
 	var y := Vector3(sg * 0.62, 0.74, -0.26).normalized()
 	# Плоскость пластины перпендикулярна объективу: ширина — вперёд, толщина — вбок.
 	var x := (Vector3.BACK - y * y.dot(Vector3.BACK)).normalized()
-	e.transform = Transform3D(Basis(x, y, x.cross(y).normalized()), pivot)
+	e.transform = Transform3D(Basis(x, y, x.cross(y).normalized()).scaled(Vector3.ONE * k), pivot)
 	n.add_child(e)
 	ball(e, Vector3.ZERO, 0.022, "dark")
 	ring(e, Vector3(0, 0.01, 0), Vector3.UP, 0.02, 0.03, hull)
@@ -645,6 +689,129 @@ static func _ear(n: Node3D, pivot: Vector3, sg: float, hull: String) -> Node3D:
 	for z in [-0.0075, 0.0075]:
 		box(e, Vector3(w0 / 2.0 - 0.006, l * 0.62, z), Vector3(0.008, l * 0.7, 0.003), "glow")
 	return e
+
+## Короб с фаской: 6 граней, 12 скосов по рёбрам, 8 уголков — плоские грани
+## ловят блик и дают чёткую линию.
+static func _rbox_mesh(size: Vector3, b: float) -> ArrayMesh:
+	var h := size / 2.0
+	b = minf(b, minf(h.x, minf(h.y, h.z)) * 0.9)
+	var tris := []
+	for ax in 3:
+		var a1 := (ax + 1) % 3
+		var a2 := (ax + 2) % 3
+		for sgn in [-1.0, 1.0]:
+			var q := []
+			for s1 in [-1.0, 1.0]:
+				for s2 in [-1.0, 1.0]:
+					var v := Vector3.ZERO
+					v[ax] = sgn * h[ax]
+					v[a1] = s1 * (h[a1] - b)
+					v[a2] = s2 * (h[a2] - b)
+					q.append(v)
+			tris.append([q[0], q[1], q[3]])
+			tris.append([q[0], q[3], q[2]])
+	for a3 in 3:
+		var a1 := (a3 + 1) % 3
+		var a2 := (a3 + 2) % 3
+		for s1 in [-1.0, 1.0]:
+			for s2 in [-1.0, 1.0]:
+				var q := []
+				for s3 in [-1.0, 1.0]:
+					var v1 := Vector3.ZERO
+					v1[a1] = s1 * h[a1]
+					v1[a2] = s2 * (h[a2] - b)
+					v1[a3] = s3 * (h[a3] - b)
+					var v2 := Vector3.ZERO
+					v2[a1] = s1 * (h[a1] - b)
+					v2[a2] = s2 * h[a2]
+					v2[a3] = s3 * (h[a3] - b)
+					q.append(v1)
+					q.append(v2)
+				tris.append([q[0], q[2], q[3]])
+				tris.append([q[0], q[3], q[1]])
+	for sx in [-1.0, 1.0]:
+		for sy in [-1.0, 1.0]:
+			for sz in [-1.0, 1.0]:
+				tris.append([Vector3(sx * h.x, sy * (h.y - b), sz * (h.z - b)),
+					Vector3(sx * (h.x - b), sy * h.y, sz * (h.z - b)),
+					Vector3(sx * (h.x - b), sy * (h.y - b), sz * h.z)])
+	var st := SurfaceTool.new()
+	st.begin(Mesh.PRIMITIVE_TRIANGLES)
+	st.set_smooth_group(0xFFFFFFFF)
+	for t in tris:
+		var a: Vector3 = t[0]
+		var bb: Vector3 = t[1]
+		var c: Vector3 = t[2]
+		# Тело выпуклое и с центром в нуле: лицевая сторона — наружу.
+		if (c - a).cross(bb - a).dot(a + bb + c) < 0.0:
+			var tmp := bb
+			bb = c
+			c = tmp
+		st.add_vertex(a)
+		st.add_vertex(bb)
+		st.add_vertex(c)
+	st.generate_normals()
+	return st.commit()
+
+static func rbox(p: Node3D, c: Vector3, size: Vector3, bevel: float, m: String, basis := Basis()) -> MeshInstance3D:
+	var mi := MeshInstance3D.new()
+	mi.mesh = _rbox_mesh(size, bevel)
+	mi.material_override = mat(m)
+	mi.transform = Transform3D(basis, c)
+	p.add_child(mi)
+	return mi
+
+## Короб с фаской вдоль кости a→b: ширина w, глубина d (к face).
+static func rbox_along(p: Node3D, a: Vector3, b: Vector3, w: float, d: float, bevel: float, face: Vector3, m: String) -> MeshInstance3D:
+	return _placed(p, _rbox_mesh(Vector3(w, a.distance_to(b), d), bevel), (a + b) / 2.0, b - a, face, m)
+
+## Голова-объектив с антеннами-ушами в своём узле head (наклон — поворот узла).
+## r — радиус объектива; shell_m — корпус головы, trim_m — ободки.
+static func _head(p: Node3D, pos: Vector3, r: float, shell_m: String, trim_m: String, tilt := Vector3.ZERO) -> Node3D:
+	var hd := Node3D.new()
+	hd.name = "head"
+	hd.position = pos
+	hd.rotation = tilt
+	p.add_child(hd)
+	var k := r / 0.15
+	rod(hd, Vector3(0, 0, -0.08) * k, Vector3(0, 0, 0.07) * k, 0.15 * k, shell_m)
+	ball(hd, Vector3(0, 0, -0.08) * k, 0.15 * k, shell_m).scale = Vector3(1, 1, 0.55)
+	ring(hd, Vector3(0, 0, -0.02) * k, Vector3(0, 0, 1), 0.15 * k, 0.162 * k, "dark")
+	ring(hd, Vector3(0, 0, 0.07) * k, Vector3(0, 0, 1), 0.122 * k, 0.158 * k, trim_m)
+	rod(hd, Vector3(0, 0, 0.07) * k, Vector3(0, 0, 0.088) * k, 0.126 * k, "dark")
+	ring(hd, Vector3(0, 0, 0.09) * k, Vector3(0, 0, 1), 0.084 * k, 0.1 * k, "accent")
+	rod(hd, Vector3(0, 0, 0.088) * k, Vector3(0, 0, 0.097) * k, 0.056 * k, "iris")
+	rod(hd, Vector3(0, 0, 0.097) * k, Vector3(0, 0, 0.101) * k, 0.022 * k, "dark")
+	ball(hd, Vector3(0, 0, 0.09) * k, 0.084 * k, "glass").scale = Vector3(1, 1, 0.3)
+	for sg in [-1.0, 1.0]:
+		_ear(hd, Vector3(sg * 0.125, 0.085, -0.03) * k, sg, trim_m, k)
+	return hd
+
+## Колба на ремнях и кассета капсул под ней; r — радиус стекла. Возвращает точку
+## над клапаном (для шлангов).
+static func _flask_pack(n: Node3D, fb: Vector3, fh: float, r: float, hull: String) -> Vector3:
+	var k := r / 0.115
+	rod(n, fb, fb + Vector3(0, 0.05 * k, 0), 0.122 * k, hull)
+	rod(n, fb + Vector3(0, 0.05 * k, 0), fb + Vector3(0, fh - 0.05 * k, 0), 0.115 * k, "glass")
+	rod(n, fb + Vector3(0, 0.06 * k, 0), fb + Vector3(0, 0.06 * k + (fh - 0.12 * k) * 0.8, 0), 0.1 * k, "gas")
+	rod(n, fb + Vector3(0, fh - 0.05 * k, 0), fb + Vector3(0, fh, 0), 0.122 * k, hull)
+	rod(n, fb + Vector3(0, fh, 0), fb + Vector3(0, fh + 0.04 * k, 0), 0.03 * k, "steel")
+	ball(n, fb + Vector3(0, fh + 0.045 * k, 0), 0.028 * k, hull)
+	for t in [0.15, 0.3]:
+		ring(n, fb + Vector3(0, fh * t / 0.45 + 0.05 * k, 0), Vector3.UP, 0.115 * k, 0.132 * k, hull)
+	var pc2 := fb + Vector3(0, -0.08 * k, 0)
+	for y in [0.052, -0.052]:
+		caps(n, pc2 + Vector3(-0.115, y, 0.02) * k, pc2 + Vector3(0.115, y, 0.02) * k, 0.011 * k, "dark")
+	var pods := ["#e8c547", "#9b5de5", "#e05a4a", "#5ad17a"]
+	for i in pods.size():
+		var c := pc2 + Vector3(-0.09 + i * 0.06, 0, -0.005) * k
+		caps(n, c + Vector3(0, -0.035, 0) * k, c + Vector3(0, 0.035, 0) * k, 0.026 * k, "glass")
+		caps(n, c + Vector3(0, -0.03, 0) * k, c + Vector3(0, 0.02, 0) * k, 0.02 * k, "pod:" + pods[i])
+		for y in [0.052, -0.052]:
+			ring(n, c + Vector3(0, y, 0) * k, Vector3.UP, 0.026 * k, 0.034 * k, hull)
+	_socket(n, "socket_flask", fb + Vector3(0, fh / 2.0, 0))
+	_socket(n, "socket_pods", pc2)
+	return fb + Vector3(0, fh + 0.045 * k, 0)
 
 ## По концепт-арту: голова-объектив с антеннами-ушами, тонкий каркас с открытым
 ## позвоночником, шарниры-шары с бандажами, колба за правым плечом, под ней кассета
@@ -658,17 +825,7 @@ static func _concept(n: Node3D, hull_col: Color) -> void:
 	s.ha_r = Vector3(0.31, 0.93, 0.1)
 	var hc := Vector3(0, 1.68, 0.02)
 	# --- Голова-объектив.
-	rod(n, hc + Vector3(0, 0, -0.08), hc + Vector3(0, 0, 0.07), 0.15, hull)
-	ball(n, hc + Vector3(0, 0, -0.08), 0.15, hull).scale = Vector3(1, 1, 0.55)
-	ring(n, hc + Vector3(0, 0, -0.02), Vector3(0, 0, 1), 0.15, 0.162, "dark")
-	ring(n, hc + Vector3(0, 0, 0.07), Vector3(0, 0, 1), 0.122, 0.158, hull)
-	rod(n, hc + Vector3(0, 0, 0.07), hc + Vector3(0, 0, 0.088), 0.126, "dark")
-	ring(n, hc + Vector3(0, 0, 0.09), Vector3(0, 0, 1), 0.084, 0.1, "accent")
-	rod(n, hc + Vector3(0, 0, 0.088), hc + Vector3(0, 0, 0.097), 0.056, "iris")
-	rod(n, hc + Vector3(0, 0, 0.097), hc + Vector3(0, 0, 0.101), 0.022, "dark")
-	ball(n, hc + Vector3(0, 0, 0.09), 0.084, "glass").scale = Vector3(1, 1, 0.3)
-	for sg in [-1.0, 1.0]:
-		_ear(n, hc + Vector3(sg * 0.125, 0.085, -0.03), sg, hull)
+	_head(n, hc, 0.15, hull, hull)
 	# --- Шея.
 	rod(n, Vector3(0, 1.42, -0.01), hc + Vector3(0, -0.12, -0.02), 0.026, "dark")
 	ring(n, Vector3(0, 1.5, -0.01), Vector3.UP, 0.028, 0.042, hull)
@@ -749,39 +906,18 @@ static func _concept(n: Node3D, hull_col: Color) -> void:
 		ring(n, Vector3(an.x, 0.055, bz + 0.05), Vector3(0, 0.3, 1), 0.052, 0.06, "dark")
 		rod(n, Vector3(an.x, 0.005, bz - 0.08), Vector3(an.x, 0.085, bz - 0.08), 0.045, "dark")
 		ring(n, Vector3(an.x, 0.12, an.z), Vector3.UP, 0.045, 0.062, hull)
-	# --- Колба за правым плечом на ремнях, крышки из корпуса.
+	# --- Колба за правым плечом на ремнях, под ней кассета капсул.
 	var fb := Vector3(0.14, 1.1, -0.22)
 	var fh := 0.5
-	rod(n, fb, fb + Vector3(0, 0.05, 0), 0.122, hull)
-	rod(n, fb + Vector3(0, 0.05, 0), fb + Vector3(0, fh - 0.05, 0), 0.115, "glass")
-	rod(n, fb + Vector3(0, 0.06, 0), fb + Vector3(0, 0.06 + (fh - 0.12) * 0.8, 0), 0.1, "gas")
-	rod(n, fb + Vector3(0, fh - 0.05, 0), fb + Vector3(0, fh, 0), 0.122, hull)
-	rod(n, fb + Vector3(0, fh, 0), fb + Vector3(0, fh + 0.04, 0), 0.03, "steel")
-	ball(n, fb + Vector3(0, fh + 0.045, 0), 0.028, hull)
-	for t in [0.15, 0.3]:
-		ring(n, fb + Vector3(0, fh * t / 0.45 + 0.05, 0), Vector3.UP, 0.115, 0.132, hull)
+	var top := _flask_pack(n, fb, fh, 0.115, hull)
 	for y in [1.25, 1.4]:
 		rod(n, Vector3(0.02, y, -0.06), Vector3(0.12, y, -0.2), 0.012, hull)
-	# Кассета капсул под колбой.
-	var pc2 := Vector3(0.14, 1.02, -0.22)
-	for y in [0.052, -0.052]:
-		caps(n, pc2 + Vector3(-0.115, y, 0.02), pc2 + Vector3(0.115, y, 0.02), 0.011, "dark")
-	var pods := ["#e8c547", "#9b5de5", "#e05a4a", "#5ad17a"]
-	for i in pods.size():
-		var c := pc2 + Vector3(-0.09 + i * 0.06, 0, -0.005)
-		caps(n, c + Vector3(0, -0.035, 0), c + Vector3(0, 0.035, 0), 0.026, "glass")
-		caps(n, c + Vector3(0, -0.03, 0), c + Vector3(0, 0.02, 0), 0.02, "pod:" + pods[i])
-		for y in [0.052, -0.052]:
-			ring(n, c + Vector3(0, y, 0), Vector3.UP, 0.026, 0.034, hull)
 	# Шланги от колбы: к затылку, к обоим плечам, к правому бедру.
-	var top := fb + Vector3(0, fh + 0.045, 0)
 	hose(n, top, top + Vector3(0, 0.12, 0), hc + Vector3(0.05, -0.02, -0.24), hc + Vector3(0.02, -0.06, -0.12), 0.012)
 	hose(n, fb + Vector3(-0.06, fh - 0.02, -0.03), fb + Vector3(-0.18, fh + 0.08, -0.02), s.sh_l + Vector3(0.1, 0.12, -0.12), s.sh_l + Vector3(0.02, 0.03, -0.04), 0.011)
 	hose(n, fb + Vector3(0.07, fh - 0.03, 0.0), fb + Vector3(0.14, fh + 0.03, 0.0), s.sh_r + Vector3(0.06, 0.1, -0.1), s.sh_r + Vector3(0.0, 0.03, -0.04), 0.011)
 	hose(n, fb + Vector3(0.07, 0.02, 0.0), fb + Vector3(0.12, -0.2, 0.0), s.hi_r + Vector3(0.12, 0.1, -0.12), s.hi_r + Vector3(0.05, 0.0, -0.04), 0.011)
 	# --- Точки крепления.
-	_socket(n, "socket_flask", fb + Vector3(0, fh / 2.0, 0))
-	_socket(n, "socket_pods", pc2)
 	_socket(n, "socket_hand_l", s.ha_l + Vector3(0, -0.1, 0))
 	_socket(n, "socket_hand_r", s.ha_r + Vector3(0, -0.1, 0))
 	_socket(n, "socket_plate_chest", Vector3(0, 1.33, 0.12))
@@ -789,3 +925,161 @@ static func _concept(n: Node3D, hull_col: Color) -> void:
 	_socket(n, "socket_plate_sh_r", s.sh_r + Vector3(0.02, 0.06, 0))
 	_socket(n, "socket_plate_thigh_l", s.hi_l.lerp(s.kn_l, 0.5) + Vector3(0, 0, 0.06))
 	_socket(n, "socket_plate_thigh_r", s.hi_r.lerp(s.kn_r, 0.5) + Vector3(0, 0, 0.06))
+
+# ---------------------------------------------------------------- чистые варианты
+
+## Светлая краска корпуса из металла планеты и сам металл — акцентом.
+static func _scheme(hull_col: Color) -> Array:
+	var paint := hull_col.lerp(Color(0.86, 0.84, 0.8), 0.55).darkened(0.08)
+	return ["paint:#" + paint.to_html(false), "metal:#" + hull_col.to_html(false)]
+
+## «Хард-серфейс»: крупные гладкие панели с фасками, кираса, массивные
+## предплечья и голени, тёмная механика, медь — акцентом; поза с контрапостом.
+static func _clean(n: Node3D, hull_col: Color) -> void:
+	var sc := _scheme(hull_col)
+	var paint: String = sc[0]
+	var metal: String = sc[1]
+	# Вес на левой ноге: левое бедро выше, левое плечо ниже, правое колено согнуто.
+	var s := {
+		"pelvis": Vector3(0, 0.93, 0),
+		"sh_l": Vector3(-0.24, 1.43, 0), "sh_r": Vector3(0.24, 1.455, 0),
+		"el_l": Vector3(-0.3, 1.17, -0.04), "el_r": Vector3(0.31, 1.19, -0.02),
+		"ha_l": Vector3(-0.31, 0.94, 0.05), "ha_r": Vector3(0.33, 0.97, 0.09),
+		"hi_l": Vector3(-0.11, 0.93, 0), "hi_r": Vector3(0.11, 0.91, 0),
+		"kn_l": Vector3(-0.12, 0.5, 0.04), "kn_r": Vector3(0.14, 0.49, 0.1),
+		"an_l": Vector3(-0.13, 0.09, 0.0), "an_r": Vector3(0.18, 0.09, 0.07),
+	}
+	var tilt := Basis(Vector3.BACK, 0.05)
+	# --- Голова: наклон вбок и чуть вниз — «присматривается».
+	var hc := Vector3(0.0, 1.63, 0.03)
+	_head(n, hc, 0.14, paint, metal, Vector3(-0.08, 0.12, 0.12))
+	rod(n, Vector3(0, 1.44, -0.01), hc + Vector3(0, -0.1, -0.02), 0.03, "dark")
+	disc(n, Vector3(0, 1.475, -0.01), Vector3.UP, 0.07, 0.035, "dark")
+	# --- Кираса: грудь с фаской, медная полоса, светящиеся щели.
+	# Верх шире низа — «героический» клин.
+	rbox(n, Vector3(0, 1.37, 0), Vector3(0.39, 0.18, 0.25), 0.045, paint, tilt)
+	rbox(n, Vector3(0, 1.235, 0.005), Vector3(0.29, 0.12, 0.21), 0.035, paint, tilt)
+	rbox(n, Vector3(0, 1.31, 0.121), Vector3(0.05, 0.24, 0.03), 0.01, metal, tilt)
+	for sg in [-1.0, 1.0]:
+		rbox(n, Vector3(sg * 0.105, 1.41 + sg * 0.005, 0.126), Vector3(0.09, 0.013, 0.01), 0.003, "glow", tilt)
+	# Живот, поясница-гофра, таз.
+	rbox(n, Vector3(0, 1.145, -0.005), Vector3(0.18, 0.06, 0.14), 0.02, "dark")
+	for k in 3:
+		disc(n, Vector3(0, 1.07 + k * 0.022, -0.01), Vector3.UP, 0.055, 0.017, "rubber" if k % 2 else "dark")
+	var pb := Basis(Vector3.BACK, -0.04)
+	rbox(n, s.pelvis + Vector3(0, 0.02, 0), Vector3(0.27, 0.1, 0.17), 0.03, "dark", pb)
+	rbox(n, s.pelvis + Vector3(0, 0.01, 0.09), Vector3(0.16, 0.075, 0.03), 0.012, paint, pb * Basis(Vector3.RIGHT, -0.2))
+	# --- Руки и ноги.
+	for side in ["l", "r"]:
+		var sg: float = -1.0 if side == "l" else 1.0
+		var sh: Vector3 = s["sh_" + side]
+		var el: Vector3 = s["el_" + side]
+		var ha: Vector3 = s["ha_" + side]
+		var hi: Vector3 = s["hi_" + side]
+		var kn: Vector3 = s["kn_" + side]
+		var an: Vector3 = s["an_" + side]
+		# Наплечник с фаской.
+		rbox(n, sh + Vector3(sg * 0.025, 0.05, 0), Vector3(0.13, 0.065, 0.16), 0.025, paint, Basis(Vector3.BACK, -sg * 0.35))
+		ball(n, sh, 0.05, "dark")
+		rod(n, sh, el, 0.034, "dark")
+		piston(n, sh, el, Vector3(sg * 0.04, 0, -0.025), 0.017)
+		ball(n, el, 0.042, "dark")
+		# Предплечье — массивный щиток с медным бандажом у запястья.
+		rbox_along(n, el.lerp(ha, 0.12), el.lerp(ha, 0.8), 0.085, 0.095, 0.022, Vector3(sg * 0.3, 0, 1), paint)
+		rbox_along(n, el.lerp(ha, 0.8), el.lerp(ha, 0.9), 0.09, 0.1, 0.012, Vector3(sg * 0.3, 0, 1), metal)
+		ball(n, ha, 0.03, "dark")
+		hand(n, ha, (ha - el).normalized() + Vector3(0, -0.6, 0), Vector3(-sg, 0, 0), paint, 1.25)
+		# Бедро — тёмная кость с поршнем, колено — щиток.
+		ball(n, hi, 0.05, "dark")
+		rod(n, hi, kn, 0.038, "dark")
+		piston(n, hi, kn, Vector3(sg * 0.055, 0, -0.02), 0.02)
+		rbox_along(n, hi.lerp(kn, 0.14), hi.lerp(kn, 0.72), 0.09, 0.1, 0.024, Vector3(sg * 0.2, 0, 1), paint)
+		ball(n, kn, 0.046, "dark")
+		rbox(n, kn + Vector3(0, 0.015, 0.05), Vector3(0.085, 0.1, 0.05), 0.018, paint, Basis(Vector3.RIGHT, -0.2))
+		# Голень — щиток с медным бандажом, поршень сзади.
+		rbox_along(n, kn.lerp(an, 0.14), kn.lerp(an, 0.86), 0.1, 0.12, 0.026, Vector3.BACK, paint)
+		rbox_along(n, kn.lerp(an, 0.2), kn.lerp(an, 0.27), 0.106, 0.126, 0.012, Vector3.BACK, metal)
+		piston(n, kn, an, Vector3(0, 0, -0.07), 0.02)
+		ball(n, an, 0.038, "dark")
+		# Ступня: корпус, подошва, скошенный носок; правая развёрнута наружу.
+		var fbas := Basis(Vector3.UP, 0.0 if side == "l" else 0.28)
+		var fc := Vector3(an.x, 0, an.z)
+		rbox(n, fc + fbas * Vector3(0, 0.017, 0.05), Vector3(0.14, 0.034, 0.27), 0.012, "dark", fbas)
+		rbox(n, fc + fbas * Vector3(0, 0.06, 0.02), Vector3(0.13, 0.07, 0.19), 0.025, paint, fbas)
+		rbox(n, fc + fbas * Vector3(0, 0.05, 0.14), Vector3(0.125, 0.05, 0.08), 0.02, paint, fbas * Basis(Vector3.RIGHT, 0.3))
+	# --- Колба за правым плечом, два шланга.
+	var fb := Vector3(0.15, 1.13, -0.24)
+	var fh := 0.46
+	var top := _flask_pack(n, fb, fh, 0.105, metal)
+	for y in [1.26, 1.4]:
+		rod(n, Vector3(0.04, y, -0.1), Vector3(0.13, y, -0.22), 0.013, "dark")
+	hose(n, fb + Vector3(-0.06, fh - 0.02, -0.02), fb + Vector3(-0.18, fh + 0.08, -0.02), s.sh_l + Vector3(0.1, 0.12, -0.12), s.sh_l + Vector3(0.02, 0.03, -0.05), 0.013)
+	hose(n, top, top + Vector3(0.02, 0.1, 0.0), s.sh_r + Vector3(0.04, 0.14, -0.12), s.sh_r + Vector3(0.0, 0.04, -0.05), 0.013)
+	_socket(n, "socket_hand_l", s.ha_l + Vector3(0, -0.12, 0))
+	_socket(n, "socket_hand_r", s.ha_r + Vector3(0, -0.12, 0))
+	_socket(n, "socket_plate_chest", Vector3(0, 1.33, 0.13))
+	_socket(n, "socket_plate_sh_l", s.sh_l + Vector3(-0.03, 0.09, 0))
+	_socket(n, "socket_plate_sh_r", s.sh_r + Vector3(0.03, 0.09, 0))
+	_socket(n, "socket_plate_thigh_l", s.hi_l.lerp(s.kn_l, 0.5) + Vector3(0, 0, 0.05))
+	_socket(n, "socket_plate_thigh_r", s.hi_r.lerp(s.kn_r, 0.5) + Vector3(0, 0, 0.05))
+
+## «Компаньон»: коренастый, торс-яйцо, крупная голова на плечах, короткие толстые
+## конечности, крупные кисти и ступни.
+static func _buddy(n: Node3D, hull_col: Color) -> void:
+	var sc := _scheme(hull_col)
+	var paint: String = sc[0]
+	var metal: String = sc[1]
+	var s := {
+		"pelvis": Vector3(0, 0.63, 0),
+		"sh_l": Vector3(-0.22, 1.0, 0), "sh_r": Vector3(0.22, 1.01, 0),
+		"el_l": Vector3(-0.29, 0.83, 0.02), "el_r": Vector3(0.3, 0.84, 0.05),
+		"ha_l": Vector3(-0.3, 0.69, 0.09), "ha_r": Vector3(0.31, 0.71, 0.13),
+		"hi_l": Vector3(-0.1, 0.62, 0), "hi_r": Vector3(0.1, 0.61, 0),
+		"kn_l": Vector3(-0.11, 0.36, 0.04), "kn_r": Vector3(0.12, 0.36, 0.08),
+		"an_l": Vector3(-0.12, 0.1, 0.0), "an_r": Vector3(0.14, 0.1, 0.05),
+	}
+	# --- Голова крупная, посажена на плечи.
+	var hc := Vector3(0, 1.25, 0.03)
+	_head(n, hc, 0.19, paint, metal, Vector3(-0.06, -0.1, -0.14))
+	disc(n, Vector3(0, 1.07, 0), Vector3.UP, 0.075, 0.05, "dark")
+	# --- Торс-яйцо, тёмный пояс, «сердце» с подсветкой.
+	var egg := [Vector2(0, -0.2), Vector2(0.1, -0.19), Vector2(0.16, -0.14), Vector2(0.19, -0.05),
+		Vector2(0.19, 0.05), Vector2(0.165, 0.13), Vector2(0.11, 0.19), Vector2(0, 0.215)]
+	lathe(n, Vector3(0, 0.86, 0), Vector3.UP, egg, paint, 24).scale = Vector3(1.08, 1.0, 0.88)
+	ring(n, Vector3(0, 0.74, 0), Vector3.UP, 0.165, 0.185, "dark").scale = Vector3(1.08, 1.0, 0.88)
+	disc(n, Vector3(0, 0.92, 0.155), Vector3.BACK, 0.05, 0.022, metal)
+	ring(n, Vector3(0, 0.92, 0.167), Vector3.BACK, 0.03, 0.038, "glow")
+	lathe(n, s.pelvis, Vector3.UP, [Vector2(0, -0.06), Vector2(0.1, -0.05), Vector2(0.13, 0.0), Vector2(0.12, 0.04), Vector2(0, 0.05)], "dark").scale = Vector3(1.1, 1.0, 0.85)
+	# --- Конечности.
+	for side in ["l", "r"]:
+		var sg: float = -1.0 if side == "l" else 1.0
+		var sh: Vector3 = s["sh_" + side]
+		var el: Vector3 = s["el_" + side]
+		var ha: Vector3 = s["ha_" + side]
+		var hi: Vector3 = s["hi_" + side]
+		var kn: Vector3 = s["kn_" + side]
+		var an: Vector3 = s["an_" + side]
+		ellipsoid(n, sh + Vector3(sg * 0.02, 0.02, 0), Vector3(0.075, 0, 0), Vector3(0, 0.065, 0), Vector3(0, 0, 0.08), paint)
+		caps(n, sh, el, 0.035, "dark")
+		ball(n, el, 0.042, metal)
+		caps(n, el.lerp(ha, 0.1), el.lerp(ha, 0.8), 0.052, paint)
+		hand(n, ha, (ha - el).normalized() + Vector3(0, -0.6, 0), Vector3(-sg, 0, 0), paint, 1.4)
+		caps(n, hi, kn, 0.045, "dark")
+		ball(n, kn, 0.05, metal)
+		caps(n, kn.lerp(an, 0.2), kn.lerp(an, 0.75), 0.064, paint)
+		piston(n, kn, an, Vector3(0, 0, -0.075), 0.018)
+		ellipsoid(n, Vector3(an.x, 0.022, an.z + 0.04), Vector3(0.085, 0, 0), Vector3(0, 0.024, 0), Vector3(0, 0, 0.14), "dark")
+		ellipsoid(n, Vector3(an.x, 0.06, an.z + 0.04), Vector3(0.08, 0, 0), Vector3(0, 0.055, 0), Vector3(0, 0, 0.125), paint)
+	# --- Колба поменьше, два шланга.
+	var fb := Vector3(0.12, 0.8, -0.22)
+	var fh := 0.34
+	var top := _flask_pack(n, fb, fh, 0.085, metal)
+	hose(n, fb + Vector3(-0.05, fh - 0.02, -0.02), fb + Vector3(-0.15, fh + 0.06, -0.02), s.sh_l + Vector3(0.08, 0.1, -0.1), s.sh_l + Vector3(0.02, 0.03, -0.05), 0.012)
+	hose(n, top, top + Vector3(0.02, 0.08, 0.0), s.sh_r + Vector3(0.03, 0.12, -0.1), s.sh_r + Vector3(0.0, 0.04, -0.05), 0.012)
+	_socket(n, "socket_hand_l", s.ha_l + Vector3(0, -0.12, 0))
+	_socket(n, "socket_hand_r", s.ha_r + Vector3(0, -0.12, 0))
+	_socket(n, "socket_plate_chest", Vector3(0, 0.92, 0.17))
+	_socket(n, "socket_plate_sh_l", s.sh_l + Vector3(-0.02, 0.08, 0))
+	_socket(n, "socket_plate_sh_r", s.sh_r + Vector3(0.02, 0.08, 0))
+	_socket(n, "socket_plate_thigh_l", s.hi_l.lerp(s.kn_l, 0.5) + Vector3(0, 0, 0.05))
+	_socket(n, "socket_plate_thigh_r", s.hi_r.lerp(s.kn_r, 0.5) + Vector3(0, 0, 0.05))
