@@ -1,6 +1,6 @@
 extends Node3D
 ## Витрина вариантов робота (к игре не подключена).
-##   godot --path . res://proto/robots.tscn -- --shot=front|back|top|close:N|closeback:N|head:N --screenshot=путь.png
+##   godot --path . res://proto/robots.tscn -- --shot=front|back|top|close:N|closeback:N|head:N|hand:N --screenshot=путь.png
 
 var shot := "front"
 var shot_path := ""
@@ -104,6 +104,11 @@ func _camera(n: int) -> void:
 		cam.position = Vector3(x + (-1.5 if back else 1.5), 1.35, -3.3 if back else 3.3)
 		cam.look_at(Vector3(x, 0.92, 0))
 		cam.fov = 36.0
+	if shot.begins_with("hand:"):
+		var kx := (int(shot.substr(5)) - (n - 1) / 2.0) * GAP
+		cam.position = Vector3(kx + 0.75, 1.0, 0.5)
+		cam.look_at(Vector3(kx + 0.3, 0.88, 0.08))
+		cam.fov = 30.0
 	if shot.begins_with("head:"):
 		var hx := (int(shot.substr(5)) - (n - 1) / 2.0) * GAP
 		cam.position = Vector3(hx + 0.35, 1.85, 1.0)

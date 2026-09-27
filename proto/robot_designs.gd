@@ -477,6 +477,126 @@ static func _jumper(n: Node3D) -> void:
 
 # ---------------------------------------------------------------- концепт-арт
 
+## Поверхность-сетка по параметрам u, v ∈ [0, 1]; лицевая сторона — du × dv.
+static func _surf(st: SurfaceTool, f: Callable, nu: int, nv: int, flip: bool = false) -> void:
+	for i in nu:
+		for j in nv:
+			var p00: Vector3 = f.call(float(i) / nu, float(j) / nv)
+			var p10: Vector3 = f.call(float(i + 1) / nu, float(j) / nv)
+			var p11: Vector3 = f.call(float(i + 1) / nu, float(j + 1) / nv)
+			var p01: Vector3 = f.call(float(i) / nu, float(j + 1) / nv)
+			if flip:
+				st.add_vertex(p00); st.add_vertex(p10); st.add_vertex(p11)
+				st.add_vertex(p00); st.add_vertex(p11); st.add_vertex(p01)
+			else:
+				st.add_vertex(p00); st.add_vertex(p11); st.add_vertex(p10)
+				st.add_vertex(p00); st.add_vertex(p01); st.add_vertex(p11)
+
+## Узел с мешем, у которого локальная Y идёт вдоль axis, Z — к face.
+static func _placed(p: Node3D, mesh: Mesh, c: Vector3, axis: Vector3, face: Vector3, m: String) -> MeshInstance3D:
+	var y := axis.normalized()
+	var z := (face - y * y.dot(face)).normalized()
+	var mi := MeshInstance3D.new()
+	mi.mesh = mesh
+	mi.material_override = mat(m)
+	mi.transform = Transform3D(Basis(y.cross(z), y, z), c)
+	p.add_child(mi)
+	return mi
+
+## Изогнутая накладка: кусок трубы (дуга arc радиан) вдоль a→b, обращённый к face,
+## с выпуклостью посередине и сужением к концу.
+static func shell(p: Node3D, a: Vector3, b: Vector3, r: float, arc: float, t: float, face: Vector3, m: String, taper: float = 1.0, bulge: float = 0.12) -> MeshInstance3D:
+	var l := a.distance_to(b)
+	var rad := func(v: float) -> float: return r * (1.0 + bulge * sin(PI * v)) * lerpf(1.0, taper, v)
+	var pt := func(th: float, v: float, dr: float) -> Vector3:
+		var rr: float = rad.call(v) + dr
+		return Vector3(sin(th) * rr, v * l, cos(th) * rr)
+	var st := SurfaceTool.new()
+	st.begin(Mesh.PRIMITIVE_TRIANGLES)
+	st.set_smooth_group(1)
+	_surf(st, func(u, v): return pt.call((u - 0.5) * arc, v, t), 12, 8)
+	st.set_smooth_group(2)
+	_surf(st, func(u, v): return pt.call((0.5 - u) * arc, v, 0.0), 12, 8)
+	st.set_smooth_group(0xFFFFFFFF)
+	_surf(st, func(u, v): return pt.call(arc / 2.0, v, t * (1.0 - u)), 1, 8)
+	_surf(st, func(u, v): return pt.call(-arc / 2.0, v, t * u), 1, 8)
+	_surf(st, func(u, v): return pt.call((u - 0.5) * arc, 0.0, t * v), 12, 1)
+	_surf(st, func(u, v): return pt.call((u - 0.5) * arc, 1.0, t * (1.0 - v)), 12, 1)
+	st.generate_normals()
+	return _placed(p, st.commit(), a, b - a, face, m)
+
+## Точёная деталь: профиль (радиус, высота) снизу вверх, вращённый вокруг axis.
+static func lathe(p: Node3D, c: Vector3, axis: Vector3, profile: Array, m: String, seg: int = 20, face := Vector3.BACK) -> MeshInstance3D:
+	var st := SurfaceTool.new()
+	st.begin(Mesh.PRIMITIVE_TRIANGLES)
+	var np := profile.size() - 1
+	for j in np:
+		st.set_smooth_group(1)
+		var q0: Vector2 = profile[j]
+		var q1: Vector2 = profile[j + 1]
+		_surf(st, func(u, v):
+			var q := q0.lerp(q1, v)
+			return Vector3(sin(u * TAU) * q.x, q.y, cos(u * TAU) * q.x), seg, 1)
+	st.generate_normals()
+	if abs(axis.normalized().dot(face.normalized())) > 0.95:
+		face = Vector3.UP if abs(axis.normalized().y) < 0.95 else Vector3.BACK
+	return _placed(p, st.commit(), c, axis, face, m)
+
+## Сплюснутый шар с полуосями-векторами ax, ay, az.
+static func ellipsoid(p: Node3D, c: Vector3, ax: Vector3, ay: Vector3, az: Vector3, m: String) -> MeshInstance3D:
+	var sm := SphereMesh.new()
+	sm.radius = 1.0
+	sm.height = 2.0
+	sm.radial_segments = 18
+	sm.rings = 9
+	var mi := MeshInstance3D.new()
+	mi.mesh = sm
+	mi.material_override = mat(m)
+	mi.transform = Transform3D(Basis(ax, ay, az), c)
+	p.add_child(mi)
+	return mi
+
+## Диск со скруглённым краем (позвонок, гофра).
+static func disc(p: Node3D, c: Vector3, axis: Vector3, r: float, h: float, m: String) -> MeshInstance3D:
+	return lathe(p, c, axis, [Vector2(0, -h / 2), Vector2(r * 0.8, -h / 2), Vector2(r, -h / 4), Vector2(r, h / 4), Vector2(r * 0.8, h / 2), Vector2(0, h / 2)], m, 16)
+
+## Кисть с фалангами: ладонь, четыре пальца по три фаланги и большой палец.
+## dn — вниз вдоль кисти, side — к ладонной стороне.
+static func hand(p: Node3D, wrist: Vector3, dn: Vector3, side: Vector3, hull: String) -> void:
+	dn = dn.normalized()
+	side = (side - dn * dn.dot(side)).normalized()
+	var fw := dn.cross(side).normalized()
+	if fw.z < 0.0:
+		fw = -fw
+	var pc := wrist + dn * 0.04
+	ellipsoid(p, pc, side * 0.016, dn * 0.036, fw * 0.03, "dark")
+	ellipsoid(p, pc - side * 0.009 + dn * 0.004, side * 0.009, dn * 0.03, fw * 0.03, hull)
+	var lens := [0.85, 1.0, 0.95, 0.78]
+	for i in 4:
+		var k: float = lens[i]
+		var q := pc + dn * 0.032 + fw * (-0.024 + i * 0.016)
+		ball(p, q, 0.0085, "dark")
+		var spread := fw * (i - 1.5) * 0.06
+		var curl := 0.25
+		for sl in [0.026, 0.019, 0.015]:
+			var d := (dn * cos(curl) + side * sin(curl) + spread).normalized()
+			var q2: Vector3 = q + d * sl * k
+			rod(p, q, q2, 0.0062, "steel")
+			ball(p, q2, 0.0072, "dark")
+			q = q2
+			curl += 0.3
+	# Большой палец: отходит вперёд и к ладони.
+	var tq := pc + fw * 0.026 - dn * 0.012 + side * 0.006
+	ball(p, tq, 0.009, "dark")
+	var tc := 0.2
+	for sl in [0.024, 0.018, 0.014]:
+		var d := (dn * 0.7 + fw * 0.45 * cos(tc) + side * (0.3 + sin(tc))).normalized()
+		var t2: Vector3 = tq + d * sl
+		rod(p, tq, t2, 0.0068, "steel")
+		ball(p, t2, 0.0076, "dark")
+		tq = t2
+		tc += 0.35
+
 ## Точка крепления для игры: модуль, пластина, уровень газа.
 static func _socket(n: Node3D, sname: String, pos: Vector3) -> void:
 	var m := Marker3D.new()
@@ -547,7 +667,6 @@ static func _concept(n: Node3D, hull_col: Color) -> void:
 	rod(n, hc + Vector3(0, 0, 0.088), hc + Vector3(0, 0, 0.097), 0.056, "iris")
 	rod(n, hc + Vector3(0, 0, 0.097), hc + Vector3(0, 0, 0.101), 0.022, "dark")
 	ball(n, hc + Vector3(0, 0, 0.09), 0.084, "glass").scale = Vector3(1, 1, 0.3)
-	box(n, hc + Vector3(0, 0.15, -0.04), Vector3(0.07, 0.03, 0.08), hull)
 	for sg in [-1.0, 1.0]:
 		_ear(n, hc + Vector3(sg * 0.125, 0.085, -0.03), sg, hull)
 	# --- Шея.
@@ -557,22 +676,35 @@ static func _concept(n: Node3D, hull_col: Color) -> void:
 		hose(n, Vector3(sg * 0.05, 1.4, -0.05), Vector3(sg * 0.07, 1.48, -0.08), hc + Vector3(sg * 0.06, -0.2, -0.08), hc + Vector3(sg * 0.05, -0.13, -0.06), 0.01, "rubber", 6)
 	# --- Позвоночник: хромированный стержень и позвонки.
 	rod(n, s.pelvis + Vector3(0, 0, -0.03), Vector3(0, 1.45, -0.03), 0.018, "steel")
-	for k in 8:
-		var y := 1.0 + k * 0.064
-		box(n, Vector3(0, y, -0.03 - sin(k * 0.4) * 0.012), Vector3(0.075 - k * 0.002, 0.04, 0.065), hull if k % 2 == 0 else "dark")
+	for k in 15:
+		var y := 1.0 + k * 0.032
+		var wide := k % 2 == 0
+		disc(n, Vector3(0, y, -0.03 - sin(k * 0.2) * 0.012), Vector3.UP, (0.036 if wide else 0.027) - k * 0.0006, 0.022 if wide else 0.014, hull if wide else "dark")
 	# Грудная клетка: рёбра, грудные пластины, механизм в центре.
 	for k in 3:
 		ring(n, Vector3(0, 1.22 + k * 0.08, 0.0), Vector3.UP, 0.125 + k * 0.005, 0.138 + k * 0.005, "dark").scale = Vector3(1.25, 1, 0.8)
+	# Выпуклый грудной щиток — кусок сферы, в центре механизм-шестерня.
+	var dome := []
+	for k in 7:
+		var al := 0.62 * (1.0 - k / 6.0)
+		dome.append(Vector2(0.17 * sin(al), 0.17 * cos(al) - 0.17 * cos(0.62)))
+	dome.push_front(Vector2(0, 0))
+	lathe(n, Vector3(0, 1.33, 0.09), Vector3.BACK, dome, hull).scale = Vector3(1.3, 0.8, 0.85)   # ширина, глубина, высота
+	ring(n, Vector3(0, 1.33, 0.125), Vector3(0, 0, 1), 0.026, 0.044, "dark")
+	for k in 8:
+		var ga := k * TAU / 8.0
+		box(n, Vector3(cos(ga) * 0.047, 1.33 + sin(ga) * 0.047, 0.125), Vector3(0.012, 0.012, 0.012), "dark", Vector3(0, 0, ga))
+	ball(n, Vector3(0, 1.33, 0.13), 0.022, "steel")
 	for sg in [-1.0, 1.0]:
-		plate(n, Vector3(sg * 0.075, 1.23, 0.105), Vector3(sg * 0.1, 1.42, 0.09), 0.07, 0.016, Vector3.ZERO, hull)
-	ring(n, Vector3(0, 1.32, 0.105), Vector3(0, 0, 1), 0.028, 0.048, "dark")
-	ball(n, Vector3(0, 1.32, 0.11), 0.024, "steel")
+		shell(n, Vector3(sg * 0.2, 1.47, 0.0), Vector3(sg * 0.07, 1.46, 0.02), 0.045, 2.4, 0.012, Vector3(0, 1, 0.3), hull, 0.9)
 	rod(n, s.sh_l, s.sh_r, 0.03, hull)
-	box(n, Vector3(0, 1.08, -0.01), Vector3(0.12, 0.07, 0.08), "dark")
-	# Таз и V-щиток.
-	box(n, s.pelvis, Vector3(0.26, 0.1, 0.15), "dark")
-	for sg in [-1.0, 1.0]:
-		plate(n, Vector3(sg * 0.12, 1.0, 0.085), Vector3(0, 0.88, 0.085), 0.05, 0.018, Vector3.ZERO, hull)
+	# Поясница — гофра.
+	for k in 4:
+		disc(n, Vector3(0, 1.05 + k * 0.022, -0.01), Vector3.UP, 0.05 - abs(k - 1.5) * 0.006, 0.016, "dark" if k % 2 else "rubber")
+	# Таз — чаша с поясом, спереди изогнутый щиток.
+	lathe(n, s.pelvis, Vector3.UP, [Vector2(0, -0.06), Vector2(0.06, -0.058), Vector2(0.1, -0.035), Vector2(0.118, 0.0), Vector2(0.12, 0.03), Vector2(0.1, 0.045), Vector2(0, 0.05)], "dark").scale = Vector3(1.15, 1.0, 0.8)
+	ring(n, s.pelvis + Vector3(0, 0.025, 0), Vector3.UP, 0.13, 0.143, hull).scale = Vector3(1.05, 1.0, 0.78)
+	shell(n, s.pelvis + Vector3(0, -0.05, 0), s.pelvis + Vector3(0, 0.02, 0), 0.105, 2.0, 0.012, Vector3.BACK, hull, 1.08, 0.0)
 	# --- Конечности: хромированные кости, шары с бандажами, пластины корпуса.
 	for side in ["l", "r"]:
 		var sg: float = -1.0 if side == "l" else 1.0
@@ -591,35 +723,31 @@ static func _concept(n: Node3D, hull_col: Color) -> void:
 			var jr: float = j[1]
 			ball(n, jp, jr, "steel")
 			ring(n, jp, Vector3(1, 0, 0), jr * 0.85, jr * 1.08, hull)
-		# Бандажи и пластины.
-		for bone in [[sh, el, 0.034], [el, ha, 0.03], [hi, kn, 0.041], [kn, an, 0.036]]:
+		# Изогнутые накладки корпуса и бандажи на открытых костях.
+		shell(n, sh.lerp(el, 0.18), sh.lerp(el, 0.82), 0.042, 2.6, 0.01, Vector3(sg, 0, -0.2), hull, 0.85)
+		shell(n, el.lerp(ha, 0.2), el.lerp(ha, 0.72), 0.038, 2.3, 0.009, Vector3(sg, 0, 0.3), hull, 0.8)
+		shell(n, hi.lerp(kn, 0.12), hi.lerp(kn, 0.8), 0.05, 2.9, 0.011, Vector3(sg * 0.25, 0, 1), hull, 0.8)
+		shell(n, kn.lerp(an, 0.15), kn.lerp(an, 0.6), 0.044, 2.2, 0.009, Vector3(0, 0, -1), hull, 0.75, 0.2)
+		for bone in [[el, ha, 0.03, 0.85], [kn, an, 0.036, 0.78]]:
 			var a: Vector3 = bone[0]
 			var b: Vector3 = bone[1]
 			var r: float = bone[2]
-			for t in [0.3, 0.7]:
-				ring(n, a.lerp(b, t), (b - a).normalized(), r, r + 0.012, hull)
-		plate(n, sh.lerp(el, 0.25), sh.lerp(el, 0.75), 0.045, 0.016, Vector3(sg * 0.035, 0, 0), hull)
-		plate(n, el.lerp(ha, 0.25), el.lerp(ha, 0.7), 0.042, 0.016, Vector3(sg * 0.03, 0, 0.005), hull)
-		plate(n, hi.lerp(kn, 0.2), hi.lerp(kn, 0.75), 0.05, 0.016, Vector3(0, 0, 0.045), hull)
+			ring(n, a.lerp(b, bone[3]), (b - a).normalized(), r, r + 0.012, hull)
 		ball(n, kn + Vector3(0, 0, 0.05), 0.03, hull)
 		piston(n, kn, an, Vector3(0, 0, 0.055), 0.022)
 		piston(n, el, ha, Vector3(0, 0, 0.04), 0.016)
 		# Кисть: ладонь и пальцы.
 		ring(n, ha, (ha - el).normalized(), 0.026, 0.038, hull)
-		var pc := ha + Vector3(0, -0.05, 0)
-		box(n, pc, Vector3(0.025, 0.07, 0.055), "dark")
-		for f in 3:
-			var fz := -0.018 + f * 0.018
-			rod(n, pc + Vector3(0, -0.03, fz), pc + Vector3(sg * -0.012, -0.09, fz + 0.01), 0.007, "steel")
-		rod(n, pc + Vector3(sg * -0.01, 0.0, 0.03), pc + Vector3(sg * -0.03, -0.04, 0.05), 0.008, "steel")
+		hand(n, ha, (ha - el).normalized() + Vector3(0, -0.6, 0), Vector3(-sg, 0, 0), hull)
 		# Шланг по ноге: от таза к колену снаружи.
 		hose(n, hi + Vector3(sg * 0.06, 0.02, -0.05), hi + Vector3(sg * 0.12, -0.15, -0.08), kn + Vector3(sg * 0.1, 0.15, -0.06), kn + Vector3(sg * 0.05, 0.02, -0.03), 0.011, "rubber", 8)
 		# Ботинок.
-		var bc := Vector3(an.x, 0.065, an.z + 0.045)
-		box(n, bc, Vector3(0.12, 0.08, 0.24), hull)
-		box(n, Vector3(an.x, 0.015, an.z + 0.045), Vector3(0.13, 0.03, 0.26), "dark")
-		box(n, bc + Vector3(0, 0.03, 0.09), Vector3(0.115, 0.03, 0.08), hull, Vector3(-0.35, 0, 0))
-		box(n, bc + Vector3(0, 0.0, -0.1), Vector3(0.1, 0.1, 0.05), "dark")
+		var bz := an.z + 0.05
+		ellipsoid(n, Vector3(an.x, 0.02, bz), Vector3(0.068, 0, 0), Vector3(0, 0.022, 0), Vector3(0, 0, 0.14), "dark")
+		ellipsoid(n, Vector3(an.x, 0.06, bz - 0.01), Vector3(0.06, 0, 0), Vector3(0, 0.05, 0), Vector3(0, 0, 0.11), hull)
+		ellipsoid(n, Vector3(an.x, 0.05, bz + 0.075), Vector3(0.063, 0, 0), Vector3(0, 0.042, 0), Vector3(0, 0, 0.06), hull)
+		ring(n, Vector3(an.x, 0.055, bz + 0.05), Vector3(0, 0.3, 1), 0.052, 0.06, "dark")
+		rod(n, Vector3(an.x, 0.005, bz - 0.08), Vector3(an.x, 0.085, bz - 0.08), 0.045, "dark")
 		ring(n, Vector3(an.x, 0.12, an.z), Vector3.UP, 0.045, 0.062, hull)
 	# --- Колба за правым плечом на ремнях, крышки из корпуса.
 	var fb := Vector3(0.14, 1.1, -0.22)
@@ -636,14 +764,15 @@ static func _concept(n: Node3D, hull_col: Color) -> void:
 		rod(n, Vector3(0.02, y, -0.06), Vector3(0.12, y, -0.2), 0.012, hull)
 	# Кассета капсул под колбой.
 	var pc2 := Vector3(0.14, 1.02, -0.22)
-	box(n, pc2 + Vector3(0, 0.068, 0), Vector3(0.25, 0.014, 0.08), hull)
-	box(n, pc2 + Vector3(0, -0.068, 0), Vector3(0.25, 0.014, 0.08), hull)
-	box(n, pc2 + Vector3(0, 0, 0.035), Vector3(0.25, 0.13, 0.01), "dark")
+	for y in [0.052, -0.052]:
+		caps(n, pc2 + Vector3(-0.115, y, 0.02), pc2 + Vector3(0.115, y, 0.02), 0.011, "dark")
 	var pods := ["#e8c547", "#9b5de5", "#e05a4a", "#5ad17a"]
 	for i in pods.size():
 		var c := pc2 + Vector3(-0.09 + i * 0.06, 0, -0.005)
 		caps(n, c + Vector3(0, -0.035, 0), c + Vector3(0, 0.035, 0), 0.026, "glass")
 		caps(n, c + Vector3(0, -0.03, 0), c + Vector3(0, 0.02, 0), 0.02, "pod:" + pods[i])
+		for y in [0.052, -0.052]:
+			ring(n, c + Vector3(0, y, 0), Vector3.UP, 0.026, 0.034, hull)
 	# Шланги от колбы: к затылку, к обоим плечам, к правому бедру.
 	var top := fb + Vector3(0, fh + 0.045, 0)
 	hose(n, top, top + Vector3(0, 0.12, 0), hc + Vector3(0.05, -0.02, -0.24), hc + Vector3(0.02, -0.06, -0.12), 0.012)
