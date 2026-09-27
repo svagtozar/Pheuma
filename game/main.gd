@@ -1041,6 +1041,15 @@ func _uitest_macro(w: World) -> bool:
 	var shot_ok := await _uitest_shot(base)
 	return tag1 != tag0 and unfolded and shot_ok
 
+## Навести мышь на клетку и дождаться, пока курсор действительно окажется
+## над ней: под Xvfb warp_mouse и сдвиг камеры доходят не за один кадр.
+func _uitest_aim(cell: Vector2i) -> void:
+	for i in 30:
+		get_viewport().warp_mouse(get_viewport().get_canvas_transform() * ((Vector2(cell) + Vector2(0.5, 0.5)) * T))
+		await get_tree().process_frame
+		if mouse_cell() == cell:
+			return
+
 ## Выстрел выхода: дробилка с насосом, в инспекторе «выстрелом в цель (L)», клик по
 ## контейнеру в четырёх клетках — груз долетает.
 func _uitest_shot(base: Vector2i) -> bool:
@@ -1076,8 +1085,7 @@ func _uitest_shot(base: Vector2i) -> bool:
 	cam.position = (Vector2(row) + Vector2(2.5, 0.5)) * T
 	cam.reset_smoothing()
 	await get_tree().process_frame
-	get_viewport().warp_mouse(get_viewport().get_canvas_transform() * ((Vector2(box.cell) + Vector2(0.5, 0.5)) * T))
-	await get_tree().process_frame
+	await _uitest_aim(box.cell)
 	_click(false)
 	var linked := cr.shot_target(0) == box.id
 	var t0 := w.time
@@ -1094,8 +1102,7 @@ func _uitest_shot(base: Vector2i) -> bool:
 	var rb := _find_button(hud.inspector_buttons, "маршрут «")
 	if rb: rb.pressed.emit()
 	await get_tree().process_frame
-	get_viewport().warp_mouse(get_viewport().get_canvas_transform() * ((Vector2(box2.cell) + Vector2(0.5, 0.5)) * T))
-	await get_tree().process_frame
+	await _uitest_aim(box2.cell)
 	_click(false)
 	var routed := not cr.shot_routes(0).is_empty() and int(cr.shot_routes(0)[0][1]) == box2.id
 	var ev := InputEventKey.new()
