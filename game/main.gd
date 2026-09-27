@@ -13,6 +13,7 @@ extends Node2D
 
 const T := 32.0
 const WorldView := preload("res://game/world_view.gd")
+const WorldView3D := preload("res://game/world_view_3d.gd")
 const Hud := preload("res://game/ui/hud.gd")
 const Audio := preload("res://game/audio.gd")
 const Menus := preload("res://game/ui/menus.gd")
@@ -22,6 +23,8 @@ const SETTINGS := "user://settings.json"
 var world: World
 var sim: Sim
 var view: Node2D
+var view3d: Node3D = null      # объёмный вид (F3); создаётся при первом включении
+var use_3d := false
 var cam: Camera2D
 var hud: Control
 var menus: Control
@@ -94,10 +97,13 @@ func _ready() -> void:
 				_demo_n = int(a.substr(7))
 		elif a == "--flow":
 			flow_view = true
+		elif a == "--3d":
+			use_3d = true
 		elif a == "--bench":
 			_bench = true
 			_demo = true
 	randomize()
+	ProtoControls.ensure()
 	view = WorldView.new()
 	view.main = self
 	add_child(view)
@@ -255,6 +261,7 @@ func new_world(s: int, loaded: World = null) -> void:
 	audio.set_world(world)
 	_autosave_t = 0.0
 	view.world = world
+	set_3d(use_3d)
 	cam.position = world.robot.pos * T
 	cam.reset_smoothing()
 	mode = "none"
@@ -271,7 +278,23 @@ func say(text: String) -> void:
 	message_t = 3.0
 
 func mouse_world() -> Vector2:
+	if use_3d and view3d != null and view3d.world != null:
+		return view3d.screen_to_world(get_viewport().get_mouse_position())
 	return get_global_mouse_position() / T
+
+## Объёмный вид вместо плоского. Мир, управление и интерфейс те же.
+func set_3d(on: bool) -> void:
+	use_3d = on
+	if on and view3d == null and world != null:
+		view3d = WorldView3D.new()
+		view3d.main = self
+		add_child(view3d)
+	# Объёмный мир строится при включении: в 2D новый ран его не ждёт.
+	if on and view3d != null and view3d.world != world:
+		view3d.set_world(world)
+	view.visible = not on
+	if view3d != null:
+		view3d.activate(on)
 
 func mouse_cell() -> Vector2i:
 	var m := mouse_world()
@@ -331,7 +354,13 @@ func _process(dt: float) -> void:
 		if Input.is_key_pressed(KEY_A) or Input.is_key_pressed(KEY_LEFT): dir.x -= 1
 		if Input.is_key_pressed(KEY_D) or Input.is_key_pressed(KEY_RIGHT): dir.x += 1
 		if dir != Vector2.ZERO:
-			world.move_robot(dir.normalized() * world.robot_speed() * dt)
+			dir = dir.normalized()
+		else:
+			# Левый стик геймпада (раскладка ProtoControls): наклон задаёт скорость.
+			var stick := ProtoControls.move_vector()
+			dir = Vector2(stick.x, -stick.y)
+		if dir != Vector2.ZERO:
+			world.move_robot(dir * world.robot_speed() * dt)
 		if Input.is_key_pressed(KEY_E):
 			say(world.mine(_mine_target(), dt))
 		if Input.is_key_pressed(KEY_G):
@@ -410,6 +439,9 @@ func _on_key(e: InputEventKey) -> void:
 			if world.fabricator_distance() > World.FAB_RADIUS and hud.windows.fabricator.visible:
 				say("изготовление работает у фабрикатора: подойдите ближе" if world.fabricator_distance() < INF else "сначала поставьте фабрикатор (B)")
 		KEY_H, KEY_F1: hud.toggle("help")
+		KEY_F3:
+			set_3d(not use_3d)
+			say("Объёмный вид" if use_3d else "Плоский вид")
 		KEY_X: set_mode("remove" if mode != "remove" else "none")
 		KEY_V: set_mode("wire" if mode != "wire" else "none")
 		KEY_L: set_mode("link" if mode != "link" else "none")
