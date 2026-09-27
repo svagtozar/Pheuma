@@ -14,6 +14,9 @@ extends RefCounted
 ##   p_process  — n порций обработано дробилкой и печью (с начала этапа)
 ##   p_parts    — n новых деталей завода (с начала этапа)
 ##   p_pressure — сеть держит p атм hold секунд
+##   p_launch   — kg груза улетело на орбиту из пусковой шахты (с начала этапа)
+##   p_beacon   — маяк светит под давлением p атм hold секунд
+##   p_dome     — купол держит ≥ p атм и температуру t=[мин,макс] hold секунд
 ## Источники — завод (ProtoPneumatics), бур (ProtoMining) и груз робота
 ## (Array[Portion] в метаданных "cargo"); любой может отсутствовать.
 
@@ -104,6 +107,8 @@ func attach(net, drill, robot_node: Node3D, crystal_sub: Substance, factory_cent
 	body = robot_node
 	crystal = crystal_sub
 	factory_pos = factory_center
+	if pneu != null:
+		pneu.launch_p = clampf(_pressure_cap(), 2.0, 3.5)
 	resync()
 
 ## Счётчики источников — «с этого места»; после загрузки сохранения тоже.
@@ -111,7 +116,8 @@ func resync() -> void:
 	_last = {"mined": mining.mined_total if mining != null else 0.0,
 		"placed": pneu.placed if pneu != null else 0,
 		"delivered": pneu.delivered if pneu != null else 0,
-		"processed": pneu.processed if pneu != null else 0}
+		"processed": pneu.processed if pneu != null else 0,
+		"launched": pneu.launched_kg if pneu != null else 0.0}
 
 # ---------------------------------------------------------------- этапы
 
@@ -132,7 +138,7 @@ static func adapt_goal(goal: Dictionary, p_cap: float = 4.0) -> Dictionary:
 			var a: Dictionary = adapt_stage(raw.alt[0], i, p_cap)
 			var b: Dictionary = adapt_stage(raw.alt[1], i, p_cap)
 			if b.type == a.type:
-				for t in ["p_mine", "deliveries", "p_process", "p_store", "p_parts", "p_pressure"]:
+				for t in STAGE_TYPES:
 					if t != a.type:
 						b = make_stage(t, i, p_cap)
 						break
@@ -141,18 +147,27 @@ static func adapt_goal(goal: Dictionary, p_cap: float = 4.0) -> Dictionary:
 			out.stages.append(adapt_stage(raw, i, p_cap))
 	return out
 
+const STAGE_TYPES := ["p_mine", "deliveries", "p_process", "p_store", "p_parts", "p_pressure",
+	"p_launch", "p_beacon", "p_dome"]
+
 static func adapt_stage(st: Dictionary, i: int, p_cap: float) -> Dictionary:
 	var t := "p_mine"
 	match str(st.get("type", "")):
 		"stockpile_tags", "stockpile_mass", "phasing_contained":
 			t = "p_store"
-		"launch_mass", "launch_tag", "launch_exotic", "launch_variety", "deliveries":
+		"launch_mass", "launch_tag", "launch_exotic", "launch_variety":
+			t = "p_launch"
+		"deliveries":
 			t = "deliveries"
 		"build_count", "sensor_network":
 			t = "p_parts"
 		"machines_working":
 			t = "p_process"
-		"dome_env", "beacon_hold", "vent_gas":
+		"dome_env":
+			t = "p_dome"
+		"beacon_hold":
+			t = "p_beacon"
+		"vent_gas":
 			t = "p_pressure"
 	var s := make_stage(t, i, p_cap)
 	s.orig = st.get("desc", "")
@@ -183,9 +198,33 @@ static func make_stage(t: String, i: int, p_cap: float) -> Dictionary:
 			return {"type": t, "p": maxf(p, 1.5), "hold": 30.0,
 				"desc": "Удержать в сети %.1f атм 30 секунд" % maxf(p, 1.5),
 				"pitch": "Насосы из прочного материала, слабые детали — убрать."}
+		"p_launch":
+			var kg: float = [6.0, 12.0, 18.0][k]
+			return {"type": t, "kg": kg, "desc": "Отправить на орбиту %.0f кг из пусковой шахты" % kg,
+				"pitch": "Шахта — в конце линии: принимает груз с любой стороны и стартует, накопив %.0f кг и давление." % ProtoPneumatics.LAUNCH_KG}
+		"p_beacon":
+			var p: float = maxf(ProtoPneumatics.BEACON_P, snappedf(minf([2.5, 3.0, 3.5][k], p_cap), 0.5))
+			var hold: float = [30.0, 45.0, 60.0][k]
+			return {"type": t, "p": p, "hold": hold,
+				"desc": "Зажечь маяк: %.1f атм %d секунд" % [p, int(hold)],
+				"pitch": "Маяк — из проводящего или кристаллического материала, рядом насос: пока горит, он ест газ."}
+		"p_dome":
+			var hold: float = [30.0, 40.0, 50.0][k]
+			return {"type": t, "p": 1.0, "t": [5.0, 35.0], "hold": hold,
+				"desc": "Купол для поселенцев: ≥1 атм и 5–35 °C %d секунд" % int(hold),
+				"pitch": "Каждая печь рядом с куполом греет его на 30 °C, конденсатор остужает. Изолирующий материал держит тепло."}
 	var kg: float = [15.0, 25.0, 35.0][k]
 	return {"type": "p_mine", "kg": kg, "desc": "Добыть буром %.0f кг кристаллов" % kg,
 		"pitch": "Пещера и друзы: чем дальше в глубину, тем крупнее кристаллы."}
+
+## Совет, если сооружения цели ещё нет на заводе: "" — есть.
+func _structure_hint(kind: String, what: String, build: String) -> String:
+	if pneu == null:
+		return "%s: %s — стройка." % [what, build]
+	for c in pneu.parts:
+		if pneu.parts[c].kind == kind:
+			return ""
+	return "%s: %s — стройка, листайте детали до конца списка." % [what, build]
 
 ## GoalsTracker зовёт для этапов, которых нет в 2D.
 func eval_stage(tr: GoalsTracker, st: Dictionary, dt: float) -> float:
@@ -201,14 +240,56 @@ func eval_stage(tr: GoalsTracker, st: Dictionary, dt: float) -> float:
 			return float(processed - _bases.processed) / st.n
 		"p_pressure":
 			return tr._hold(net_pressure() >= st.p, st.hold, dt)
+		"p_launch":
+			return (launched.mass - float(_bases.get("launched", 0.0))) / st.kg
+		"p_beacon":
+			return tr._hold(beacon_lit(st.p), st.hold, dt)
+		"p_dome":
+			return tr._hold(dome_ok(st), st.hold, dt)
 	return 0.0
+
+## Горит ли маяк под давлением не ниже p.
+func beacon_lit(p: float) -> bool:
+	if pneu == null:
+		return false
+	for c in pneu.parts:
+		var part: Dictionary = pneu.parts[c]
+		if part.kind == "beacon" and part.work and pneu.pressure(c) >= p:
+			return true
+	return false
+
+## Самый удачный купол: {cell, p, t}; пустой — купола нет.
+func best_dome(st: Dictionary) -> Dictionary:
+	var best := {}
+	var best_err := INF
+	if pneu == null:
+		return best
+	var tr: Array = st.get("t", [5.0, 35.0])
+	for c in pneu.parts:
+		var part: Dictionary = pneu.parts[c]
+		if part.kind != "dome":
+			continue
+		var p: float = pneu.pressure(c)
+		var t := float(part.get("temp", planet.ambient_temp))
+		var err := maxf(0.0, float(st.get("p", 1.0)) - p) * 30.0 + maxf(0.0, tr[0] - t) + maxf(0.0, t - tr[1])
+		if err < best_err:
+			best_err = err
+			best = {"cell": c, "p": p, "t": t}
+	return best
+
+func dome_ok(st: Dictionary) -> bool:
+	var d := best_dome(st)
+	if d.is_empty():
+		return false
+	var tr: Array = st.get("t", [5.0, 35.0])
+	return d.p >= float(st.get("p", 1.0)) and d.t >= tr[0] and d.t <= tr[1]
 
 ## Начался новый этап или выбран путь — счёт «с начала этапа» заново.
 func _check_stage() -> void:
 	var key := "%d:%s" % [goals.stage, str(goals.choices.get(str(goals.stage), ""))]
 	if key != _base_key:
 		_base_key = key
-		_bases = {"mined": mined, "built": built, "processed": processed}
+		_bases = {"mined": mined, "built": built, "processed": processed, "launched": launched.mass}
 
 ## Сколько сделано на текущем этапе: [сейчас, нужно, единица].
 func stage_numbers() -> Array:
@@ -221,7 +302,8 @@ func stage_numbers() -> Array:
 		"deliveries": return [float(stats.hits - goals.base_hits), float(st.n), "капсул"]
 		"p_parts": return [float(built - b.built), float(st.n), "деталей"]
 		"p_process": return [float(processed - b.processed), float(st.n), "порций"]
-		"p_pressure": return [goals.hold, st.hold, "с"]
+		"p_pressure", "p_beacon", "p_dome": return [goals.hold, st.hold, "с"]
+		"p_launch": return [launched.mass - float(b.get("launched", 0.0)), st.kg, "кг"]
 	return [0.0, 1.0, ""]
 
 func tank_mass() -> float:
@@ -320,6 +402,15 @@ func _pull_sources() -> void:
 	if nr > 0:
 		processed += nr
 		robot.xp.firekeeper += 1.0 * nr
+	var nl: float = pneu.launched_kg - float(_last.get("launched", 0.0))
+	if nl > 0.001:
+		launched.mass += nl
+		robot.xp.chief += 0.6 * nl
+		log_event(Vector2i.ZERO, "Старт! На орбиту ушло %.1f кг" % nl)
+	launched.subs = {}
+	for id in pneu.launched_subs:
+		launched.subs[id] = true
+	_last.launched = pneu.launched_kg
 	_last.placed = pneu.placed
 	_last.delivered = pneu.delivered
 	_last.processed = pneu.processed
@@ -616,6 +707,38 @@ func advise(glyph: Callable) -> String:
 			if pneu != null and net_pressure() < st.p * 0.7:
 				return "Давления мало: поставьте ещё насос (%s — стройка) из прочного материала." % build
 			return "Держите давление не ниже %.1f атм: насосы работают, детали целы." % st.p
+		"p_beacon":
+			var hint := _structure_hint("beacon", "Постройте маяк", build)
+			if hint != "":
+				return hint
+			for c in pneu.parts:
+				if pneu.parts[c].kind == "beacon" and not ProtoPneumatics.beacon_ok(pneu.parts[c].sub):
+					return "Маяк не светит: нужен проводящий или кристаллический материал (%s — материал в стройке)." % glyph.call([&"build_material"])
+			if not beacon_lit(st.p):
+				return "Маяку мало давления: нужно %.1f атм — насос вплотную к маяку." % st.p
+			return "Маяк горит — держите давление, насосы не выключайте."
+		"p_dome":
+			var hint := _structure_hint("dome", "Постройте купол", build)
+			if hint != "":
+				return hint
+			var d := best_dome(st)
+			if d.p < float(st.p):
+				return "В куполе %.1f атм — поставьте насос вплотную, нужно не меньше %.1f." % [d.p, st.p]
+			if d.t < st.t[0]:
+				return "В куполе %.0f °C — холодно. Поставьте печь рядом с куполом (можно по диагонали)." % d.t
+			if d.t > st.t[1]:
+				return "В куполе %.0f °C — жарко. Поставьте конденсатор рядом с куполом (можно по диагонали)." % d.t
+			return "В куполе можно жить: держите давление и температуру."
+		"p_launch":
+			var hint := _structure_hint("launch_silo", "Постройте пусковую шахту", build)
+			if hint != "":
+				return hint
+			for c in pneu.parts:
+				var part: Dictionary = pneu.parts[c]
+				if part.kind == "launch_silo" and pneu.mass_in(c) >= ProtoPneumatics.LAUNCH_KG and pneu.pressure(c) < pneu.silo_p(part):
+					return "Шахте мало давления для старта: нужно %.1f атм — ещё насос рядом." % pneu.silo_p(part)
+			if cg > 0.5:
+				return "Выгрузите груз в приёмник (%s): линия довезёт его до шахты." % unload
 	# Этапы завода: сначала целая линия и место в баках, потом сырьё и давление.
 	if pneu != null:
 		var broken := broken_parts()
@@ -644,6 +767,7 @@ func advise(glyph: Callable) -> String:
 func to_dict() -> Dictionary:
 	var r := robot
 	return {"time": time, "mined": mined, "built": built, "processed": processed, "hits": stats.hits,
+		"launched": launched.mass,
 		"briefing": briefing_seen, "end_shown": end_shown,
 		"robot": {"xp": r.xp.duplicate(), "knowledge": r.knowledge, "learned": r.learned.keys(),
 			"blueprints": r.blueprints.keys(), "tags": r.known_tags.keys(), "bonus_slots": r.bonus_slots},
@@ -657,6 +781,7 @@ func from_dict(d: Dictionary) -> void:
 	built = int(d.get("built", 0))
 	processed = int(d.get("processed", 0))
 	stats.hits = int(d.get("hits", 0))
+	launched.mass = float(d.get("launched", 0.0))
 	briefing_seen = bool(d.get("briefing", true))
 	end_shown = bool(d.get("end_shown", false))
 	var rd: Dictionary = d.get("robot", {})
