@@ -4,6 +4,9 @@ extends Node3D
 ##   --play — ходить самому (WASD, Shift, Q/E или мышь с ПКМ, колесо; F — бур,
 ##   G — выстрел кистью и подтягивание; геймпад — см. ProtoControls); --tool=drill — бур в правом предплечье
 ##   --auto=cave --screenshot=путь.png — маршрут в пещеру, кадры путь_1..4.png
+##   --view=factory — пневмозавод крупно; --build — режим стройки (призрак детали)
+##   В --play: B — стройка, T — деталь, R — повернуть, Пробел — поставить,
+##   X — разобрать, C — выгрузить груз в приёмник (подробно — ProtoBuilder)
 ##   --auto=sound — тот же маршрут без кадров, в конце бур у стены и выстрел кистью
 ##   (для проверки звука); --record=путь.wav — записать звук, --mute — без звука
 ##   --robot=clean (по умолчанию; другой вариант из RobotDesigns или old — прежний
@@ -27,6 +30,9 @@ var auto := ""               # --auto=cave: скриптовый маршрут 
 var record := ""             # --record=путь.wav: записать звук (с --play или --auto)
 var mute := false            # --mute: без звука
 var env: Environment
+var pneu: ProtoPneumatics
+var pneu_view: ProtoPneumaticsView
+var build := false           # --build: режим стройки (с --play или для кадра)
 
 ## Сид следующей планеты в сборке для проверки (переживает перезагрузку сцены).
 static var build_seed := 14
@@ -45,6 +51,7 @@ func _ready() -> void:
 		elif a.begins_with("--auto="): auto = a.substr(7)
 		elif a.begins_with("--record="): record = a.substr(9)
 		elif a == "--mute": mute = true
+		elif a == "--build": build = true
 	if auto == "sound" and RobotDesigns.tool_r == "":
 		RobotDesigns.tool_r = "drill"
 	planet = PlanetGen.generate(seed_value)
@@ -85,6 +92,8 @@ func _ready() -> void:
 			snd.record_path = record
 			snd.setup(robot, terrain, pl, planet)
 			add_child(snd)
+	if play or build:
+		_builder()
 
 # ---------------------------------------------------------------- палитра и свет
 
@@ -387,55 +396,28 @@ func _mat_with(tag: String):
 func _solid_mats() -> Array:
 	return planet.materials.filter(func(m): return m.phase_at(planet.ambient_temp) == Substance.Phase.SOLID)
 
+## Живой пневмозавод на площадке: приёмник с добытыми кристаллами → трубы →
+## дробилка → печь → бак, насос сбоку (ProtoPneumatics). Корпуса — из металла
+## планеты; к моменту кадра завод уже работает.
 func _factory() -> void:
-	var solids := _solid_mats()
 	var metal = _mat_with("metallic")
 	var cryst = _mat_with("crystalline")
-	var rough = _mat_with("porous")
-	if rough == null: rough = _mat_with("fibrous")
 	var a: Substance = metal if metal != null else World.starter_substance()
-	var b: Substance = cryst if cryst != null else (solids[0] if not solids.is_empty() else a)
-	var c: Substance = rough if rough != null else (solids[-1] if not solids.is_empty() else a)
+	var ore: Substance = cryst if cryst != null else (_solid_mats()[0] if not _solid_mats().is_empty() else a)
 	var pc := terrain.plateau()
 	var top := pc.y + 0.1
-	var base := Node3D.new()
-	base.position = Vector3(pc.x, top, pc.z)
-	add_child(base)
-	var slab := ProtoMachines.slab(Vector3(13, 0.6, 9), terrain.ground.lerp(Color(0.5, 0.5, 0.52), 0.6))
-	slab.position = Vector3(0, -0.28, 0)
-	base.add_child(slab)
-	var C := ProtoMachines.CELL
-	var liq := _liquid_mats()
-	var cargo: Color = liq[0].color if not liq.is_empty() else c.color
-	var tank := ProtoMachines.tank(ProtoMachines.surface(a), cargo, 0.62)
-	tank.position = Vector3(-C * 2, 0, -C * 0.5)
-	base.add_child(tank)
-	var fur := ProtoMachines.furnace(ProtoMachines.surface(c))
-	fur.position = Vector3(-C * 0.5, 0, -C * 0.5)
-	base.add_child(fur)
-	var pump := ProtoMachines.pump(ProtoMachines.surface(a))
-	pump.position = Vector3(-C * 2, 0, C * 1.2)
-	base.add_child(pump)
-	var gun := ProtoMachines.cannon(ProtoMachines.surface(b))
-	gun.position = Vector3(C * 2.2, 0, C * 1.2)
-	base.add_child(gun)
-	var fr := ProtoMachines.frame(ProtoMachines.surface(a), 2.2)
-	fr.position = Vector3(C * 1.2, 0, -C * 0.6)
-	base.add_child(fr)
-	var up := ProtoMachines.furnace(ProtoMachines.surface(b, false))   # неизученный материал — голограмма
-	up.position = Vector3(C * 1.2, 2.26, -C * 0.6)
-	up.scale = Vector3(0.8, 0.8, 0.8)
-	base.add_child(up)
-	var holo_tank := ProtoMachines.tank(ProtoMachines.surface(b), cargo.lerp(Color.WHITE, 0.3), 0.3)
-	holo_tank.position = Vector3(C * 0.5, 0, C * 1.2)
-	base.add_child(holo_tank)
-	var pm := ProtoMachines.surface(a)
-	var bp := base.position
-	ProtoMachines.pipe(self, bp + Vector3(-C * 2, 0.4, C * 1.0), bp + Vector3(-C * 2, 0.4, -C * 0.1), pm)
-	ProtoMachines.pipe(self, bp + Vector3(-C * 1.6, 0.4, C * 1.2), bp + Vector3(C * 1.8, 0.4, C * 1.2), pm, 5)
-	ProtoMachines.pipe(self, bp + Vector3(C * 0.5, 0.4, C * 0.6), bp + Vector3(C * 0.5, 2.6, C * 0.6), pm, 3)
-	ProtoMachines.pipe(self, bp + Vector3(C * 0.5, 2.6, C * 0.6), bp + Vector3(C * 1.2, 2.6, -C * 0.2), pm, 2)
-	print("Материалы машин: %s | %s | %s (голограмма — неизученный)" % [_label(a), _label(b), _label(c)])
+	var slab := ProtoMachines.slab(Vector3(15, 0.6, 9), terrain.ground.lerp(Color(0.5, 0.5, 0.52), 0.6))
+	slab.position = Vector3(pc.x, top - 0.28, pc.z)
+	add_child(slab)
+	pneu = ProtoPneumatics.new(planet)
+	pneu.build_demo(Vector2i(-3, 0), a)
+	pneu.feed(Vector2i(-3, 0), Portion.new(ore, 30.0, planet.ambient_temp))
+	pneu_view = ProtoPneumaticsView.new()
+	pneu_view.name = "pneumatics"
+	add_child(pneu_view)
+	pneu_view.setup(pneu, Vector3(pc.x, top, pc.z - 1.0))
+	pneu_view.warm(9.0)
+	print("Завод: корпуса из %s, в приёмнике %s" % [_label(a), _label(ore)])
 
 func _label(s: Substance) -> String:
 	return "%s %s" % [s.name, str(s.tags)]
@@ -457,6 +439,12 @@ func _robot_and_camera() -> void:
 	var pc := terrain.plateau()
 	var top := pc.y + 0.1
 	match view:
+		"factory":
+			# Робот у линии завода лицом к свободной клетке; камера сверху-сбоку.
+			robot.position = Vector3(pc.x + 2.0, top, pc.z + 3.0)
+			robot.rotation.y = PI
+			cam.position = Vector3(pc.x + 4.5, top + 6.5, pc.z + 10.5)
+			cam.look_at(Vector3(pc.x - 0.5, top + 0.6, pc.z - 1.0))
 		"plan":
 			robot.position = Vector3(pc.x - 1.0, top, pc.z + 5.0)
 			robot.rotation.y = PI
@@ -508,6 +496,16 @@ func _robot_and_camera() -> void:
 			cam.position = rp - fwd * 4.2 + right * 1.3 + Vector3(0, 2.6, 0)
 			cam.look_at(rp + fwd * 12.0 + Vector3(0, 0.2, 0))
 	cam.current = true
+
+## Стройка роботом: призрак детали перед ним, HUD, выгрузка груза в приёмник.
+func _builder() -> void:
+	if pneu_view == null:
+		return
+	var b := ProtoBuilder.new()
+	b.name = "builder"
+	add_child(b)
+	b.setup(pneu_view, robot, _solid_mats())
+	b.active = build
 
 ## Пол пещеры под точкой: вниз по полю плотности до породы.
 func _floor_at(p: Vector3) -> float:
