@@ -9,11 +9,14 @@ extends Node
 ## Позы — словари; между покоем и ходьбой плавный переход по скорости speed
 ## (м/с): частота шага = скорость / длина цикла, стопы не скользят.
 ## Поверх — «работа» (рука вперёд, прищур) и прицел левой руки (выстрел кистью).
+## Бур в правом предплечье: пока работы нет, спрятан в щитке; с началом работы
+## кисть подгибается и сжимается, бур выдвигается мимо запястья и только потом
+## крутится; после — останавливается, уходит обратно, кисть разгибается.
 
 ## Время для кадров витрины: ≥ 0 — анимация стоит в этом моменте.
 static var fixed_t := -1.0
-## idle, walk (шаг на месте), demo (покой → ходьба → покой), drill (работа
-## буром), fist (выстрел кистью, см. RobotFist) — для витрины.
+## idle, walk (шаг на месте), demo (покой → ходьба → покой), drill (бур
+## выдвигается, работает и уходит, цикл 3 с), fist (выстрел кистью, см. RobotFist) — для витрины.
 static var default_mode := "idle"
 
 const CYCLE := 0.88          # м за полный цикл шага (два шага)
@@ -27,6 +30,11 @@ var aim_target := Vector3.ZERO   # в пространстве робота
 var fill_drop := 0.0         # просадка давления после выстрела (затухает)
 var ap_kick := 0.0           # «щелчок» диафрагмой (затухает)
 var bit: Node3D              # сверло бура, если есть
+var drill: Node3D            # бур в предплечье (выдвигается), если есть
+var drill_rest := Transform3D()
+var drill_out := 0.0         # 0 — спрятан, 1 — выдвинут
+var hand_r: Node3D
+var hand_r_rest := Basis()
 var t := 0.0
 var phase := 0.0
 var walk_k := 0.0
@@ -59,6 +67,12 @@ func _ready() -> void:
 	aperture = head.get_node_or_null("aperture")
 	fill = chest.get_node_or_null("pressure_bar/pressure_fill")
 	bit = root.find_child("bit", true, false) as Node3D
+	drill = root.find_child("drill", true, false) as Node3D
+	if drill:
+		drill_rest = drill.transform
+	hand_r = root.find_child("hand_r", true, false) as Node3D
+	if hand_r:
+		hand_r_rest = hand_r.transform.basis
 	_apply()
 
 func _process(dt: float) -> void:
@@ -82,6 +96,8 @@ func _reset_sim() -> void:
 	walk_k = 0.0
 	fill_drop = 0.0
 	ap_kick = 0.0
+	drill_out = 0.0
+	work = 0.0
 
 ## Скорость в режимах витрины.
 func _mode_speed(tt: float) -> float:
@@ -95,9 +111,16 @@ func _step(dt: float) -> void:
 	fill_drop = move_toward(fill_drop, 0.0, dt * 0.12)
 	ap_kick = move_toward(ap_kick, 0.0, dt * 4.0)
 	if mode == "drill":
-		work = 1.0
-	if bit and work > 0.01:
-		bit.rotate_object_local(Vector3.UP, dt * 28.0 * work)
+		# Витрина: цикл 3 с — бур выдвигается, сверлит, уходит обратно.
+		var q := fposmod(t, 3.0)
+		work = move_toward(work, 1.0 if q > 0.2 and q < 2.0 else 0.0, dt * 5.0)
+	if drill:
+		# Выдвигается, когда рука уже пошла вперёд; уходит, когда работа кончилась.
+		var want_out := 1.0 if work > 0.6 else 0.0
+		drill_out = move_toward(drill_out, want_out, dt / (0.3 if want_out > 0.0 else 0.25))
+	var spin := work if drill == null else work * smoothstep(0.85, 1.0, drill_out)
+	if bit and spin > 0.01:
+		bit.rotate_object_local(Vector3.UP, dt * 28.0 * spin)
 	var v := _mode_speed(t) if mode != "play" else speed
 	var want := clampf(v / WALK_SPEED, 0.0, 1.0)
 	walk_k = move_toward(walk_k, want, dt / 0.3)
@@ -223,6 +246,15 @@ func _apply_pose(p: Dictionary) -> void:
 		aperture.rotation.z = (1.0 - p.ap) * 1.6
 	if fill:
 		fill.scale.y = maxf(p.fill, 0.01)
+	if drill:
+		# Сначала подгибается кисть (первая треть хода), затем бур идёт вперёд.
+		var slide := smoothstep(0.25, 1.0, drill_out)
+		var stroke: float = drill.get_meta("stroke", 0.2)
+		drill.visible = drill_out > 0.001
+		drill.transform = Transform3D(drill_rest.basis, drill_rest.origin + drill_rest.basis.y * stroke * slide)
+		if hand_r and hand_r.has_meta("flex_axis"):
+			var fk := smoothstep(0.0, 0.4, drill_out)
+			hand_r.transform.basis = Basis(hand_r.get_meta("flex_axis"), 1.25 * fk) * hand_r_rest
 
 ## Стопа в цикле шага: x — наклон носка, y — подъём, z — сдвиг вперёд.
 func _foot(w: float, off: float, stride: float) -> Vector3:
@@ -294,4 +326,4 @@ func _arm(side: String, target: Vector3, pole: Vector3) -> void:
 	_two_bone(sb, eb, s["sh_" + side], s["el_" + side], s["ha_" + side], target, pole, Vector3(0, 0, -1))
 	if side == "r":
 		var h := eb.get_node_or_null("hand_r") as Node3D
-		RobotDesigns.set_grip(h, 0.3 + 0.5 * work)
+		RobotDesigns.set_grip(h, maxf(0.3 + 0.5 * work, smoothstep(0.0, 0.4, drill_out)))

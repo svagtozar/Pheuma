@@ -966,27 +966,40 @@ static func _scheme(hull_col: Color) -> Array:
 	var paint := hull_col.lerp(Color(0.86, 0.84, 0.8), 0.55).darkened(0.08)
 	return ["paint:#" + paint.to_html(false), "metal:#" + hull_col.to_html(false)]
 
-## Бур вместо кисти: муфта, корпус с медными кольцами, сверло в узле bit
-## (крутится при работе), у острия — узел drill_tip для пыли.
-static func _tool_drill(n: Node3D, at: Vector3, ax: Vector3, metal: String) -> void:
-	ring(n, at, ax, 0.03, 0.045, metal)
-	rod(n, at, at + ax * 0.13, 0.048, "dark", 0.042)
-	for t in [0.03, 0.09]:
-		ring(n, at + ax * t, ax, 0.045, 0.055, metal)
+## Бур в предплечье: сверло с муфтой в узле drill лежит внутри щитка от
+## доли 0.1 до 0.86 предплечья и выдвигается вдоль оси на STROKE мимо запястья
+## (выдвигает RobotAnim). Сверло — в узле bit (крутится при работе), у острия —
+## узел drill_tip для пыли. На торце щитка — тёмное окно выхода.
+const DRILL_STROKE := 0.21
+
+static func _forearm_drill(n: Node3D, el: Vector3, ha: Vector3, metal: String) -> void:
+	var ax := (ha - el).normalized()
+	var ref := Vector3.FORWARD if absf(ax.dot(Vector3.FORWARD)) < 0.9 else Vector3.RIGHT
+	var x := ax.cross(ref).normalized()
+	var dr := Node3D.new()
+	dr.name = "drill"
+	dr.transform = Transform3D(Basis(x, ax, x.cross(ax)), el.lerp(ha, 0.1))
+	dr.set_meta("stroke", DRILL_STROKE)
+	n.add_child(dr)
+	# Шток-направляющая и муфта с медными кольцами; сверло на конце штока.
+	rod(dr, Vector3(0, -0.02, 0), Vector3(0, 0.1, 0), 0.026, "steel")
+	rod(dr, Vector3(0, 0.08, 0), Vector3(0, 0.13, 0), 0.04, "dark", 0.036)
+	for yy in [0.09, 0.12]:
+		ring(dr, Vector3(0, yy, 0), Vector3.UP, 0.034, 0.043, metal)
 	var bit := Node3D.new()
 	bit.name = "bit"
-	var y := ax
-	var ref := Vector3.FORWARD if absf(y.dot(Vector3.FORWARD)) < 0.9 else Vector3.RIGHT
-	var x := y.cross(ref).normalized()
-	bit.transform = Transform3D(Basis(x, y, x.cross(y)), at + ax * 0.13)
-	n.add_child(bit)
-	rod(bit, Vector3.ZERO, Vector3(0, 0.24, 0), 0.04, "steel", 0.0)
+	bit.position = Vector3(0, 0.13, 0)
+	dr.add_child(bit)
+	rod(bit, Vector3.ZERO, Vector3(0, 0.07, 0), 0.036, "steel", 0.032)
+	rod(bit, Vector3(0, 0.07, 0), Vector3(0, 0.2, 0), 0.032, "steel", 0.0)
 	for k in 4:
-		var yy := 0.04 + k * 0.045
-		var rr := 0.036 * (1.0 - yy / 0.24)
+		var yy := 0.03 + k * 0.04
+		var rr := 0.034 * (1.0 - yy / 0.21)
 		var sp := ring(bit, Vector3(0, yy, 0), Vector3(0.25, 1, 0).normalized(), rr, rr + 0.008, "accent")
 		sp.rotation.y += k * 0.8
-	_socket(bit, "drill_tip", Vector3(0, 0.25, 0))
+	_socket(bit, "drill_tip", Vector3(0, 0.21, 0))
+	# Окно выхода на торце щитка.
+	ring(n, el.lerp(ha, 0.9), ax, 0.03, 0.042, "dark")
 
 ## Кость рига: узел в точке сустава (в покое без поворота).
 static func _bone(bname: String, pos: Vector3, parent: Node3D = null, parent_pos := Vector3.ZERO) -> Node3D:
@@ -1142,8 +1155,9 @@ static func _clean(n: Node3D, hull_col: Color) -> void:
 			ring(n, ha - ax * 0.01, ax, 0.04, 0.052, metal)
 			_socket(n, "fist_mouth", ha - ax * 0.01)
 		elif tool_r == "drill":
-			hnd.visible = false
-			_tool_drill(n, ha, ax, metal)
+			# Бур спрятан в предплечье; кисть при работе подгибается (RobotAnim).
+			_forearm_drill(n, el, ha, metal)
+			hnd.set_meta("flex_axis", ax.cross(Vector3(-sg, 0, 0)).normalized())
 		_grab(n, k0, elb, el)
 	# --- Ноги.
 	for side in ["l", "r"]:
