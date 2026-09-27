@@ -40,6 +40,8 @@ var hud_hint: Label
 var hud_bar: ProgressBar
 var popups: Array = []       # [Label3D, t]
 var rng := RandomNumberGenerator.new()
+var mined_total := 0.0       # кг, собранных за всё время (цели рана — ProtoRun)
+var speed_mult := 1.0        # скорость бурения (прокачка)
 
 ## Действие инструмента: F и правый курок; если его уже завёл кто-то ещё
 ## (например, раскладка геймпада) — не трогаем.
@@ -164,7 +166,7 @@ func step(dt: float, r: Node3D, work: float, out: float, tip: Vector3) -> void:
 				var rate := 1.0 / (BREAK_TIME * clampf(sub.hardness / maxf(drill_hard, 0.5), 0.5, 2.0))
 				if sub.has("brittle"): rate *= 2.0
 				rate /= clampf(sqrt(mass_of(target, sub) / 1.5), 0.6, 2.2)
-				progress += dt * rate
+				progress += dt * rate * speed_mult
 		target.material_override = hot_mat if drilling and not too_soft else cmat
 		var rest: Vector3 = target.get_meta("rest_pos")
 		target.position = rest + (Vector3(rng.randf() - 0.5, rng.randf() - 0.5, rng.randf() - 0.5) * 0.012 * (0.5 + progress) if drilling and not too_soft else Vector3.ZERO)
@@ -294,6 +296,7 @@ func _falling(dt: float) -> void:
 	falling = keep
 
 func _collect(m: float) -> void:
+	mined_total += m
 	var p := Portion.new(sub, m, temp)
 	var list := cargo_of(robot)
 	for q: Portion in list:
