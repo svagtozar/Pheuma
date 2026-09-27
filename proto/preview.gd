@@ -570,7 +570,8 @@ func _solid_mats() -> Array:
 	return ProtoSky.solid_mats(planet)
 
 ## Живой пневмозавод на площадке: приёмник с добытыми кристаллами → трубы →
-## дробилка → печь → бак, насос сбоку (ProtoPneumatics). Корпуса — из металла
+## дробилка → печь → бак, насос сбоку; за ним пушка бьёт через площадку в
+## приёмник → центрифуга → спекатель → бак (ProtoPneumatics). Корпуса — из металла
 ## планеты; к моменту кадра завод уже работает.
 func _factory() -> void:
 	var metal = _mat_with("metallic")
@@ -579,8 +580,8 @@ func _factory() -> void:
 	var ore: Substance = cryst if cryst != null else (_solid_mats()[0] if not _solid_mats().is_empty() else a)
 	var pc := terrain.plateau()
 	var top := pc.y + 0.1
-	var slab := ProtoMachines.slab(Vector3(15, 0.6, 9), terrain.ground.lerp(Color(0.5, 0.5, 0.52), 0.6))
-	slab.position = Vector3(pc.x, top - 0.28, pc.z)
+	var slab := ProtoMachines.slab(Vector3(17, 0.6, 15), terrain.ground.lerp(Color(0.5, 0.5, 0.52), 0.6))
+	slab.position = Vector3(pc.x, top - 0.28, pc.z + 2.5)
 	add_child(slab)
 	pneu = ProtoPneumatics.new(planet)
 	pneu.build_demo(Vector2i(-3, 0), a)
@@ -588,6 +589,9 @@ func _factory() -> void:
 	pneu.remove(Vector2i(-1, 0))
 	pneu.place("lab", Vector2i(-1, 0), 0, a)
 	pneu.feed(Vector2i(-3, 0), Portion.new(ore, 30.0, planet.ambient_temp))
+	var cannon := pneu.build_logistics(Vector2i(-4, 3), a)
+	for i in 3:
+		cannon.items.append(Portion.new(ore, 2.0, planet.ambient_temp))
 	pneu_view = ProtoPneumaticsView.new()
 	pneu_view.name = "pneumatics"
 	add_child(pneu_view)
