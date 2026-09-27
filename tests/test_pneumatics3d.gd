@@ -160,3 +160,40 @@ func test_every_processing_machine_of_2d_game_is_buildable_and_runs():
 		assert_eq(n.mass_in(Vector2i.ZERO), 0.0, "%s забрал груз из приёмника" % k)
 		assert_true(n.events.any(func(e): return e.kind == "done" and e.cell == Vector2i(1, 0)) or n.parts[Vector2i(1, 0)].busy != null,
 			"%s взялся за обработку (%s)" % [k, n.parts[Vector2i(1, 0)].status])
+
+func test_builder_ignores_buttons_under_card_or_map():
+	var n := ProtoPneumatics.new(planet)
+	var view := ProtoPneumaticsView.new()
+	add_child_autofree(view)
+	view.setup(n, Vector3.ZERO)
+	var robot := Node3D.new()
+	add_child_autofree(robot)
+	var b := ProtoBuilder.new()
+	add_child_autofree(b)
+	b.setup(view, robot, [steel])
+	robot.set_meta("ui_busy", true)            # открыта карточка материала или карта
+	Input.action_press(ProtoBuilder.BUILD_MODE)
+	assert_true(Input.is_action_just_pressed(ProtoBuilder.BUILD_MODE), "кнопка стройки нажата в этом кадре")
+	b._process(0.016)
+	Input.action_release(ProtoBuilder.BUILD_MODE)
+	assert_false(b.active, "Y / B в карточке не включает стройку")
+
+func test_in_game_only_nearest_machine_is_labeled():
+	var n := ProtoPneumatics.new(planet)
+	n.place("pump", Vector2i(0, 0), 0, steel)
+	n.place("tank", Vector2i(2, 0), 0, steel)
+	var view := ProtoPneumaticsView.new()
+	add_child_autofree(view)
+	view.setup(n, Vector3.ZERO)
+	var shown := func(): return view._labels.values().filter(func(l): return l.visible).size()
+	assert_eq(shown.call(), 2, "для кадров завода подписаны все машины")
+	var robot := Node3D.new()
+	add_child_autofree(robot)
+	robot.position = ProtoPneumatics.cell_pos(Vector3.ZERO, Vector2i(2, 0)) + Vector3(0, 0, 1.5)
+	view.focus = robot
+	view.sync()
+	assert_eq(shown.call(), 1, "в игре — одна, ближняя")
+	assert_true(view._labels.values().filter(func(l): return l.visible)[0].text.begins_with(ProtoPneumatics.KINDS.tank.n))
+	robot.position += Vector3(0, 0, 20)
+	view.sync()
+	assert_eq(shown.call(), 0, "далеко от завода подписей нет")

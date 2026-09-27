@@ -23,6 +23,8 @@ const WIDTH := 700.0
 const MAX_GUESS_TAGS := 10
 const FEED_SEC := 5.0
 const FEED_W := 520.0
+const FEED_LINES := 3            # строк на запись ленты
+const FEED_KEEP := 2             # записей на экране
 
 const WHERE := {"druse": "друза рядом", "part": "в машине", "cargo": "в грузе",
 	"deposit": "залежь рядом", "inventory": "в инвентаре"}
@@ -384,9 +386,12 @@ func _push_feed(t: String, col: Color = Color(0.7, 0.95, 1.0)) -> void:
 	l.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	l.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	l.custom_minimum_size.x = FEED_W
+	# Лента не длиннее радара: ниже справа — панель завода. Полный текст — в карточке.
+	l.max_lines_visible = FEED_LINES
+	l.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
 	_feed.add_child(l)
 	_feed_items.append([l, FEED_SEC])
-	while _feed_items.size() > 3:
+	while _feed_items.size() > FEED_KEEP:
 		var old: Array = _feed_items.pop_front()
 		old[0].queue_free()
 

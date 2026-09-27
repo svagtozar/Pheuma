@@ -183,3 +183,17 @@ func test_pad_buttons_drive_windows():
 	var ok := Button.new()
 	box.add_child(ok)
 	assert_eq(ProtoControls.first_button(box), ok, "фокус — на первой доступной кнопке")
+
+func test_run_window_waits_while_map_or_card_is_open():
+	var ui := ProtoRunUi.new()
+	ui.pause_game = false
+	ui.setup(run, body, null)
+	add_child_autofree(ui)
+	ui._warm = 0.0
+	body.set_meta("ui_busy", true)
+	ui._process(0.1)
+	assert_eq(ui.modal, "", "брифинг не встаёт под карту")
+	body.set_meta("ui_busy", false)
+	ui._process(0.1)
+	assert_eq(ui.modal, "briefing")
+	ui.close()

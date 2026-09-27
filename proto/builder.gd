@@ -98,8 +98,8 @@ func target() -> Array:
 
 func _process(dt: float) -> void:
 	_note_t = maxf(0.0, _note_t - dt)
-	if robot != null and bool(robot.get_meta("map_open", false)):
-		return                                 # открыта карта (ProtoMapView): кнопки — её
+	if robot != null and (bool(robot.get_meta("map_open", false)) or bool(robot.get_meta("ui_busy", false))):
+		return                                 # открыта карта или карточка материала: кнопки — их
 	if Input.is_action_just_pressed(BUILD_MODE):
 		active = not active
 	if Input.is_action_just_pressed(UNLOAD):
