@@ -189,6 +189,7 @@ static func _net_to(net) -> Dictionary:
 		var part: Dictionary = net.parts[c]
 		var pd := {"kind": part.kind, "cell": [c.x, c.y], "dir": part.dir, "sub": part.sub.id,
 			"items": part.items.map(func(p): return SaveGame.p_to(p)),
+			"out_q": part.get("out_q", []).map(func(p): return SaveGame.p_to(p)),
 			"busy": SaveGame.p_to(part.busy) if part.get("busy") != null else null,
 			"progress": part.get("progress", 0.0), "cd": part.get("cd", 0.0),
 			"gas": net.gas.amount(part.id)}
@@ -213,6 +214,11 @@ static func _net_from(net, planet: Planet, d: Dictionary) -> void:
 			var p := _p_from(planet, a)
 			if p != null:
 				part.items.append(p)
+		part.out_q = []
+		for a in pd.get("out_q", []):
+			var oq := _p_from(planet, a)
+			if oq != null:
+				part.out_q.append(oq)
 		part.busy = _p_from(planet, pd.busy)
 		part.progress = float(pd.progress)
 		part.cd = float(pd.cd)
