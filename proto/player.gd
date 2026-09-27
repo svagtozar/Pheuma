@@ -2,15 +2,17 @@ class_name ProtoPlayer
 extends Node
 ## Управление роботом от третьего лица в предпросмотре (--play) и скриптовый
 ## маршрут для проверки (--auto=cave).
-##   WASD — ходьба относительно камеры, Shift — быстрее, Q/E или мышь с правой
-##   кнопкой — поворот камеры, колесо — дистанция. F или правый курок (действие
+##   WASD — ходьба относительно камеры, Shift — бег, Пробел — прыжок (в режиме
+##   стройки Пробел ставит деталь). Камера — мышью: курсор захвачен, клик —
+##   захватить снова, Esc — отпустить (без захвата крутит мышь с правой
+##   кнопкой, ещё Q/E), колесо — дистанция. F или правый курок (действие
 ##   tool_work, держать) — работать инструментом: бур выдвигается из правого
 ##   предплечья, отпустить — уходит. У друзы бур выбуривает кристаллы (ProtoMining).
 ##   G — выстрелить кистью туда, куда смотрит камера, и подтянуться (G ещё
 ##   раз — отпустить).
-##   Геймпад: левый стик — ходьба, правый — камера, L3 — быстрее, RT — бур,
+##   Геймпад: левый стик — ходьба, правый — камера, L3 — бег, A — прыжок, RT — бур,
 ##   LT — кисть, D-pad вверх/вниз — дистанция (раскладка — ProtoControls).
-## Скорость хода и высота уступа зависят от гравитации планеты.
+## Скорость хода, высота уступа и прыжка зависят от гравитации планеты.
 ## Высота под ногами — по полю плотности (снаружи и в пещере), в породу и на
 ## слишком крутые уступы не заходит. Камера на пружинной штанге. Под сводом сама
 ## включает фару и сгущает тёмный туман.
@@ -24,10 +26,21 @@ var fog_out := Color()
 var fog_out_d := 0.0
 
 var cam_yaw := 0.0
-var cam_pitch := -0.32
+var cam_pitch := 0.28          # > 0 — камера над роботом, смотрит вниз
 var cam_dist := 4.6
 var vel := Vector3.ZERO
 var under := 0.0             # 0 — под небом, 1 — под сводом (сглажено)
+var vy := 0.0                # вертикальная скорость в прыжке/падении
+var air := false             # в воздухе: высоту задаёт vy, а не пол
+var capture := false         # --play: захватывать курсор для камеры мышью
+var _captured_once := false
+
+const SPRINT_MULT := 2.3     # бег — во столько раз быстрее шага
+const G := 14.0              # м/с² при 1 g (чуть «игровее» настоящих 9.8)
+const JUMP_V := 5.0          # м/с при отрыве: ≈0.9 м на 1 g, на лёгкой планете выше
+const JUMP_MAX_H := 2.4      # потолок высоты прыжка на совсем лёгкой планете
+const PITCH_MIN := -0.6
+const PITCH_MAX := 1.2
 
 # Скриптовый маршрут.
 var route: Array = []
@@ -48,6 +61,12 @@ var drill_t := 0.0
 var drill_got := 0
 var drill_shots := 0
 var drill_prefix := ""
+# Скриптовый разбег с прыжком (--auto=jump): кадры бег, взлёт, вершина, приземление.
+var jump_auto := false
+var jump_t := 0.0
+var jump_prefix := ""
+var jump_shots := 0
+var _was_air := false
 var cam_focus := Vector3.INF # точка, на которую смотрит камера (скрипт добычи); INF — на робота
 var finale := -1.0           # --auto=sound: время после конца маршрута (бур, кисть)
 
@@ -116,29 +135,49 @@ func _finale(dt: float) -> void:
 	if finale > 9.0:
 		get_tree().quit(0)
 
+## Камера мышью: при захваченном курсоре — всегда, без захвата — с правой кнопкой.
+## Клик — захватить курсор, Esc — отпустить (второй Esc уже выходит из сборки).
 func _unhandled_input(e: InputEvent) -> void:
-	if e is InputEventMouseMotion and Input.is_mouse_button_pressed(MOUSE_BUTTON_RIGHT):
-		cam_yaw -= e.relative.x * 0.006
-		cam_pitch = clampf(cam_pitch - e.relative.y * 0.004, -1.1, 0.2)
+	var captured := Input.mouse_mode == Input.MOUSE_MODE_CAPTURED
+	if e is InputEventMouseMotion and (captured or Input.is_mouse_button_pressed(MOUSE_BUTTON_RIGHT)):
+		var d := ProtoControls.mouse_look(e.relative)
+		cam_yaw += d.x
+		cam_pitch = clampf(cam_pitch + d.y, PITCH_MIN, PITCH_MAX)
+	elif e is InputEventKey and e.pressed and e.physical_keycode == KEY_ESCAPE and captured:
+		Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+		get_viewport().set_input_as_handled()
 	elif e is InputEventMouseButton and e.pressed:
-		if e.button_index == MOUSE_BUTTON_WHEEL_UP:
+		if e.button_index == MOUSE_BUTTON_LEFT and capture and not captured:
+			Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+			get_viewport().set_input_as_handled()
+		elif e.button_index == MOUSE_BUTTON_WHEEL_UP:
 			cam_dist = maxf(2.0, cam_dist - 0.4)
 		elif e.button_index == MOUSE_BUTTON_WHEEL_DOWN:
 			cam_dist = minf(12.0, cam_dist + 0.4)
 
 func _process(dt: float) -> void:
 	dt = minf(dt, 0.25)
+	if capture and not _captured_once and route.is_empty() and not drill_auto:
+		_captured_once = true
+		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 	var want := Vector3.ZERO
 	# Тяжёлая планета — шаг медленнее, лёгкая — быстрее (ProtoWorldStyle).
 	var top_speed := RobotAnim.WALK_SPEED * terrain.style.walk_mult()
 	if route.is_empty():
 		var inp := ProtoControls.move_vector()
 		var look := ProtoControls.look_vector()
+		# Стик вверх — смотреть вверх: камера опускается за спину.
 		cam_yaw -= look.x * dt * 2.4
-		cam_pitch = clampf(cam_pitch + look.y * dt * 1.6, -1.1, 0.2)
+		cam_pitch = clampf(cam_pitch - look.y * dt * 1.6, PITCH_MIN, PITCH_MAX)
 		if Input.is_action_pressed(ProtoControls.CAM_ZOOM_IN): cam_dist = maxf(2.0, cam_dist - dt * 4.0)
 		if Input.is_action_pressed(ProtoControls.CAM_ZOOM_OUT): cam_dist = minf(12.0, cam_dist + dt * 4.0)
-		if Input.is_action_pressed(ProtoControls.SPRINT): top_speed *= 1.9
+		if Input.is_action_pressed(ProtoControls.SPRINT): top_speed *= SPRINT_MULT
+		if Input.is_action_just_pressed(ProtoControls.JUMP) and _can_jump():
+			jump()
+		if jump_auto:
+			inp = Vector2(0, 1)
+			top_speed *= SPRINT_MULT
+			_auto_jump(dt)
 		if drill_auto:
 			inp = Vector2.ZERO
 		if anim:
@@ -175,14 +214,19 @@ func _process(dt: float) -> void:
 			top_speed = 2.6
 		else:
 			fist.release()
-	vel = vel.move_toward(want * top_speed, dt * 3.0)
+	# В воздухе разгон слабее: направление прыжка почти не поменять.
+	vel = vel.move_toward(want * top_speed, dt * (1.2 if air else 3.0 * terrain.style.walk_mult()))
 	_move(vel * dt)
+	_vertical(dt)
 	if vel.length() > 0.05:
 		robot.rotation.y = lerp_angle(robot.rotation.y, atan2(vel.x, vel.z), minf(1.0, dt * 6.0))
 		if not route.is_empty():
 			cam_yaw = lerp_angle(cam_yaw, robot.rotation.y, minf(1.0, dt * 2.0))
 	if anim:
 		anim.speed = Vector2(vel.x, vel.z).length()
+		anim.speed_ref = terrain.style.walk_mult()
+		anim.airborne = air
+		anim.vy = vy
 	_mine(dt)
 	_underground(dt)
 	_camera()
@@ -348,8 +392,11 @@ func _move(d: Vector3) -> void:
 		return
 	var np := robot.position + d
 	var g := terrain.floor_at(np + Vector3(0, 0.7, 0))
-	# Уступ выше колена за шаг или порода на уровне груди — не пройти.
-	if (g - robot.position.y) > maxf(terrain.style.step_height(), d.length() * 1.6) or terrain.solid(np.x, g + 1.2, np.z):
+	# Уступ выше колена за шаг или порода на уровне груди — не пройти
+	# (в прыжке — порода на уровне ног или груди там, где робот сейчас).
+	var body := maxf(g, robot.position.y)
+	if (g - robot.position.y) > maxf(terrain.style.step_height(), d.length() * 1.6) or terrain.solid(np.x, body + 1.2, np.z) \
+			or (air and terrain.solid(np.x, robot.position.y + 0.3, np.z)):
 		vel *= 0.3
 		return
 	robot.position.x = np.x
@@ -357,8 +404,114 @@ func _move(d: Vector3) -> void:
 	_settle()
 
 func _settle() -> void:
+	if air:
+		return
 	var g := terrain.floor_at(robot.position + Vector3(0, 0.6, 0))
+	# Пол ушёл вниз больше чем на уступ — не «съезжать», а падать.
+	if robot.position.y - g > terrain.style.step_height() * 1.5 + 0.2:
+		air = true
+		vy = 0.0
+		return
 	robot.position.y = lerpf(robot.position.y, g, 0.5)
+
+## Разбег по площадке завода боком к камере; прыжок на 2.4 с.
+func auto_jump(prefix: String) -> void:
+	jump_prefix = prefix
+	jump_auto = true
+	# Самая ровная 9-метровая дорожка в стороне от завода, и чтобы сбоку (со стороны
+	# камеры) рельеф не загораживал.
+	var pc := terrain.plateau()
+	var best := INF
+	var st := pc
+	var yaw := 0.0
+	for k in 16:
+		var ang := TAU * k / 16.0
+		var f := Vector3(sin(ang), 0, cos(ang))
+		var side := Basis(Vector3.UP, ang - 1.35) * Vector3(0, 0, -1)
+		for r: float in [9.0, 11.0, 13.0, 15.0]:
+			var p0 := pc + Vector3(sin(ang + 2.0), 0, cos(ang + 2.0)) * r
+			var h0 := terrain.surface_h(p0.x, p0.z)
+			var cost := 0.0
+			for i in 10:
+				var q := p0 + f * i
+				cost += absf(terrain.surface_h(q.x, q.z) - h0)
+				# Не через завод и не в воду.
+				cost += 20.0 if Vector2(q.x - pc.x, q.z - pc.z).length() < 8.0 else 0.0
+				cost += 20.0 if terrain.solid(q.x, h0 + 1.0, q.z) else 0.0
+				var c := q + side * 5.0
+				cost += maxf(0.0, terrain.surface_h(c.x, c.z) - h0 - 1.0) * 0.5
+			if cost < best:
+				best = cost
+				st = p0
+				yaw = ang
+	robot.position = Vector3(st.x, terrain.surface_h(st.x, st.z), st.z)
+	robot.rotation.y = yaw
+	cam_yaw = yaw
+	cam_dist = 5.5
+	cam_pitch = 0.3
+
+func _auto_jump(dt: float) -> void:
+	jump_t += dt
+	# Камера сбоку, идёт вдоль разбега.
+	cam_yaw = robot.rotation.y - 1.35
+	cam_focus = robot.position + Vector3(0, 1.1, 0)
+	if jump_t > 2.4 and jump_t < 2.5 and _can_jump():
+		jump()
+	var shot := ""
+	if jump_shots == 0 and jump_t > 2.2:
+		shot = "бег"
+	elif jump_shots == 1 and air and vy < 2.6:
+		shot = "взлёт"
+	elif jump_shots == 2 and air and vy < 0.0:
+		shot = "вершина"
+	elif jump_shots == 3 and _was_air and not air:
+		shot = "приземление"
+	_was_air = air
+	if shot != "":
+		jump_shots += 1
+		var path := "%s_%d.png" % [jump_prefix, jump_shots]
+		get_viewport().get_texture().get_image().save_png(path)
+		print("кадр прыжка (%s): %s" % [shot, path])
+		if jump_shots >= 4:
+			get_tree().quit(0)
+	if jump_t > 8.0:
+		print("Прыжок: время вышло")
+		get_tree().quit(1)
+
+## Прыгать можно с земли и когда руки свободны: не в стройке, не на тросе, не с буром.
+func _can_jump() -> bool:
+	if air or not route.is_empty() or drill_auto:
+		return false
+	var b := get_parent().get_node_or_null("builder")
+	if b != null and b.get("active"):
+		return false
+	if fist and fist.state == "pull":
+		return false
+	return anim == null or anim.work < 0.3
+
+## Прыжок: скорость отрыва одна, высота — от гравитации (на лёгкой выше).
+func jump() -> void:
+	var g := G * terrain.style.gravity
+	vy = minf(JUMP_V, sqrt(2.0 * g * JUMP_MAX_H))
+	air = true
+	robot.position.y += 0.02
+
+## Полёт: тяжесть, удар головой о свод, приземление на пол.
+func _vertical(dt: float) -> void:
+	if not air:
+		return
+	vy -= G * terrain.style.gravity * dt
+	var p := robot.position
+	if vy > 0.0 and terrain.solid(p.x, p.y + 2.0 + vy * dt, p.z):
+		vy = 0.0
+	robot.position.y += vy * dt
+	var g := terrain.floor_at(robot.position + Vector3(0, 0.6, 0))
+	if vy <= 0.0 and robot.position.y <= g:
+		robot.position.y = g
+		air = false
+		if anim:
+			anim.land = clampf(-vy / 6.0, 0.25, 1.0)
+		vy = 0.0
 
 func _follow_route() -> Vector3:
 	if route_i >= route.size():

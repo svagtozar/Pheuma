@@ -359,6 +359,8 @@ func _process(dt: float) -> void:
 			# Левый стик геймпада (раскладка ProtoControls): наклон задаёт скорость.
 			var stick := ProtoControls.move_vector()
 			dir = Vector2(stick.x, -stick.y)
+		if dir != Vector2.ZERO and use_3d and view3d != null:
+			dir = dir.rotated(-view3d.cam_yaw)   # в 3D — относительно камеры
 		if dir != Vector2.ZERO:
 			world.move_robot(dir * world.robot_speed() * dt)
 		if Input.is_key_pressed(KEY_E):

@@ -1,7 +1,9 @@
 extends Node3D
 ## Предпросмотр объёмного 3D-визуала (к игре не подключён).
 ##   godot --path . res://proto/preview.tscn -- --seed=14 --view=third|plan|cave|overview --screenshot=путь.png
-##   --play — ходить самому (WASD, Shift, Q/E или мышь с ПКМ, колесо; F — бур,
+##   --play — ходить самому (WASD, Shift — бег, Пробел — прыжок, камера мышью —
+##   курсор захвачен, Esc отпускает, клик захватывает; --sens=1.5 — чувствительность;
+##   колесо — дистанция; F — бур,
 ##   G — выстрел кистью и подтягивание; геймпад — см. ProtoControls); --tool=drill — бур в правом предплечье
 ##   --auto=cave --screenshot=путь.png — маршрут в пещеру, кадры путь_1..4.png
 ##   --auto=drill --screenshot=путь.png — подойти к друзе и выбурить её (ProtoMining),
@@ -9,6 +11,7 @@ extends Node3D
 ##   --view=factory — пневмозавод крупно; --build — режим стройки (призрак детали)
 ##   В --play: B — стройка, T — деталь, R — повернуть, Пробел — поставить,
 ##   X — разобрать, C — выгрузить груз в приёмник (подробно — ProtoBuilder)
+##   --auto=jump --screenshot=путь.png — разбег и прыжок, кадры путь_1..4.png
 ##   --auto=sound — тот же маршрут без кадров, в конце бур у стены и выстрел кистью
 ##   (для проверки звука); --record=путь.wav — записать звук, --mute — без звука
 ##   --hud — HUD (груз, завод, стройка, кнопки; в --play он есть всегда), --pad —
@@ -80,6 +83,8 @@ func _ready() -> void:
 		elif a == "--cargo": demo_cargo = true
 		elif a == "--build": build = true
 		elif a == "--fresh": fresh = true
+		elif a.begins_with("--sens="): ProtoControls.mouse_sens = float(a.substr(7))
+		elif a == "--invert-y": ProtoControls.mouse_invert_y = true
 	if auto == "drill":
 		RobotDesigns.tool_r = "drill"
 		view = "cave"
@@ -115,6 +120,7 @@ func _ready() -> void:
 		pl.name = "player"
 		add_child(pl)
 		pl.setup(robot, cam, terrain, env)
+		pl.capture = play and auto == "" and DisplayServer.get_name() != "headless"
 		pl.mining = mining
 		if auto == "drill":
 			pl.auto_drill(shot_path.get_basename() if shot_path != "" else "user://drill")
@@ -124,6 +130,9 @@ func _ready() -> void:
 			shot_path = ""
 		elif auto == "sound":
 			pl.auto_sound()
+		elif auto == "jump":
+			pl.auto_jump(shot_path.get_basename() if shot_path != "" else "user://jump")
+			shot_path = ""
 		if not mute:
 			var snd := ProtoSound.new()
 			snd.name = "sound"
