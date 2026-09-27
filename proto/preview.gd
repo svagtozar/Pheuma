@@ -1,7 +1,11 @@
 extends Node3D
 ## Предпросмотр объёмного 3D-визуала (к игре не подключён).
 ##   godot --path . res://proto/preview.tscn -- --seed=14 --view=third|plan|cave|overview --screenshot=путь.png
-##   --play — ходить самому (WASD, Shift, Q/E или мышь с ПКМ, колесо; F — бур,
+##   --play — ходить самому (WASD, Shift — бег, Пробел — прыжок, камера мышью —
+##   курсор захвачен, клик захватывает; Esc / Start — пауза, в ней Настройки →
+##   Управление: переназначение, чувствительность, инверсия
+##   (user://controls.cfg; --menu — открыть сразу, для кадра);
+##   колесо — дистанция; F — бур,
 ##   G — выстрел кистью и подтягивание; геймпад — см. ProtoControls); --tool=drill — бур в правом предплечье
 ##   --auto=cave --screenshot=путь.png — маршрут в пещеру, кадры путь_1..4.png
 ##   --auto=drill --screenshot=путь.png — подойти к друзе и выбурить её (ProtoMining),
@@ -10,6 +14,9 @@ extends Node3D
 ##   --view=factory — пневмозавод крупно; --build — режим стройки (призрак детали)
 ##   В --play: B — стройка, T — деталь, R — повернуть, Пробел — поставить,
 ##   X — разобрать, C — выгрузить груз в приёмник (подробно — ProtoBuilder)
+##   --auto=bump --screenshot=путь.png — упереться в дробилку и перешагнуть трубу
+##   (проверка столкновений), кадры путь_1..2.png
+##   --auto=jump --screenshot=путь.png — разбег и прыжок, кадры путь_1..4.png
 ##   --auto=sound — тот же маршрут без кадров, в конце бур у стены и выстрел кистью
 ##   (для проверки звука); --record=путь.wav — записать звук, --mute — без звука
 ##   --hud — HUD (груз, завод, стройка, кнопки; в --play он есть всегда), --pad —
@@ -20,7 +27,7 @@ extends Node3D
 ##   этапов, награды, прокачка, события, советы и итоги; Esc / Menu — меню,
 ##   K — прокачка; --open=briefing|choice|reward|menu|settings|skills|end|event — открыть
 ##   окно или начать событие (для кадра)
-##   Разведка материалов (ProtoLabDesk, ProtoLabPanel): Z / A — коснуться друзы, машины
+##   Разведка материалов (ProtoLabDesk, ProtoLabPanel): Z / B — коснуться друзы, машины
 ##   или груза и открыть карточку (пробы, догадки), V / RB — анализатор; в линии
 ##   завода — лаборатория. --lab — открыть карточку сразу (для кадра)
 ##   Обучение первых минут (ProtoTutorial) — в --play, пока не пройдено; --tutorial —
@@ -46,6 +53,8 @@ var robot_design := "clean"
 var cam: Camera3D
 var _t := 0.0
 var play := false            # --play: управление от третьего лица
+var controls_menu: ProtoControlsMenu   # --menu: экран «Управление» для кадра
+var show_menu := false       # --menu: открыть меню управления сразу (для кадра)
 var auto := ""               # --auto=cave: скриптовый маршрут с кадрами
 var record := ""             # --record=путь.wav: записать звук (с --play или --auto)
 var mute := false            # --mute: без звука
@@ -160,6 +169,7 @@ func _ready() -> void:
 		pl.name = "player"
 		add_child(pl)
 		pl.setup(robot, cam, terrain, env)
+		pl.capture = play and auto == "" and DisplayServer.get_name() != "headless"
 		pl.mining = mining
 		if auto == "drill":
 			# --form: на время выбора цели бур видит только залежи этой формы.
@@ -177,6 +187,12 @@ func _ready() -> void:
 			shot_path = ""
 		elif auto == "sound":
 			pl.auto_sound()
+		elif auto == "bump":
+			pl.auto_bump(pneu_view, shot_path.get_basename() if shot_path != "" else "user://bump")
+			shot_path = ""
+		elif auto == "jump":
+			pl.auto_jump(shot_path.get_basename() if shot_path != "" else "user://jump")
+			shot_path = ""
 		if not mute:
 			var snd := ProtoSound.new()
 			snd.name = "sound"
@@ -189,6 +205,8 @@ func _ready() -> void:
 		_hud()
 	_lab()
 	_tutorial()
+	if play and auto == "" and show_menu:
+		_controls_menu()
 	if play and auto == "":
 		saves = ProtoSave.new()
 		saves.name = "saves"
@@ -659,6 +677,7 @@ func _factory() -> void:
 	var slab := ProtoMachines.slab(Vector3(17, 0.6, 15), terrain.ground.lerp(Color(0.5, 0.5, 0.52), 0.6))
 	slab.position = Vector3(pc.x, top - 0.28, pc.z + 2.5)
 	add_child(slab)
+	ProtoMachines.add_box_collider(slab, ProtoMachines.LAYER_GROUND)
 	pneu = ProtoPneumatics.new(planet)
 	pneu.build_demo(Vector2i(-3, 0), a)
 	# Вторая труба линии — лаборатория: груз из приёмника проходит пробы.
@@ -936,6 +955,15 @@ func _lab_demo() -> void:
 	if not pos.is_empty():
 		lab_desk.toggle_guess(s, pos[0])
 	lab_panel._sig = ""
+
+## Экран «Управление» (ProtoControlsMenu) сразу, для кадра (--menu); в игре он
+## открывается из паузы: Настройки → Управление.
+func _controls_menu() -> void:
+	controls_menu = ProtoControlsMenu.new()
+	controls_menu.name = "controls_menu"
+	controls_menu.pause_tree = false   # без паузы, чтобы кадр снялся
+	add_child(controls_menu)
+	controls_menu.open()
 
 func _process(dt: float) -> void:
 	_t += dt

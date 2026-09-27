@@ -4,6 +4,9 @@ extends Node3D
 ## (ProtoSky), залежи, машины и робота игрока (RobotDesigns). Ввод не читает:
 ## робот ходит по World, как в 2D, вид только следует за ним. Клетка под
 ## курсором — луч из камеры в рельеф (для стройки и Q/T/R).
+## Камеру можно крутить вокруг робота: мышь с зажатым колесом (средней
+## кнопкой) или правый стик; WASD тогда идут относительно камеры (main.gd
+## поворачивает ввод на cam_yaw). Курсор не захватывается — он нужен стройке.
 
 const S := 2.0                   # метров на клетку игры, как TileTerrain.S
 const CAM_BACK := 6.5            # камера сзади-сверху, смотрит на север карты (−z), как 2D
@@ -31,6 +34,8 @@ var _machine_sig := ""
 var _sync_t := 0.0
 var _last_pos := Vector2.ZERO
 var _yaw := PI
+var cam_yaw := 0.0               # 0 — камера смотрит на север, как 2D
+var cam_tilt := 0.0              # -1..1 — ниже/выше обычного
 var build_ms := 0
 var _live := {}                  # id машины → живые части модели (лампа, вращение, груз)
 var _fx3d: WorldFx3D             # снаряды, дроны, огонь, порции, события, частицы
@@ -38,6 +43,7 @@ var _zone: MeshInstance3D         # круг зоны события плане�
 var _t := 0.0
 
 func set_world(w: World) -> void:
+	ProtoControls.ensure()
 	world = w
 	if _content != null:
 		_content.queue_free()
@@ -430,6 +436,14 @@ func _process(dt: float) -> void:
 		cursor.visible = world.planet.in_bounds(mc)
 		cursor.position = terrain.cell_pos(mc) + Vector3(0, 0.05, 0)
 
+func _unhandled_input(e: InputEvent) -> void:
+	if not visible or cam == null:
+		return
+	if e is InputEventMouseMotion and Input.is_mouse_button_pressed(MOUSE_BUTTON_MIDDLE):
+		var d := ProtoControls.mouse_look(e.relative)
+		cam_yaw = wrapf(cam_yaw + d.x, -PI, PI)
+		cam_tilt = clampf(cam_tilt + d.y * 1.5, -1.0, 1.0)
+
 ## Зона события — как круг в 2D: мигает при предупреждении, ровно светит в активной фазе.
 func _event_zone(dt: float) -> void:
 	_t += dt
@@ -458,9 +472,15 @@ func _cam_dist() -> float:
 func _follow(dt: float) -> void:
 	var k := _cam_dist()
 	var target := robot.position + Vector3(0, 1.0, 0)
-	var want := target + Vector3(0, CAM_UP * k, CAM_BACK * k)
+	var look := ProtoControls.stick_look()      # Q/E в игре — вставить и повернуть
+	cam_yaw = wrapf(cam_yaw - look.x * dt * 2.4, -PI, PI)
+	cam_tilt = clampf(cam_tilt - look.y * dt * 1.2, -1.0, 1.0)
+	var rot := Basis(Vector3.UP, cam_yaw)
+	var up := CAM_UP * (1.0 + 0.6 * cam_tilt)
+	var want := target + rot * Vector3(0, up * k, CAM_BACK * k)
+	want.y = maxf(want.y, terrain.surface_h(want.x, want.z) + 0.8)
 	cam.position = cam.position.lerp(want, minf(1.0, dt * 6.0))
-	cam.look_at(target + Vector3(0, 0, -2.0 * k))
+	cam.look_at(target + rot * Vector3(0, 0, -2.0 * k))
 	if particles != null:
 		particles.position = robot.position + Vector3(0, 8, -10)
 

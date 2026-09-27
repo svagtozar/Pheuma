@@ -389,18 +389,23 @@ func _process(dt: float) -> void:
 		lab_panel.focus_cell = mouse_cell()
 	if not paused:
 		var dir := Vector2.ZERO
-		if Input.is_key_pressed(KEY_W) or Input.is_key_pressed(KEY_UP): dir.y -= 1
-		if Input.is_key_pressed(KEY_S) or Input.is_key_pressed(KEY_DOWN): dir.y += 1
-		if Input.is_key_pressed(KEY_A) or Input.is_key_pressed(KEY_LEFT): dir.x -= 1
-		if Input.is_key_pressed(KEY_D) or Input.is_key_pressed(KEY_RIGHT): dir.x += 1
-		if dir != Vector2.ZERO:
+		if Input.is_key_pressed(KEY_UP): dir.y -= 1
+		if Input.is_key_pressed(KEY_DOWN): dir.y += 1
+		if Input.is_key_pressed(KEY_LEFT): dir.x -= 1
+		if Input.is_key_pressed(KEY_RIGHT): dir.x += 1
+		# WASD и левый стик — действия ProtoControls (переназначаются в «Управлении»);
+		# наклон стика задаёт скорость.
+		var mv := ProtoControls.move_vector()
+		dir += Vector2(mv.x, -mv.y)
+		if dir.length() > 1.0:
 			dir = dir.normalized()
-		else:
-			# Левый стик геймпада (раскладка ProtoControls): наклон задаёт скорость.
-			var stick := ProtoControls.move_vector()
-			dir = Vector2(stick.x, -stick.y)
+		if dir != Vector2.ZERO and use_3d and view3d != null:
+			dir = dir.rotated(-view3d.cam_yaw)   # в 3D — относительно камеры
 		if dir != Vector2.ZERO and not lab_open:   # карточке материала нужны стик и стрелки
+			var before: Vector2 = world.robot.pos
 			world.move_robot(dir * world.robot_speed() * dt)
+			if use_3d:
+				world.robot.pos = around_machines(world, before, world.robot.pos)
 		# Добыча: E или правый курок (F — тоже клавиша бура в раскладке, но здесь это фабрикатор).
 		if Input.is_key_pressed(KEY_E) or (Input.is_action_pressed(ProtoControls.WORK) and not Input.is_physical_key_pressed(KEY_F)):
 			say(world.mine(_mine_target(), dt))
@@ -436,6 +441,29 @@ func _process(dt: float) -> void:
 		_shot_t += dt
 		if _shot_t > 2.5:
 			_save_screenshot()
+
+## В объёмном виде машины твёрдые: робот (радиус ROBOT_R клетки) не заходит
+## в клетку машины, кроме мелких деталей (трубы, провода, датчики) — их перешагивает. Если уже стоит в
+## машине (её построили на нём), выйти можно. Скользит вдоль стенки по осям.
+const ROBOT_R := 0.22
+
+static func around_machines(w: World, from: Vector2, to: Vector2) -> Vector2:
+	if not in_machine(w, to) or in_machine(w, from):
+		return to
+	var sx := Vector2(to.x, from.y)
+	if not in_machine(w, sx):
+		return sx
+	var sy := Vector2(from.x, to.y)
+	if not in_machine(w, sy):
+		return sy
+	return from
+
+static func in_machine(w: World, p: Vector2) -> bool:
+	for off in [Vector2(-ROBOT_R, -ROBOT_R), Vector2(ROBOT_R, -ROBOT_R), Vector2(-ROBOT_R, ROBOT_R), Vector2(ROBOT_R, ROBOT_R)]:
+		var m = w.machine_at(Vector2i((p + off).floor()))
+		if m != null and ComponentStats.SIZE.get(m.kind, 1.0) >= 0.5:
+			return true
+	return false
 
 func _mine_target() -> Vector2i:
 	var mc := mouse_cell()

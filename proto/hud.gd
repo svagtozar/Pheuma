@@ -33,6 +33,8 @@ const PAD_COLORS := {"A": Color(0.33, 0.66, 0.2), "B": Color(0.78, 0.2, 0.18),
 const HINTS_WALK := [
 	["Ходьба", &"move_forward", &"move_left", &"move_back", &"move_right"],
 	["Камера", &"cam_left", &"cam_right", &"cam_up", &"cam_down"],
+	["Бег", &"sprint"],
+	["Прыжок", &"jump"],
 	["Бур", &"tool_work"],
 	["Кисть", &"fist_fire"],
 	["Стройка", &"build_mode"],
@@ -320,6 +322,8 @@ func hint_rows(building: bool, has_cargo: bool) -> Array:
 	var rows: Array = []
 	for h in (HINTS_BUILD if building else HINTS_WALK):
 		var g := glyph(h.slice(1), pad)
+		if h[1] == &"cam_left" and not pad:
+			g = "Мышь" + (" " + g if g != "" else "")   # камера — мышью (ProtoPlayer)
 		if g != "":
 			rows.append([h[0], g])
 	if has_cargo and not building:
