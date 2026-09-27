@@ -3,6 +3,8 @@ extends RefCounted
 ## Предпросмотр объёмного рельефа: поле плотности (плюс — порода, минус — воздух)
 ## с холмами, руслом реки, котловиной озера, пещерным залом и ходом к нему.
 ## Поверхность строится методом surface nets в один ArrayMesh с цветом вершин.
+## Форма рельефа, пещеры и особые места (вулкан, иглы, кратеры, расщелины,
+## парящие глыбы) — по тегам планеты, см. ProtoWorldStyle.
 
 var sx := 80
 var sy := 36
@@ -28,10 +30,31 @@ var vein := Color(0.5, 0.8, 1.0)
 var outcrops: Array = []        # цвета материалов, выходящих на поверхность пятнами
 var patch_noise := FastNoiseLite.new()
 
-func _init(seed_value: int) -> void:
+var style: ProtoWorldStyle
+var cave_h := 4.4             # полувысота зала
+var cave_u := Vector3(1, 0, 0)    # длинная ось зала
+var cave_v := Vector3(0, 0, 1)
+var cave_len := 7.0
+var cave_wid := 7.0
+# Особые места по тегам.
+const VOLC_C := Vector2(14, 16)
+var spires: Array = []        # [x, z, радиус основания, высота, y основания]
+var craters: Array = []       # Vector3(x, z, радиус)
+var fissures: Array = []      # [Vector2 a, Vector2 b, ширина, глубина, рамка]
+var floaters: Array = []      # [центр, радиус]
+
+func _init(seed_value: int, st: ProtoWorldStyle = null) -> void:
+	style = st if st != null else ProtoWorldStyle.new()
 	noise.seed = seed_value
-	noise.frequency = 0.035
-	noise.fractal_octaves = 4
+	noise.frequency = style.relief_freq
+	noise.fractal_octaves = style.octaves
+	lake_r = style.lake_r
+	cave_len = style.cave_len
+	cave_wid = style.cave_wid
+	cave_h = style.cave_h
+	cave_r = maxf(cave_len, cave_wid)
+	cave_u = Vector3(style.cave_axis.x, 0, style.cave_axis.y).normalized()
+	cave_v = Vector3(-cave_u.z, 0, cave_u.x)
 	noise3.seed = seed_value + 7
 	noise3.frequency = 0.06
 	vein_noise.seed = seed_value + 13
@@ -39,6 +62,7 @@ func _init(seed_value: int) -> void:
 	patch_noise.seed = seed_value + 21
 	patch_noise.frequency = 0.07
 	lake_c.y = river_z(lake_c.x)
+	_features(seed_value)
 	# Дно русла: минимум по всему верховью — река не течёт в гору и всегда врезана.
 	bed.resize(sx + 2)
 	var m := INF
@@ -49,8 +73,98 @@ func _init(seed_value: int) -> void:
 const PAD_C := Vector2(46, 30)
 const PAD_HALF := Vector2(7.5, 5.5)
 
+## Свободно ли место под особую деталь рельефа: не на площадке, не у пещеры,
+## не в русле и не в озере.
+func free_spot(x: float, z: float, r: float) -> bool:
+	var q := Vector2(x, z)
+	if x < r + 2.0 or z < r + 2.0 or x > sx - r - 2.0 or z > sz - r - 2.0:
+		return false
+	if q.distance_to(PAD_C) < 12.0 + r or q.distance_to(Vector2(cave_c.x, cave_c.z)) < cave_r + 5.0 + r:
+		return false
+	if q.distance_to(Vector2(cave_entry.x, cave_entry.z)) < 6.0 + r:
+		return false
+	if absf(z - river_z(x)) < 5.0 + r or q.distance_to(lake_c) < lake_r + 3.0 + r:
+		return false
+	if style.volcano and q.distance_to(VOLC_C) < 12.0 + r:
+		return false
+	return true
+
+func _features(seed_value: int) -> void:
+	var rng := RandomNumberGenerator.new()
+	rng.seed = seed_value * 31 + 5
+	for i in 300:
+		if craters.size() >= style.craters:
+			break
+		var r := rng.randf_range(4.5, 8.5) if craters.size() > 0 else 10.0
+		var x := rng.randf_range(0, sx)
+		var z := rng.randf_range(0, sz)
+		if free_spot(x, z, r * 0.6):
+			craters.append(Vector3(x, z, r))
+	for i in 400:
+		if fissures.size() >= style.fissures:
+			break
+		var a := Vector2(rng.randf_range(0, sx), rng.randf_range(0, sz))
+		var b := a + Vector2.from_angle(rng.randf() * TAU) * rng.randf_range(12.0, 22.0)
+		var ok := true
+		for k in 5:
+			var m := a.lerp(b, k / 4.0)
+			if not free_spot(m.x, m.y, 1.5):
+				ok = false
+		if ok:
+			fissures.append([a, b, rng.randf_range(2.4, 3.4), rng.randf_range(6.0, 9.0), Rect2(a, Vector2.ZERO).expand(b).grow(3.0)])
+	for i in 400:
+		if spires.size() >= style.spires:
+			break
+		var r := rng.randf_range(1.2, 2.6)
+		var x := rng.randf_range(0, sx)
+		var z := rng.randf_range(0, sz)
+		if free_spot(x, z, r):
+			var hh := rng.randf_range(5.0, 11.0) * (1.4 if style.gravity < 0.8 else 1.0)
+			spires.append([x, z, r, hh, 0.0])
+	for i in 300:
+		if floaters.size() >= style.floaters:
+			break
+		# По сетке 3×3, чтобы глыбы висели по всей карте, а не кучей.
+		var k := floaters.size() % 9
+		var r := rng.randf_range(2.4, 4.2)
+		var x := (k % 3 + rng.randf()) * sx / 3.0
+		var z := (floorf(k / 3.0) + rng.randf()) * sz / 3.0
+		if Vector2(x, z).distance_to(PAD_C) > 10.0 and x > 6 and z > 6 and x < sx - 6 and z < sz - 6 \
+				and Vector2(x, z).distance_to(Vector2(cave_c.x, cave_c.z)) > cave_r + 2.0:
+			floaters.append([Vector3(x, 0.0, z), r])
+	# Высоты — после того, как рельеф известен.
+	for s in spires:
+		s[4] = _raw_h(s[0], s[1]) - 1.5
+	for f in floaters:
+		var c: Vector3 = f[0]
+		# Остриё снизу длиной r / 0,55 — висит над землёй, плоский верх под потолком карты.
+		var r: float = f[1]
+		c.y = minf(_raw_h(c.x, c.z) + r / 0.55 + rng.randf_range(2.5, 6.0), sy - r / 2.2 - 1.0)
+		f[0] = c
+
 func _raw_h(x: float, z: float) -> float:
-	var h := 16.0 + noise.get_noise_2d(x, z) * 9.0
+	var n := noise.get_noise_2d(x, z)
+	if style.ridged > 0.0:
+		# Гребни: острые хребты по нулевой линии шума.
+		n = lerpf(n, 0.75 - 2.2 * absf(n), style.ridged)
+	var h := 16.0 + n * style.relief_amp
+	if style.terrace > 0.0:
+		var st := style.terrace
+		var f: float = h / st - floor(h / st)
+		h = lerpf(h, (floor(h / st) + smoothstep(0.7, 1.0, f)) * st, 0.85)
+	if style.dunes > 0.0:
+		h += style.dunes * sin(x * 0.72 + z * 0.41 + noise.get_noise_2d(x * 2.0, z * 2.0) * 3.0)
+	if style.volcano:
+		var dv := Vector2(x, z).distance_to(VOLC_C)
+		h = maxf(h, 29.0 - dv * 1.0 + noise.get_noise_2d(x * 3.0, z * 3.0) * 0.8)
+		if dv < 4.2:
+			h = minf(h, 22.5 + dv * 0.8)
+	for c in craters:
+		var dd: float = Vector2(x, z).distance_to(Vector2(c.x, c.y)) / c.z
+		if dd < 1.8:
+			h += c.z * 0.2 * exp(-pow((dd - 1.0) * 3.0, 2.0))
+			if dd < 1.0:
+				h -= c.z * 0.5 * (1.0 - dd * dd)
 	# Холм посреди карты — на нём площадка завода.
 	var dc := Vector2(x, z).distance_to(PAD_C)
 	h += max(0.0, 5.0 - dc * 0.25)
@@ -80,13 +194,36 @@ func river_z(x: float) -> float:
 	return 58.0 + sin(x * 0.09) * 7.0
 
 ## Плотность в точке: плюс — порода.
-func density(x: float, y: float, z: float) -> float:
-	var h := surface_h(x, z)
+## h — высота поверхности над точкой, если уже известна (считается по столбцу).
+func density(x: float, y: float, z: float, h := NAN) -> float:
+	if is_nan(h):
+		h = surface_h(x, z)
 	var d := h - y
-	# Пещерный зал — сплюснутая сфера.
-	var q := Vector3(x, y, z) - cave_c
-	q.y *= 1.6
-	d = min(d, q.length() - cave_r)
+	# Скальные иглы: конусы из породы, с неровными боками.
+	for s in spires:
+		if absf(x - s[0]) > s[2] + 1.0 or absf(z - s[1]) > s[2] + 1.0:
+			continue
+		var dy: float = y - s[4]
+		if dy > -1.0 and dy < s[3] + 1.0:
+			var dh := Vector2(x - s[0], z - s[1]).length()
+			var ra: float = s[2] * (1.0 - clampf(dy / s[3], 0.0, 1.0)) + 0.1
+			d = max(d, (ra - dh) * 0.9 + noise3.get_noise_3d(x * 2.0, y * 2.0, z * 2.0) * 0.4)
+	# Парящие глыбы: плоский верх, острый низ.
+	for f in floaters:
+		var q0: Vector3 = Vector3(x, y, z) - f[0]
+		if absf(q0.x) < 6.0 and absf(q0.z) < 6.0 and absf(q0.y) < 8.0:
+			q0.y *= 2.2 if q0.y > 0.0 else 0.55
+			d = max(d, f[1] - q0.length() + noise3.get_noise_3d(x * 1.5, y * 1.5, z * 1.5) * 1.1)
+	# Расщелины: узкие трещины, к низу сходятся.
+	for fs in fissures:
+		if not fs[4].has_point(Vector2(x, z)):
+			continue
+		var dist := _seg_dist(Vector2(x, z), fs[0], fs[1])
+		if dist < 3.0 and y > h - fs[3] - 1.0:
+			var w: float = fs[2] * clampf((y - (h - fs[3])) / fs[3], 0.0, 1.0)
+			d = min(d, dist - w + noise.get_noise_2d(x * 4.0, z * 4.0) * 0.25)
+	# Пещерный зал — эллипсоид, форма по тегам.
+	d = min(d, cave_dist(Vector3(x, y, z)))
 	# Чаша подземного озерца в дальней части зала.
 	var pq := Vector3(x, y, z) - pool_c()
 	pq.y *= 2.6
@@ -98,19 +235,47 @@ func density(x: float, y: float, z: float) -> float:
 	var p := a.lerp(b, t) + Vector3(sin(t * 6.0) * 2.0, 0, 0)
 	d = min(d, Vector3(x, y, z).distance_to(p) - 2.4)
 	# Редкие гладкие червоточины глубже поверхности — но не у пещеры.
-	if y < h - 4.0 and not cave_box.has_point(Vector3(x, y, z)):
+	if style.worms > 0.0 and y < h - 4.0 and not cave_box.has_point(Vector3(x, y, z)):
 		var w := absf(noise3.get_noise_3d(x, y * 1.4, z))
-		d = min(d, (w - 0.035) * 30.0)
+		d = min(d, (w - style.worms) * 30.0)
 	# Пол у края карты и дно — всегда порода.
 	if y < 1.5:
 		d = max(d, 1.0)
 	return d
 
+## Расстояние до зала (минус — внутри): эллипсоид по осям стиля; у лавовой
+## трубы плоский пол, у трещины неровные стены.
+func cave_dist(p: Vector3) -> float:
+	var q := p - cave_c
+	var l := Vector3(q.dot(cave_u) / cave_len, q.y / cave_h, q.dot(cave_v) / cave_wid)
+	var dc := (l.length() - 1.0) * minf(minf(cave_len, cave_wid), cave_h)
+	match style.cave:
+		"tube", "grotto":
+			dc = maxf(dc, -(q.y + cave_h * 0.6))
+		"fissure":
+			dc += noise3.get_noise_3d(p.x * 1.2, p.y * 0.5, p.z * 1.2) * 0.9
+		"ice", "geode":
+			dc += noise3.get_noise_3d(p.x * 0.8, p.y * 0.8, p.z * 0.8) * 0.5
+	return dc
+
+## Высота пола зала относительно центра над точкой (смещение в плане).
+func cave_floor_rel(off: Vector2) -> float:
+	var o := Vector3(off.x, 0, off.y)
+	var k := pow(o.dot(cave_u) / cave_len, 2.0) + pow(o.dot(cave_v) / cave_wid, 2.0)
+	var f := -cave_h * sqrt(maxf(0.0, 1.0 - k))
+	if style.cave == "tube" or style.cave == "grotto":
+		f = maxf(f, -cave_h * 0.6)
+	return f
+
+static func _seg_dist(p: Vector2, a: Vector2, b: Vector2) -> float:
+	var t := clampf((p - a).dot(b - a) / (b - a).length_squared(), 0.0, 1.0)
+	return p.distance_to(a.lerp(b, t))
+
 var pool_r := 3.0
 
 ## Центр чаши озерца: у пола зала, дальше от входа.
 func pool_c() -> Vector3:
-	return cave_c + Vector3(2.6, -cave_r / 1.6 + 0.9, -2.2)
+	return cave_c + Vector3(2.6, cave_floor_rel(Vector2(2.6, -2.2)) + 0.9, -2.2)
 
 ## Уровень воды в чаше — чуть ниже края (пола зала).
 func pool_level() -> float:
@@ -125,9 +290,9 @@ func build_field() -> void:
 	for dz in range(-int(cave_r), int(cave_r) + 1, 2):
 		for dx in range(-int(cave_r), int(cave_r) + 1, 2):
 			minh = minf(minh, surface_h(cave_c.x + dx, cave_c.z + dz))
-	cave_c.y = clampf(minh - cave_r / 1.6 - 3.0, 4.5, 10.0)
+	cave_c.y = clampf(minh - cave_h - 3.0, cave_h * 0.75 + 1.5, 12.0)
 	cave_entry.y = surface_h(cave_entry.x, cave_entry.z) - 1.0
-	var r := Vector3(cave_r + 2.5, cave_r / 1.6 + 2.5, cave_r + 2.5)
+	var r := Vector3(cave_r + 2.5, cave_h + 2.5, cave_r + 2.5)
 	cave_box = AABB(cave_c - r, r * 2.0)
 	var tun := AABB(cave_entry, Vector3.ZERO).expand(cave_c + Vector3(0, 1, 0)).grow(3.5)
 	cave_box = cave_box.merge(tun)
@@ -135,9 +300,10 @@ func build_field() -> void:
 	var n := (sx + 1) * (sy + 1) * (sz + 1)
 	dens.resize(n)
 	for z in sz + 1:
-		for y in sy + 1:
-			for x in sx + 1:
-				dens[_i(x, y, z)] = density(x, y, z)
+		for x in sx + 1:
+			var h := surface_h(x, z)
+			for y in sy + 1:
+				dens[_i(x, y, z)] = density(x, y, z, h)
 	lake_level = lake_level_base()
 
 func bed_at(x: float) -> float:
@@ -167,7 +333,11 @@ const EDGES := [[0, 1], [2, 3], [4, 5], [6, 7], [0, 2], [1, 3], [4, 6], [5, 7], 
 ## каждой клетке со сменой знака, грань на каждом ребре со сменой знака. skip —
 ## клетки с центром внутри не строятся (там будет детальная сетка).
 ## Цвет вершины: rgb — порода, a — видимость неба; UV.x — маска жилы.
-func build_mesh(origin := Vector3.ZERO, n := Vector3i(-1, -1, -1), cell := 1.0, skip := AABB()) -> ArrayMesh:
+## skip_depth: клетки коробки skip пропускаются, только если глубже этого под
+## поверхностью (иначе на поверхности над пещерой виден шов двух сеток);
+## shallow: не строить клетки мельче этой глубины (детальной сетке — поверхность не нужна).
+func build_mesh(origin := Vector3.ZERO, n := Vector3i(-1, -1, -1), cell := 1.0, skip := AABB(),
+		skip_depth := 2.0, shallow := -INF) -> ArrayMesh:
 	if n.x < 0:
 		n = Vector3i(sx, sy, sz)
 	var nx := n.x
@@ -180,9 +350,10 @@ func build_mesh(origin := Vector3.ZERO, n := Vector3i(-1, -1, -1), cell := 1.0, 
 		f = PackedFloat32Array()
 		f.resize((nx + 1) * (ny + 1) * (nz + 1))
 		for z in nz + 1:
-			for y in ny + 1:
-				for x in nx + 1:
-					f[x + (nx + 1) * (y + (ny + 1) * z)] = density(origin.x + x * cell, origin.y + y * cell, origin.z + z * cell)
+			for x in nx + 1:
+				var h := surface_h(origin.x + x * cell, origin.z + z * cell)
+				for y in ny + 1:
+					f[x + (nx + 1) * (y + (ny + 1) * z)] = density(origin.x + x * cell, origin.y + y * cell, origin.z + z * cell, h)
 	var fi := func(x: int, y: int, z: int) -> int: return x + (nx + 1) * (y + (ny + 1) * z)
 	var use_skip := skip.size != Vector3.ZERO
 	var verts := PackedVector3Array()
@@ -198,7 +369,10 @@ func build_mesh(origin := Vector3.ZERO, n := Vector3i(-1, -1, -1), cell := 1.0, 
 	for z in nz:
 		for y in ny:
 			for x in nx:
-				if use_skip and skip.has_point(origin + (Vector3(x, y, z) + Vector3.ONE * 0.5) * cell):
+				var cc := origin + (Vector3(x, y, z) + Vector3.ONE * 0.5) * cell
+				if use_skip and skip.has_point(cc) and surface_h(cc.x, cc.z) - cc.y > skip_depth:
+					continue
+				if shallow > -INF and surface_h(cc.x, cc.z) - cc.y < shallow:
 					continue
 				var inside := 0
 				for k in 8:
@@ -259,7 +433,7 @@ func build_mesh(origin := Vector3.ZERO, n := Vector3i(-1, -1, -1), cell := 1.0, 
 ## Детальная сетка пещеры (шаг 0,5 м) — в паре с основной, построенной с skip.
 func build_cave_mesh(cell := 0.5) -> ArrayMesh:
 	var n := Vector3i(ceili(cave_box.size.x / cell), ceili(cave_box.size.y / cell), ceili(cave_box.size.z / cell))
-	return build_mesh(cave_box.position, n, cell)
+	return build_mesh(cave_box.position, n, cell, AABB(), 0.0, 1.0)
 
 ## Коробка, которую основная сетка не строит: пещерная, ужатая на клетку,
 ## чтобы края двух сеток перекрывались.

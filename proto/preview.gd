@@ -1,6 +1,6 @@
 extends Node3D
 ## Предпросмотр объёмного 3D-визуала (к игре не подключён).
-##   godot --path . res://proto/preview.tscn -- --seed=14 --view=third|plan|cave --screenshot=путь.png
+##   godot --path . res://proto/preview.tscn -- --seed=14 --view=third|plan|cave|overview --screenshot=путь.png
 ##   --play — ходить самому (WASD, Shift, Q/E или мышь с ПКМ, колесо; F — бур,
 ##   G — выстрел кистью и подтягивание; геймпад — см. ProtoControls); --tool=drill — бур в правом предплечье
 ##   --auto=cave --screenshot=путь.png — маршрут в пещеру, кадры путь_1..4.png
@@ -13,18 +13,22 @@ extends Node3D
 ##   (для проверки звука); --record=путь.wav — записать звук, --mute — без звука
 ##   --hud — HUD (груз, завод, стройка, кнопки; в --play он есть всегда), --pad —
 ##   подсказки для геймпада, --cargo — положить роботу образцы груза (для кадра)
+##   В --play игра сохраняется (ProtoSave): сама раз в минуту и при выходе, F5 / R3 —
+##   сейчас, F9 — вернуться к сохранённому; --fresh — начать планету заново
 ##   --robot=clean (по умолчанию; другой вариант из RobotDesigns или old — прежний
 ##   каркас; корпус — металл планеты)
 ## Сборка для проверки (фича play3d в export_presets.cfg) стартует прямо сюда,
 ## сразу с управлением: Select/View или Tab — другая планета, Start или Esc — выход.
 ## Планета — настоящий генератор: теги задают небо, свет и дымку, жидкие при её
-## температуре материалы — реки и озёра, твёрдые — корпуса машин.
+## температуре материалы — реки и озёра, твёрдые — корпуса машин. Форма рельефа,
+## тип пещеры, облик кристаллов и гравитация — по тегам (ProtoWorldStyle).
 
 var seed_value := 14
 var view := "third"
 var shot_path := ""
 var planet: Planet
 var terrain: ProtoTerrain
+var style: ProtoWorldStyle
 var robot: Node3D
 var robot_design := "clean"
 var cam: Camera3D
@@ -43,13 +47,22 @@ var demo_cargo := false      # --cargo: образцы груза у робот�
 var pneu: ProtoPneumatics
 var pneu_view: ProtoPneumaticsView
 var build := false           # --build: режим стройки (с --play или для кадра)
+var fresh := false           # --fresh: не загружать сохранение
+var saves: ProtoSave
 
 ## Сид следующей планеты в сборке для проверки (переживает перезагрузку сцены).
 static var build_seed := 14
+static var _booted := false
 
 func _ready() -> void:
 	if OS.has_feature("play3d"):
 		play = true
+		if not _booted:
+			# Первый запуск сборки — с планеты, где играли в прошлый раз.
+			_booted = true
+			var last := ProtoSave.last_seed()
+			if last >= 0:
+				build_seed = last
 		seed_value = build_seed
 	for a in OS.get_cmdline_user_args():
 		if a.begins_with("--seed="): seed_value = int(a.substr(7))
@@ -66,6 +79,7 @@ func _ready() -> void:
 		elif a == "--pad": hud_pad = true
 		elif a == "--cargo": demo_cargo = true
 		elif a == "--build": build = true
+		elif a == "--fresh": fresh = true
 	if auto == "drill":
 		RobotDesigns.tool_r = "drill"
 		view = "cave"
@@ -73,7 +87,9 @@ func _ready() -> void:
 		RobotDesigns.tool_r = "drill"
 	planet = PlanetGen.generate(seed_value)
 	var t0 := Time.get_ticks_msec()
-	terrain = ProtoTerrain.new(seed_value)
+	style = ProtoWorldStyle.for_planet(planet)
+	terrain = ProtoTerrain.new(seed_value, style)
+	print("Облик планеты: ", style.summary())
 	_palette()
 	terrain.build_field()
 	# Основная сетка (1 м) без пещерной коробки и детальная сетка пещеры (0,5 м).
@@ -90,6 +106,7 @@ func _ready() -> void:
 	_environment()
 	_liquids()
 	_cave_crystals()
+	_surface_features()
 	_factory()
 	_robot_and_camera()
 	_caption()
@@ -117,6 +134,11 @@ func _ready() -> void:
 		_builder()
 	if play or auto != "" or show_hud:
 		_hud()
+	if play and auto == "":
+		saves = ProtoSave.new()
+		saves.name = "saves"
+		add_child(saves)
+		saves.setup(self, fresh)
 
 ## Сохранение (ProtoSave) зовёт после постройки сцены: убрать выбуренные друзы.
 func restore_mined(ids: Array) -> void:
@@ -127,12 +149,19 @@ func restore_mined(ids: Array) -> void:
 
 func _palette() -> void:
 	ProtoSky.palette(planet, terrain)
+	if style.vein_tint.a > 0.0:
+		terrain.vein = terrain.vein.lerp(Color(style.vein_tint, 1.0), style.vein_tint.a)
 
 func _environment() -> void:
 	var sky := ProtoSky.build(planet, self, view == "cave")
 	env = sky.env
+	# Плотность дымки и ветер — по тегам (ProtoWorldStyle); под землёй не трогаем.
+	if view != "cave":
+		env.fog_density *= style.fog_mult
 	if sky.particles != null:
 		sky.particles.position = Vector3(46, 26, 36)
+		var g: Vector3 = sky.particles.gravity
+		sky.particles.gravity = Vector3(g.x + style.wind * 3.0, g.y * style.gravity, g.z + style.wind)
 
 # ---------------------------------------------------------------- жидкости
 
@@ -182,13 +211,18 @@ func _liquid_surface(s: Substance, level: float, area: Callable, vpos: Vector3, 
 
 func _cave_crystals() -> void:
 	var col: Color = terrain.vein.lerp(Color(0.45, 0.8, 1.0), 0.25)
+	if style.crystal_tint.a > 0.0:
+		col = col.lerp(Color(style.crystal_tint, 1.0), style.crystal_tint.a)
 	var rng := RandomNumberGenerator.new()
 	rng.seed = seed_value
 	var rock := StandardMaterial3D.new()
 	rock.albedo_color = terrain.cliff.lerp(terrain.ground, 0.3).darkened(0.1)
 	rock.roughness = 0.95
 	var glow := ProtoMachines.glow(col, 0.75)
-	var cmat := ProtoCrystal.material(col)
+	var cmat := ProtoCrystal.material(col, style.crystal_glow, style.crystal_alpha)
+	if style.icicles:
+		# Сосульки: прозрачный голубой лёд вместо каменных натёков.
+		rock = ProtoCrystal.material(Color(0.75, 0.88, 1.0), 0.15, 0.55)
 	var cc: Vector3 = terrain.cave_c
 	mining = ProtoMining.new()
 	mining.name = "mining"
@@ -208,7 +242,7 @@ func _cave_crystals() -> void:
 	# Натёки: сталактиты со свода, сталагмиты с пола.
 	var made := 0
 	for i in 300:
-		if made >= 18:
+		if made >= style.drips * (2 if style.icicles else 1):
 			break
 		var q := cc + Vector3(rng.randf_range(-1, 1) * terrain.cave_r, 0, rng.randf_range(-1, 1) * terrain.cave_r)
 		if terrain.solid(q.x, q.y, q.z):
@@ -229,6 +263,8 @@ func _cave_crystals() -> void:
 		if not _clear_of_view(p):
 			continue
 		var len := rng.randf_range(0.3, 1.1) * (1.6 if rng.randf() < 0.2 else 1.0)
+		if style.icicles and down:
+			len *= 1.8
 		var c := CylinderMesh.new()
 		c.top_radius = rng.randf_range(0.08, 0.22) if down else 0.02
 		c.bottom_radius = 0.02 if down else rng.randf_range(0.1, 0.26)
@@ -244,10 +280,12 @@ func _cave_crystals() -> void:
 	var lights := 0
 	made = 0
 	for i in 600:
-		if made >= 9:
+		if made >= style.druzes:
 			break
 		# Друзы ниже середины стен и на полу — их видно в луче фары, они «стоят», а не висят.
-		var dir := Vector3(rng.randf_range(-1, 1), rng.randf_range(-0.9, 0.15), rng.randf_range(-1, 1)).normalized()
+		# В жеоде — по всему своду.
+		var up := 0.9 if style.cave == "geode" else 0.15
+		var dir := Vector3(rng.randf_range(-1, 1), rng.randf_range(-0.9, up), rng.randf_range(-1, 1)).normalized()
 		var p := cc
 		var hit := false
 		for k in 60:
@@ -268,14 +306,14 @@ func _cave_crystals() -> void:
 		druse.set_meta("normal", nrm)
 		add_child(druse)
 		var cnt := rng.randi_range(5, 9)
-		var main_len := rng.randf_range(0.7, 1.3)
+		var main_len := rng.randf_range(0.7, 1.3) * style.druze_size
 		for m in cnt:
 			var spread := 0.15 if m == 0 else rng.randf_range(0.25, 0.7)
 			var tilt := (nrm + Vector3(rng.randf_range(-1, 1), rng.randf_range(-1, 1), rng.randf_range(-1, 1)) * spread).normalized()
 			var len := main_len if m == 0 else main_len * rng.randf_range(0.25, 0.7)
 			var r := len * rng.randf_range(0.11, 0.16)
 			var ci := MeshInstance3D.new()
-			ci.mesh = ProtoCrystal.mesh(len, r, rng)
+			ci.mesh = ProtoCrystal.mesh(len, r, rng, style.habit)
 			ci.material_override = cmat
 			var y := tilt
 			var ref := Vector3.UP if absf(y.dot(Vector3.UP)) < 0.9 else Vector3.RIGHT
@@ -294,7 +332,7 @@ func _cave_crystals() -> void:
 			var len := rng.randf_range(0.06, 0.2)
 			var tilt := (nrm + Vector3(rng.randf_range(-1, 1), rng.randf_range(-1, 1), rng.randf_range(-1, 1)) * 0.8).normalized()
 			var ci := MeshInstance3D.new()
-			ci.mesh = ProtoCrystal.mesh(len, len * rng.randf_range(0.14, 0.22), rng)
+			ci.mesh = ProtoCrystal.mesh(len, len * rng.randf_range(0.14, 0.22), rng, style.habit)
 			ci.material_override = cmat
 			var y := tilt
 			var x := y.cross(Vector3.UP if absf(y.y) < 0.9 else Vector3.RIGHT).normalized()
@@ -338,6 +376,142 @@ func _normal_at(p: Vector3) -> Vector3:
 		terrain.density(p.x, p.y + e, p.z) - terrain.density(p.x, p.y - e, p.z),
 		terrain.density(p.x, p.y, p.z + e) - terrain.density(p.x, p.y, p.z - e))
 	return (-g).normalized()
+
+# ---------------------------------------------------------------- особые места по тегам
+
+## Лава в кратере вулкана, друзы у подножия игл, грибы снаружи и в гроте.
+func _surface_features() -> void:
+	var rng := RandomNumberGenerator.new()
+	rng.seed = seed_value * 7 + 3
+	if style.volcano:
+		var c := ProtoTerrain.VOLC_C
+		var lava := MeshInstance3D.new()
+		var disk := CylinderMesh.new()
+		disk.top_radius = 3.6
+		disk.bottom_radius = 3.6
+		disk.height = 0.1
+		lava.mesh = disk
+		var lm := StandardMaterial3D.new()
+		lm.albedo_color = Color(0.9, 0.3, 0.05)
+		lm.emission_enabled = true
+		lm.emission = Color(1.0, 0.4, 0.08)
+		lm.emission_energy_multiplier = 3.0
+		lava.material_override = lm
+		lava.position = Vector3(c.x, 23.6, c.y)
+		add_child(lava)
+		var l := OmniLight3D.new()
+		l.light_color = Color(1.0, 0.5, 0.2)
+		l.light_energy = 3.0
+		l.omni_range = 14.0
+		l.position = Vector3(c.x, 26.0, c.y)
+		add_child(l)
+	if style.surface_druzes > 0:
+		var col: Color = terrain.vein.lerp(Color(style.crystal_tint, 1.0), style.crystal_tint.a)
+		var cmat := ProtoCrystal.material(col, style.crystal_glow * 0.6, style.crystal_alpha)
+		var made := 0
+		for i in 400:
+			if made >= style.surface_druzes:
+				break
+			var x := rng.randf_range(4, terrain.sx - 4)
+			var z := rng.randf_range(4, terrain.sz - 4)
+			if not terrain.free_spot(x, z, 0.5):
+				continue
+			var p := Vector3(x, terrain.floor_at(Vector3(x, terrain.sy, z)), z)
+			var nrm := _normal_at(p + Vector3(0, 0.05, 0))
+			if nrm.y < 0.4:
+				continue
+			_druze(p, nrm, rng.randf_range(0.8, 1.8) * style.druze_size, cmat, rng)
+			made += 1
+	if style.mushrooms > 0:
+		# Снаружи — крупные, в гроте — поменьше и ярче.
+		var made := 0
+		for i in 500:
+			if made >= style.mushrooms / 2:
+				break
+			var x := rng.randf_range(4, terrain.sx - 4)
+			var z := rng.randf_range(4, terrain.sz - 4)
+			if not terrain.free_spot(x, z, 1.0):
+				continue
+			var p := Vector3(x, terrain.surface_h(x, z), z)
+			if _normal_at(p + Vector3(0, 0.05, 0)).y < 0.7:
+				continue
+			_mushroom(p, rng.randf_range(1.6, 4.5), rng)
+			made += 1
+		made = 0
+		var cc := terrain.cave_c
+		for i in 400:
+			if made >= style.mushrooms / 2:
+				break
+			var q := cc + Vector3(rng.randf_range(-1, 1) * terrain.cave_r, 0, rng.randf_range(-1, 1) * terrain.cave_r)
+			if terrain.solid(q.x, q.y, q.z):
+				continue
+			var p := Vector3(q.x, terrain.floor_at(q), q.z)
+			if terrain.solid(p.x, p.y + 1.2, p.z) or not _clear_of_view(p):
+				continue
+			var pcq := terrain.pool_c()
+			if Vector2(p.x, p.z).distance_to(Vector2(pcq.x, pcq.z)) < terrain.pool_r + 0.4:
+				continue
+			_mushroom(p, rng.randf_range(0.35, 0.9), rng)
+			made += 1
+
+## Друза: главный кристалл и поросль вокруг, веером от поверхности.
+func _druze(base: Vector3, nrm: Vector3, main_len: float, cmat: Material, rng: RandomNumberGenerator) -> void:
+	for m in rng.randi_range(4, 8):
+		var spread := 0.15 if m == 0 else rng.randf_range(0.25, 0.7)
+		var y := (nrm + Vector3(rng.randf_range(-1, 1), rng.randf_range(-1, 1), rng.randf_range(-1, 1)) * spread).normalized()
+		var len := main_len if m == 0 else main_len * rng.randf_range(0.25, 0.7)
+		var ci := MeshInstance3D.new()
+		ci.mesh = ProtoCrystal.mesh(len, len * rng.randf_range(0.11, 0.16), rng, style.habit)
+		ci.material_override = cmat
+		var x := y.cross(Vector3.UP if absf(y.y) < 0.9 else Vector3.RIGHT).normalized()
+		var off := Vector3.ZERO if m == 0 else (x * cos(m * 2.4) + x.cross(y) * sin(m * 2.4)) * rng.randf_range(0.1, 0.35)
+		ci.transform = Transform3D(Basis(x, y, x.cross(y)).rotated(y, rng.randf() * TAU), base + off - y * len * 0.12)
+		add_child(ci)
+
+## Гриб: изогнутая ножка и светящаяся снизу шляпка.
+func _mushroom(p: Vector3, h: float, rng: RandomNumberGenerator) -> void:
+	var cap_col := Color.from_hsv(fposmod(0.78 + rng.randf_range(-0.1, 0.12), 1.0), 0.55, 0.75)
+	var node := Node3D.new()
+	node.position = p
+	node.rotation = Vector3(rng.randf_range(-0.15, 0.15), rng.randf() * TAU, rng.randf_range(-0.15, 0.15))
+	add_child(node)
+	var stem := MeshInstance3D.new()
+	var sc := CylinderMesh.new()
+	sc.top_radius = h * 0.07
+	sc.bottom_radius = h * 0.11
+	sc.height = h
+	sc.radial_segments = 8
+	stem.mesh = sc
+	var sm := StandardMaterial3D.new()
+	sm.albedo_color = Color(0.85, 0.82, 0.74)
+	sm.roughness = 0.8
+	stem.material_override = sm
+	stem.position.y = h * 0.5
+	node.add_child(stem)
+	var cap := MeshInstance3D.new()
+	var cm := SphereMesh.new()
+	cm.radius = h * 0.42
+	cm.height = h * 0.34
+	cm.is_hemisphere = true
+	cm.radial_segments = 12
+	cm.rings = 4
+	cap.mesh = cm
+	var capm := StandardMaterial3D.new()
+	capm.albedo_color = cap_col
+	capm.roughness = 0.6
+	capm.emission_enabled = true
+	capm.emission = cap_col.lerp(Color(0.6, 1.0, 0.7), 0.4)
+	capm.emission_energy_multiplier = 0.9
+	cap.material_override = capm
+	cap.position.y = h * 0.95
+	node.add_child(cap)
+	if h < 1.0 and rng.randf() < 0.4:
+		var l := OmniLight3D.new()
+		l.light_color = capm.emission
+		l.light_energy = 0.8
+		l.omni_range = 3.0
+		l.position.y = h * 0.8
+		node.add_child(l)
 
 # ---------------------------------------------------------------- завод
 
@@ -414,6 +588,12 @@ func _robot_and_camera() -> void:
 			var f2 := (Vector3(tg.x, rp2.y, tg.z) - rp2).normalized()
 			cam.position = rp2 - f2 * 5.0 + f2.cross(Vector3.UP).normalized() * 1.5 + Vector3(0, 3.5, 0)
 			cam.look_at(rp2 + f2 * 20.0 + Vector3(0, -3.0, 0))
+		"overview":
+			# Вся карта сверху наискосок: видно форму рельефа.
+			robot.position = Vector3(pc.x, top, pc.z)
+			cam.fov = 58.0
+			cam.position = Vector3(terrain.sx * 0.5 + 4.0, 68.0, terrain.sz + 22.0)
+			cam.look_at(Vector3(terrain.sx * 0.5, 10.0, terrain.sz * 0.42))
 		"cave":
 			# Робот у края зала лицом к центру; камера над плечом смотрит вдоль зала.
 			var sp := _cave_spot()
@@ -517,8 +697,8 @@ func _caption() -> void:
 	l.add_theme_color_override("font_outline_color", Color(0, 0, 0))
 	l.add_theme_constant_override("outline_size", 5)
 	var liq := _liquid_mats().map(func(m): return "%s %s" % [m.name, ", ".join(PackedStringArray(m.tags.map(func(t): return MaterialTags.display(t))))])
-	l.text = "%s (seed %d) — %s\n%.0f °C, %.2f атм, вид: %s\nЖидкости: %s" % [planet.name, seed_value,
-		", ".join(PackedStringArray(planet.tags.map(func(t): return PlanetTags.display(t)))), planet.ambient_temp, planet.atm_pressure, view,
+	l.text = "%s (seed %d) — %s\n%.0f °C, %.2f атм, %.1f g, вид: %s\n%s\nЖидкости: %s" % [planet.name, seed_value,
+		", ".join(PackedStringArray(planet.tags.map(func(t): return PlanetTags.display(t)))), planet.ambient_temp, planet.atm_pressure, planet.gravity, view, style.summary(),
 		"; ".join(PackedStringArray(liq)) if not liq.is_empty() else "нет"]
 	layer.add_child(l)
 
@@ -537,7 +717,7 @@ func _hud() -> void:
 	if hud_pad:
 		hud.pad = true
 	if OS.has_feature("play3d"):
-		hud.extra_hints = [["Другая планета", "Tab", "View"], ["Выход", "Esc", "Menu"]]
+		hud.extra_hints = [["Сохранить", "F5", "R3"], ["Другая планета", "Tab", "View"], ["Выход", "Esc", "Menu"]]
 	add_child(hud)
 
 ## Сборка для проверки: другая планета и выход с геймпада или клавиатуры.
@@ -548,6 +728,8 @@ func _unhandled_input(e: InputEvent) -> void:
 		or (e is InputEventKey and e.physical_keycode == KEY_TAB)
 	var quit: bool = (e is InputEventJoypadButton and e.button_index == JOY_BUTTON_START) \
 		or (e is InputEventKey and e.physical_keycode == KEY_ESCAPE)
+	if (next or quit) and saves != null:
+		saves.save_now(true)
 	if next:
 		build_seed = seed_value + 1
 		get_tree().reload_current_scene()

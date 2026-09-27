@@ -120,7 +120,7 @@ static func _ease(t: float) -> float:
 	# Ступенька: середина клетки плоская, склон — в узкой полосе у границы.
 	return smoothstep(0.12, 0.88, t)
 
-func density(x: float, y: float, z: float) -> float:
+func density(x: float, y: float, z: float, _h := NAN) -> float:
 	return surface_h(x, z) - y
 
 func sky_vis(_p: Vector3) -> float:

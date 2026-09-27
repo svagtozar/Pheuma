@@ -10,6 +10,7 @@ extends Node
 ##   раз — отпустить).
 ##   Геймпад: левый стик — ходьба, правый — камера, L3 — быстрее, RT — бур,
 ##   LT — кисть, D-pad вверх/вниз — дистанция (раскладка — ProtoControls).
+## Скорость хода и высота уступа зависят от гравитации планеты.
 ## Высота под ногами — по полю плотности (снаружи и в пещере), в породу и на
 ## слишком крутые уступы не заходит. Камера на пружинной штанге. Под сводом сама
 ## включает фару и сгущает тёмный туман.
@@ -128,7 +129,8 @@ func _unhandled_input(e: InputEvent) -> void:
 func _process(dt: float) -> void:
 	dt = minf(dt, 0.25)
 	var want := Vector3.ZERO
-	var top_speed := RobotAnim.WALK_SPEED
+	# Тяжёлая планета — шаг медленнее, лёгкая — быстрее (ProtoWorldStyle).
+	var top_speed := RobotAnim.WALK_SPEED * terrain.style.walk_mult()
 	if route.is_empty():
 		var inp := ProtoControls.move_vector()
 		var look := ProtoControls.look_vector()
@@ -347,7 +349,7 @@ func _move(d: Vector3) -> void:
 	var np := robot.position + d
 	var g := terrain.floor_at(np + Vector3(0, 0.7, 0))
 	# Уступ выше колена за шаг или порода на уровне груди — не пройти.
-	if (g - robot.position.y) > maxf(0.35, d.length() * 1.6) or terrain.solid(np.x, g + 1.2, np.z):
+	if (g - robot.position.y) > maxf(terrain.style.step_height(), d.length() * 1.6) or terrain.solid(np.x, g + 1.2, np.z):
 		vel *= 0.3
 		return
 	robot.position.x = np.x
