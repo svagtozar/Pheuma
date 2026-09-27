@@ -271,7 +271,13 @@ static func analyzer(w: World, _m: Dictionary, target: Vector2) -> String:
 	var subs := substances_at(w, c)
 	if subs.is_empty():
 		return "здесь нечего анализировать"
-	# Анализатор раскрывает по одному неизвестному тегу у каждого вещества в клетке.
+	if reveal_one_each(w, subs) == 0:
+		return "здесь всё уже известно"
+	return ""
+
+## Анализатор раскрывает по одному неизвестному тегу у каждого вещества
+## (общий с 3D-видом и прототипом). Возвращает, у скольких узнал новое.
+static func reveal_one_each(w: World, subs: Array) -> int:
 	var n := 0
 	for s in subs:
 		w.touch(s)
@@ -279,9 +285,7 @@ static func analyzer(w: World, _m: Dictionary, target: Vector2) -> String:
 		if not hidden.is_empty():
 			w.reveal(s, w.rng.pick(hidden), "анализатор")
 			n += 1
-	if n == 0:
-		return "здесь всё уже известно"
-	return ""
+	return n
 
 static func drone(w: World, m: Dictionary, target: Vector2) -> String:
 	var mm = w.machine_at(cell_of(target))

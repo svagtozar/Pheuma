@@ -27,8 +27,10 @@ var speed := 0.0             # задаёт игрок; в режимах вит
 var work := 0.0              # 0..1 — работа инструментом (правая рука)
 var aim_w := 0.0             # 0..1 — прицел левой рукой
 var aim_target := Vector3.ZERO   # в пространстве робота
+var work_target := Vector3.INF   # точка работы бура (пространство робота); INF — просто вперёд
 var fill_drop := 0.0         # просадка давления после выстрела (затухает)
 var ap_kick := 0.0           # «щелчок» диафрагмой (затухает)
+var ground: RobotGround      # стопы по рельефу (RobotGround.attach), если есть
 var bit: Node3D              # сверло бура, если есть
 var drill: Node3D            # бур в предплечье (выдвигается), если есть
 var drill_rest := Transform3D()
@@ -145,6 +147,8 @@ func _apply() -> void:
 		pa.pole_l = Vector3(-0.3, -1, -0.2)
 		pa.head_rot = Vector3(-0.05, clampf(atan2(d.x, d.z), -0.8, 0.8) * 0.6, 0.0)
 		p = _blend(p, pa, aim_w)
+	if ground:
+		ground.fit(p)
 	p.fill -= fill_drop
 	p.ap -= 0.3 * sin(ap_kick * PI)
 	_apply_pose(p)
@@ -210,6 +214,16 @@ func _work(base: Dictionary) -> Dictionary:
 	p.chest_rot = base.chest_rot + Vector3(0.12, -0.15, 0)
 	p.head_rot = Vector3(0.18, -0.1, 0.05)
 	p.arm_r = _pose_shoulder(p, "r") + Vector3(-0.08, -0.25, 0.42)
+	if work_target != Vector3.INF:
+		# Тянется к точке: низко — наклоняется корпусом, кисть — не дальше руки,
+		# остальное добирает выдвинутый бур.
+		var low := clampf((1.2 - work_target.y) / 1.0, 0.0, 1.0)
+		p.chest_rot = base.chest_rot + Vector3(0.12 + 0.3 * low, -0.1, 0)
+		p.head_rot = Vector3(0.18 + 0.35 * low, -0.05, 0.05)
+		var sh := _pose_shoulder(p, "r")
+		var to := work_target - sh
+		p.arm_r = sh + to.normalized() * clampf(to.length() - 0.3, 0.2, 0.5)
+		p.pole_r = Vector3(0.7, 0.1, -0.5)
 	p.pole_r = Vector3(0.6, -0.4, -0.6)
 	p.ap = 0.72 + 0.03 * sin(t * 23.0)
 	p.fill = base.fill - 0.12 - 0.02 * sin(t * 5.0)

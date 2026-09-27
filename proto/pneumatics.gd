@@ -5,7 +5,9 @@ extends RefCounted
 ## по её материалу, обработку — Processor.run по правилам data/processes.gd.
 ##
 ## Детали: приёмник (сюда робот выгружает добытое), насос, труба, пневмопушка,
-## все 16 машин обработки 2D-игры (Buildings, process), бак. Пушка под давлением
+## все 16 машин обработки 2D-игры (Buildings, process), бак, лаборатория
+## (прогоняет каждую порцию через все полезные пробы — как 2D-машина Lab — и
+## пропускает остаток дальше; знания пишет в knowledge). Пушка под давлением
 ## стреляет капсулой в ближайший приёмник впереди, до CANNON_RANGE клеток. У каждой есть направление: груз выходит вперёд. Труба принимает с любой
 ## стороны, кроме передней; машина — только сзади; бак — с любой.
 ## Газ: соседние детали — одна сеть. Насос качает до 90% предела своего материала,
@@ -38,11 +40,12 @@ const KINDS := {
 	"resonator": {"n": "Резонатор", "vol": 1.0, "stat": "resonator", "process": "resonator"},
 	"loom": {"n": "Ткацкий станок", "vol": 1.0, "stat": "loom", "process": "loom"},
 	"tank": {"n": "Бак", "vol": 2.0, "stat": "tank", "cap": 40.0},
+	"lab": {"n": "Лаборатория", "vol": 0.8, "stat": "lab"},
 }
-## Порядок в меню стройки: пневматика, все 16 машин обработки 2D-игры, бак.
+## Порядок в меню стройки: пневматика, все 16 машин обработки 2D-игры, бак, лаборатория.
 const ORDER := ["pipe", "pump", "intake", "cannon", "crusher", "furnace", "filter", "condenser", "treater",
 	"compressor", "decompressor", "distiller", "centrifuge", "magnet_sep", "electrolyzer", "sinter",
-	"irradiator", "cryochamber", "resonator", "loom", "tank"]
+	"irradiator", "cryochamber", "resonator", "loom", "tank", "lab"]
 
 const PUMP_RATE := 1.6          # газа в секунду при 1 атм снаружи
 const PUMP_SAFE := 0.9          # насос не качает выше этой доли своего предела
@@ -57,6 +60,7 @@ const FURNACE_T := 900.0
 const CANNON_RANGE := 12         # клеток: пушка бьёт в ближайший приёмник по своему направлению
 const CANNON_GAS := 0.6          # газа на выстрел
 const CANNON_CD := 1.2
+const LAB_DUR := 4.0            # с на порцию в лаборатории
 
 var planet: Planet
 var gas := GasNet.new()
@@ -65,6 +69,7 @@ var by_id := {}                 # id → Vector2i
 var events: Array = []          # {"kind": "burst"|"done"|"lost", "cell", ...} — для визуала
 var produced := {}              # id вещества → кг, пришедших в баки
 var flights: Array = []         # капсулы пушек в полёте: {p, from, to, t, dur}
+var knowledge: World = null     # чьи знания пополняет лаборатория (ProtoLabDesk.world)
 var _next_id := 1
 
 func _init(p: Planet) -> void:
@@ -159,10 +164,11 @@ func step(dt: float) -> void:
 			"pump": _pump(part, dt)
 			"intake": _intake(part, dt)
 			"cannon": _cannon(part, dt)
+			"lab": _lab(part, dt)
+			"tank": part.status = "%.1f / %.0f кг" % [mass_in(part.cell), KINDS.tank.cap] + ("\n" + part.items[-1].substance.name if not part.items.is_empty() else "")
 			_:
 				if KINDS[part.kind].has("process"):
 					_machine(part, dt)
-			"tank": part.status = "%.1f / %.0f кг" % [mass_in(part.cell), KINDS.tank.cap] + ("\n" + part.items[-1].substance.name if not part.items.is_empty() else "")
 	_move_capsules(dt)
 	_fly(dt)
 	for id in gas.step(dt):
@@ -249,6 +255,13 @@ func _machine(part: Dictionary, dt: float) -> void:
 		gas.take_gas(part.id, proc.gas_use)
 	if res.gas > 0.0:
 		gas.add_gas(part.id, res.gas * Processor.GAS_PER_KG)
+	if knowledge != null:
+		# Наблюдение, как в 2D (World.on_processed): сработавшее правило выдаёт тег
+		# входа, знание переходит на продукт.
+		for t in res.get("matched", []):
+			knowledge.reveal(part.busy.substance, t, "%s: сработало" % KINDS[part.kind].n)
+		for o in res.outs:
+			knowledge.inherit_knowledge(part.busy.substance, o[0].substance, res.added)
 	for group in res.outs:
 		for o in group:
 			if o is Portion and o.mass > 0.001:
@@ -257,6 +270,32 @@ func _machine(part: Dictionary, dt: float) -> void:
 		var o: Portion = part.out_q.pop_front()
 		part.cap = {"p": o, "cell": part.cell, "from": part.cell - DIRS[part.dir], "t": 0.5}
 		events.append({"kind": "done", "cell": part.cell, "added": res.added, "sub": o.substance})
+	part.busy = null
+	part.progress = 0.0
+
+## Лаборатория: порция ждёт LAB_DUR, получает все пробы, которые ещё что-то
+## скажут (Lab.run_probes, по 0,5 кг на пробу), остаток уходит вперёд.
+func _lab(part: Dictionary, dt: float) -> void:
+	part.hot = false
+	if part.cap != null:
+		part.status = "выход занят"
+		return
+	if part.busy == null:
+		if part.items.is_empty():
+			part.status = "ждёт образцы" if knowledge != null else "нет связи с роботом"
+			return
+		part.busy = part.items.pop_front()
+		part.progress = 0.0
+	part.progress += dt * part.stats.speed
+	part.hot = true
+	part.status = "пробы %d%%" % int(100.0 * minf(1.0, part.progress / LAB_DUR))
+	if part.progress < LAB_DUR:
+		return
+	var p: Portion = part.busy
+	var learned := knowledge != null and Lab.run_probes(knowledge, p)
+	events.append({"kind": "lab", "cell": part.cell, "sub": p.substance, "learned": learned})
+	if p.mass > 0.01:
+		part.cap = {"p": p, "cell": part.cell, "from": part.cell - DIRS[part.dir], "t": 0.5}
 	part.busy = null
 	part.progress = 0.0
 
