@@ -74,6 +74,11 @@ func _ready() -> void:
 			pl.auto_cave(shot_path.get_basename() if shot_path != "" else "user://route")
 			shot_path = ""
 
+## Сохранение (ProtoSave) зовёт после постройки сцены: убрать выбуренные друзы.
+func restore_mined(ids: Array) -> void:
+	if mining:
+		mining.restore_mined(ids)
+
 # ---------------------------------------------------------------- палитра и свет
 
 func _palette() -> void:

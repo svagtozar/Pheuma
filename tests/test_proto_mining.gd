@@ -76,3 +76,12 @@ func test_action_registered_once():
 	var n := InputMap.action_get_events(ProtoMining.ACTION).size()
 	ProtoMining.ensure_action()
 	assert_eq(InputMap.action_get_events(ProtoMining.ACTION).size(), n)
+
+func test_mined_druse_recorded_and_restored():
+	_setup(_crystal_sub(3.0), 4.0)
+	_run(12.0, 1.0)
+	assert_eq(root.get_meta("mined", []), [0], "выбуренная друза — в метаданных корня")
+	_setup(_crystal_sub(3.0), 4.0)
+	mining.restore_mined([0])
+	assert_eq(mining.crystals().size(), 0, "после загрузки кристаллов нет")
+	assert_eq(root.get_meta("mined", []), [0])

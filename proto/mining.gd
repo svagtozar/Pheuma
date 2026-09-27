@@ -186,6 +186,7 @@ func step(dt: float, r: Node3D, work: float, out: float, tip: Vector3) -> void:
 
 func _break(c: MeshInstance3D) -> void:
 	c.set_meta("broken", true)
+	_note_mined(c.get_parent())
 	c.material_override = cmat
 	var gt := c.global_transform
 	var nrm: Vector3 = c.get_parent().get_meta("normal", Vector3.UP)
@@ -228,6 +229,34 @@ func _break(c: MeshInstance3D) -> void:
 	burst.global_position = contact
 	burst.emitting = true
 	get_tree().create_timer(2.0).timeout.connect(burst.queue_free)
+
+## Сохранение (ProtoSave): номера выбуренных до конца друз (в порядке генерации)
+## — в метаданных "mined" корня сцены.
+func _note_mined(druse: Node) -> void:
+	for i in druses.size():
+		if druses[i].node != druse:
+			continue
+		for k in druses[i].crystals:
+			if is_instance_valid(k) and k.get_parent() == druse and not k.has_meta("broken"):
+				return
+		var root := get_parent()
+		var ids: Array = root.get_meta("mined", [])
+		if not ids.has(i):
+			ids.append(i)
+		root.set_meta("mined", ids)
+		return
+
+## После загрузки: кристаллы выбуренных друз убрать.
+func restore_mined(ids: Array) -> void:
+	for id in ids:
+		var i := int(id)
+		if i < 0 or i >= druses.size():
+			continue
+		for k in druses[i].crystals:
+			if is_instance_valid(k) and not k.has_meta("broken"):
+				k.set_meta("broken", true)
+				k.visible = false
+	get_parent().set_meta("mined", ids.duplicate())
 
 func _falling(dt: float) -> void:
 	var keep := []
