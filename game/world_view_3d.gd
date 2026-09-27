@@ -4,6 +4,11 @@ extends Node3D
 ## (ProtoSky), залежи, машины и робота игрока (RobotDesigns). Ввод не читает:
 ## робот ходит по World, как в 2D, вид только следует за ним. Клетка под
 ## курсором — луч из камеры в рельеф (для стройки и Q/T/R).
+## Камеру можно крутить вокруг робота: мышь с зажатым колесом (средней
+## кнопкой) или правый стик; WASD тогда идут относительно камеры (main.gd
+## поворачивает ввод на cam_yaw). Курсор не захватывается — он нужен стройке.
+## Урон робота (правила World) виден и здесь: полоса прочности, кромка экрана,
+## искры и звук (ProtoHurtFx) — по падению World.robot.hp.
 
 const S := 2.0                   # метров на клетку игры, как TileTerrain.S
 const CAM_BACK := 6.5            # камера сзади-сверху, смотрит на север карты (−z), как 2D
@@ -14,6 +19,7 @@ var main                         # game/main.gd — зум камеры и кл�
 var terrain: TileTerrain
 var robot: Node3D
 var anim: RobotAnim
+var robot_ground: RobotGround     # стопы и наклон по сетке рельефа
 var cam: Camera3D
 var env: Environment
 var particles: CPUParticles3D
@@ -30,13 +36,26 @@ var _machine_sig := ""
 var _sync_t := 0.0
 var _last_pos := Vector2.ZERO
 var _yaw := PI
+var cam_yaw := 0.0               # 0 — камера смотрит на север, как 2D
+var cam_tilt := 0.0              # -1..1 — ниже/выше обычного
 var build_ms := 0
+var hurt: ProtoHurtFx
+var _hp_last := -1.0
+var _hurt_acc := 0.0
+var _hurt_dps := 0.0
+var _cell_last := Vector2i.ZERO
+var _live := {}                  # id машины → живые части модели (лампа, вращение, груз)
+var _fx3d: WorldFx3D             # снаряды, дроны, огонь, порции, события, частицы
+var _zone: MeshInstance3D         # круг зоны события планеты (метеориты, вспышка, гейзер)
+var _t := 0.0
 
 func set_world(w: World) -> void:
+	ProtoControls.ensure()
 	world = w
 	if _content != null:
 		_content.queue_free()
 	_deposits.clear()
+	_live.clear()
 	_liquid_mats.clear()
 	_machine_sig = ""
 	_content = Node3D.new()
@@ -60,10 +79,30 @@ func set_world(w: World) -> void:
 	_content.add_child(_machines)
 	_robot()
 	_cursor()
+	_fx3d = WorldFx3D.new()
+	_content.add_child(_fx3d)
+	_fx3d.setup(world, terrain, main.view.fx if main != null and main.view != null else null)
+	_zone = MeshInstance3D.new()
+	var ring := TorusMesh.new()
+	ring.inner_radius = 0.94
+	ring.outer_radius = 1.0
+	ring.rings = 48
+	ring.ring_segments = 4
+	_zone.mesh = ring
+	_zone.material_override = ProtoMachines.glow(Color(1.0, 0.45, 0.2), 1.5)
+	_zone.visible = false
+	_content.add_child(_zone)
 	cam = Camera3D.new()
 	cam.fov = 55.0
 	cam.far = 400.0
 	_content.add_child(cam)
+	if hurt == null:
+		hurt = ProtoHurtFx.new()
+		hurt.bar = true
+		add_child(hurt)
+	hurt.cam = cam
+	hurt.visible = visible
+	_hp_last = -1.0
 	_last_pos = world.robot.pos
 	robot.position = terrain.world_pos(world.robot.pos)
 	_sync(0.0, true)
@@ -74,6 +113,8 @@ func set_world(w: World) -> void:
 ## Включить или спрятать: спрятанный вид не рисуется и не держит камеру и небо.
 func activate(on: bool) -> void:
 	visible = on
+	if hurt != null:
+		hurt.visible = on
 	if cam != null:
 		if on:
 			cam.make_current()
@@ -94,6 +135,7 @@ func _build_chunk(k: Vector2i) -> void:
 	ground.mesh = terrain.build_height_mesh(r)
 	ground.material_override = _ground_mat
 	node.add_child(ground)
+	RobotGround.add_collision(ground)
 	for t in [Planet.Tile.LAVA, Planet.Tile.ACID]:
 		var mesh := terrain.liquid_mesh(t, terrain.liquid_level(), r)
 		if mesh == null:
@@ -126,6 +168,8 @@ func _refresh_tiles() -> void:
 		_deposits[c][0].position = terrain.cell_pos(c)
 		_deposits[c][1].position = terrain.cell_pos(c) + Vector3(0, 0.04, 0)
 	_machine_sig = ""
+	if _fx3d != null:
+		_fx3d.terrain_changed()
 
 ## Шейдер жидкостей прототипа: лава — с коркой и свечением, кислота — с пузырями.
 func _liquid_mat(t: int) -> Material:
@@ -178,47 +222,28 @@ func _ruins() -> void:
 			mi.material_override = stone
 			_content.add_child(mi)
 
-## Залежи: у разведанных и тех, что рядом с роботом, — самородки или друзы
-## кристаллов цвета вещества; у прочих — серый камешек, как метка в 2D.
+## Залежи: у разведанных и тех, что рядом с роботом, — форма по тегам вещества
+## (ProtoDeposit: друза, жила, конкреции, пласт, корка…), облик — по планете;
+## у прочих — серый камешек, как метка в 2D.
 func _build_deposits() -> void:
 	var rng := RandomNumberGenerator.new()
 	var mats := {}
+	var look := ProtoDeposit.planet_look(world.planet, ProtoWorldStyle.for_planet(world.planet).habit)
 	for c in world.planet.deposits:
 		var dep: Dictionary = world.planet.deposits[c]
 		var s: Substance = world.db.get_sub(dep.sub)
 		if s == null:
 			continue
+		var form := ProtoDeposit.form_for(s)
 		if not mats.has(s.id):
-			mats[s.id] = ProtoCrystal.material(s.color) if s.has("crystalline") else ProtoMachines.surface(s)
+			mats[s.id] = ProtoDeposit.material(s, form, look)
 		rng.seed = hash(c) ^ world.planet.seed_value
 		var base := terrain.cell_pos(c)
-		var n := Node3D.new()
-		n.position = base
 		var k: float = clampf(0.5 + dep.amount / 150.0, 0.6, 1.5)
-		if s.has("crystalline"):
-			for i in rng.randi_range(4, 7):
-				var len := rng.randf_range(0.35, 0.9) * k
-				var ci := MeshInstance3D.new()
-				ci.mesh = ProtoCrystal.mesh(len, len * rng.randf_range(0.12, 0.17), rng)
-				ci.material_override = mats[s.id]
-				var off := Vector3(rng.randf_range(-0.55, 0.55), -len * 0.1, rng.randf_range(-0.55, 0.55))
-				ci.position = off
-				ci.rotation = Vector3(rng.randf_range(-0.5, 0.5), rng.randf() * TAU, rng.randf_range(-0.5, 0.5))
-				n.add_child(ci)
-		else:
-			for i in rng.randi_range(3, 6):
-				var r := rng.randf_range(0.14, 0.32) * k
-				var sp := SphereMesh.new()
-				sp.radius = r
-				sp.height = r * 1.4
-				sp.radial_segments = 6
-				sp.rings = 3
-				var mi := MeshInstance3D.new()
-				mi.mesh = sp
-				mi.material_override = mats[s.id]
-				mi.position = Vector3(rng.randf_range(-0.6, 0.6), r * 0.35, rng.randf_range(-0.6, 0.6))
-				mi.rotation = Vector3(rng.randf(), rng.randf() * TAU, rng.randf())
-				n.add_child(mi)
+		# Клетка — 2 м: залежь чуть меньше клетки, жила — поперёк неё.
+		var n := ProtoDeposit.build(s, form, k * 0.7, rng, look, mats[s.id])
+		n.position = base
+		n.rotation.y = rng.randf() * TAU
 		_content.add_child(n)
 		var pebble := MeshInstance3D.new()
 		var ps := SphereMesh.new()
@@ -241,6 +266,7 @@ func _robot() -> void:
 	if anim:
 		anim.mode = "play"          # скорость задаёт вид — по движению робота в мире
 	_content.add_child(robot)
+	robot_ground = RobotGround.attach(robot)
 	var lamp := robot.find_child("head_lamp", true, false) as SpotLight3D
 	if lamp:
 		lamp.light_energy = 1.5
@@ -261,70 +287,105 @@ func _cursor() -> void:
 
 func _machine_node(m: Machine) -> Node3D:
 	var body := ProtoMachines.surface(m.built_from) if m.built_from != null else ProtoMachines.surface(world.starter)
-	var info: Dictionary = Buildings.KINDS.get(m.kind, {})
-	var n: Node3D
-	match m.kind:
-		"tank", "dome":
-			var fill := 0.0
-			if m.capacity() > 0.0:
-				var mass := 0.0
-				for p in m.items:
-					mass += p.mass
-				fill = clampf(mass / m.capacity(), 0.05, 1.0)
-			n = ProtoMachines.tank(body, m.items[0].substance.color if not m.items.is_empty() else Color(0.3, 0.3, 0.35), fill)
-			n.scale = Vector3(0.85, 0.85, 0.85)
-		"pump", "compressor", "decompressor":
-			n = ProtoMachines.pump(body)
-		"cannon", "battery_section":
-			n = ProtoMachines.cannon(body)
-		"drill":
-			n = ProtoMachines.frame(body, 1.5)
-			var bit := MeshInstance3D.new()
-			var cy := CylinderMesh.new()
-			cy.top_radius = 0.22
-			cy.bottom_radius = 0.02
-			cy.height = 1.3
-			bit.mesh = cy
-			bit.material_override = body
-			bit.position = Vector3(0, 0.75, 0)
-			n.add_child(bit)
-		"container", "warehouse_section", "receiver":
-			n = Node3D.new()
-			var box := ProtoMachines.slab(Vector3(1.7, 0.9, 1.7), m.built_from.color if m.built_from else Color.GRAY)
-			box.material_override = body
-			box.position = Vector3(0, 0.45, 0)
-			n.add_child(box)
-		"pipe":
-			n = Node3D.new()
-			var hub := MeshInstance3D.new()
-			var sp := SphereMesh.new()
-			sp.radius = 0.2
-			sp.height = 0.4
-			hub.mesh = sp
-			hub.material_override = body
-			hub.position = Vector3(0, 0.4, 0)
-			n.add_child(hub)
-		_:
-			if info.get("cat", -1) == 2 or info.has("process"):
-				n = ProtoMachines.furnace(body)
-			else:
-				n = Node3D.new()
-				var box := ProtoMachines.slab(Vector3(1.6, 1.0, 1.6), Color.GRAY)
-				box.material_override = body
-				box.position = Vector3(0, 0.5, 0)
-				n.add_child(box)
+	var n := MachineModels.build(m.kind, body)
 	n.position = terrain.cell_pos(m.cell)
 	var d: Vector2i = Machine.DIRS[m.facing]
 	n.rotation.y = atan2(float(d.x), float(d.y))
+	if m.outputs() == 2:
+		var d2: Vector2i = Machine.DIRS[(m.facing + 1) % 4]
+		MachineModels.add_outlet(n, n.basis.inverse() * Vector3(d2.x, 0, d2.y))
+	_live[m.id] = {"node": n, "lamp": n.get_node_or_null("lamp"), "spin": n.find_child("spin", true, false),
+		"fill": n.get_node_or_null("fill"), "h": float(n.get_meta("h", 1.2)), "busy": null, "light": null}
+	if m.stats.get("light", false):
+		var l := OmniLight3D.new()
+		l.light_color = Color(1, 1, 0.75)
+		l.light_energy = 0.8
+		l.omni_range = 5.0
+		l.position = Vector3(0, _live[m.id].h + 0.5, 0)
+		n.add_child(l)
 	return n
+
+## Склад и пневмобатарея 2×2: главная секция несёт общую крышу или тяжёлый ствол.
+func _structure_node(m: Machine) -> Node3D:
+	var body := ProtoMachines.surface(m.built_from if m.built_from != null else world.starter)
+	var n := Node3D.new()
+	n.position = (terrain.cell_pos(m.cell) + terrain.cell_pos(m.cell + Vector2i(1, 1))) / 2.0
+	if m.kind == "warehouse_section":
+		var roof := MeshInstance3D.new()
+		var pr := PrismMesh.new()
+		pr.size = Vector3(4.0, 0.8, 4.0)
+		roof.mesh = pr
+		roof.material_override = body
+		roof.position = Vector3(0, 1.75, 0)
+		n.add_child(roof)
+	else:
+		var cyl := CylinderMesh.new()
+		cyl.top_radius = 0.38
+		cyl.bottom_radius = 0.5
+		cyl.height = 3.4
+		var barrel := MeshInstance3D.new()
+		barrel.mesh = cyl
+		barrel.material_override = body
+		var d: Vector2i = Machine.DIRS[m.facing]
+		barrel.position = Vector3(d.x, 0, d.y) * 0.9 + Vector3(0, 2.6, 0)
+		barrel.rotation.y = atan2(float(d.x), float(d.y))
+		barrel.rotate_object_local(Vector3.RIGHT, PI / 2.0 - 0.55)
+		n.add_child(barrel)
+	return n
+
+## Меняющаяся часть машин каждый кадр: лампа, вращение, груз, порция в работе.
+func _update_live(dt: float) -> void:
+	for id in _live:
+		var m = world.machines.get(id)
+		if m == null:
+			continue
+		var L: Dictionary = _live[id]
+		var working: bool = m.hot or (m is Processor and m.busy != null)
+		if m is Drill or m.kind in ["pump", "fabricator", "beacon", "resonator"]:
+			working = working or m.enabled
+		if L.lamp != null:
+			var key := "lamp_idle"
+			if not m.enabled:
+				key = "lamp_off"
+			elif world.logic.outputs.get(id, false):
+				key = "lamp_sig"
+			elif working:
+				key = "lamp_work"
+			L.lamp.material_override = MachineModels.mat(key)
+		if L.spin != null and working:
+			L.spin.rotation.y += dt * (9.0 if m.kind in ["centrifuge", "drill"] else 2.5)
+		if L.fill != null and m.capacity() > 0.0:
+			var f: float = clampf(m.total_mass() / m.capacity(), 0.0, 1.0)
+			L.fill.scale.y = maxf(0.001, f * float(L.fill.get_meta("h", 1.0)))
+			L.fill.visible = f > 0.001
+			if f > 0.001:
+				var fm := L.fill.get_node("fill_mesh") as MeshInstance3D
+				var col: Color = m.items[0].substance.color
+				if fm.get_meta("col", Color.TRANSPARENT) != col:
+					fm.set_meta("col", col)
+					(fm.material_override as StandardMaterial3D).albedo_color = col
+		# Порция в работе едет от входа (сзади) к центру, как в 2D.
+		var busy = m.busy if m is Processor else null
+		if busy != null:
+			if L.busy == null:
+				L.busy = _portion_mesh(busy.substance, 0.16, false)
+				L.node.add_child(L.busy)
+			var k: float = clampf(m.progress / m.proc.dur, 0.0, 1.0)
+			L.busy.position = Vector3(0, L.h + 0.25 + 0.05 * sin(_t * 8.0), -0.8 * (1.0 - k))
+		elif L.busy != null:
+			L.busy.queue_free()
+			L.busy = null
 
 func _rebuild_machines() -> void:
 	for ch in _machines.get_children():
 		ch.queue_free()
+	_live.clear()
 	var mats := {}
 	for id in world.machines:
 		var m: Machine = world.machines[id]
 		_machines.add_child(_machine_node(m))
+		if m.kind in ["warehouse_section", "battery_section"] and m.master_id == m.id:
+			_machines.add_child(_structure_node(m))
 		if m.kind == "pipe":
 			# Труба тянется к соседним трубам и машинам (к трубам — один раз на пару).
 			for d in Machine.DIRS:
@@ -343,7 +404,7 @@ func _machine_signature() -> String:
 	var parts := PackedStringArray()
 	for id in world.machines:
 		var m: Machine = world.machines[id]
-		parts.append("%d:%s:%d:%d" % [id, m.kind, m.facing, m.items.size()])
+		parts.append("%d:%s:%d:%d" % [id, m.kind, m.facing, m.master_id])
 	return ",".join(parts)
 
 # ---------------------------------------------------------------- кадр
@@ -379,12 +440,83 @@ func _process(dt: float) -> void:
 		# Скорость игры рассчитана на 2D (клеток в секунду) — шаг ограничен бегом.
 		anim.speed = minf(speed, RobotAnim.WALK_SPEED * 2.6)
 	robot.position = terrain.world_pos(world.robot.pos)
+	_hurt(dt, moved)
+	if robot_ground:
+		robot_ground.place(robot.position.y)
 	_sync(dt)
+	_update_live(dt)
+	_fx3d.update(dt)
 	_follow(dt)
+	_event_zone(dt)
 	if main != null and cursor != null:
 		var mc: Vector2i = main.mouse_cell()
 		cursor.visible = world.planet.in_bounds(mc)
 		cursor.position = terrain.cell_pos(mc) + Vector3(0, 0.05, 0)
+
+## Урон по правилам World: вспышки на падении прочности, поломка — надпись.
+func _hurt(dt: float, moved: Vector2) -> void:
+	if hurt == null:
+		return
+	var r := world.robot
+	var mx := r.max_hp()
+	var cell := world.robot_cell()
+	if _hp_last >= 0.0:
+		var d := _hp_last - r.hp
+		if r.hp >= mx - 0.01 and _hp_last < mx * 0.5 and moved.length() > 3.0:
+			# World.robot_die: робот уже в капсуле с полной прочностью.
+			hurt.hit(40.0, "impact", robot)
+			hurt.show_banner("КОРПУС РАЗРУШЕН", "Восстановление в капсуле · половина груза потеряна", 3.0)
+		elif d > 0.0:
+			_hurt_acc += d
+			_hurt_dps = lerpf(_hurt_dps, d / maxf(dt, 0.001), minf(1.0, dt * 3.0))
+			if _hurt_acc >= ProtoHealth.HIT_STEP or d >= ProtoHealth.HIT_STEP:
+				hurt.hit(_hurt_acc, _hurt_kind(d), robot)
+				_hurt_acc = 0.0
+		else:
+			_hurt_dps = lerpf(_hurt_dps, 0.0, minf(1.0, dt * 3.0))
+	_hp_last = r.hp
+	_cell_last = cell
+	hurt.set_state(r.hp / maxf(mx, 1.0), _hurt_dps, _hurt_kind(0.0), "Корпус %d / %d" % [roundi(maxf(r.hp, 0.0)), roundi(mx)])
+
+## Вид урона: лава и кислота под роботом (World выталкивает на безопасную клетку),
+## огонь, удар (провал льда) или среда планеты.
+func _hurt_kind(d: float) -> String:
+	for c: Vector2i in [_cell_last, world.robot_cell()]:
+		match world.tile(c):
+			Planet.Tile.LAVA: return "heat"
+			Planet.Tile.ACID: return "acid"
+		if world.fires.has(c):
+			return "heat"
+	if d >= 8.0:
+		return "impact"
+	return ProtoHealth.ambient_rate(world.planet, world.robot.shield(), 1.0).kind
+
+func _unhandled_input(e: InputEvent) -> void:
+	if not visible or cam == null:
+		return
+	if e is InputEventMouseMotion and Input.is_mouse_button_pressed(MOUSE_BUTTON_MIDDLE):
+		var d := ProtoControls.mouse_look(e.relative)
+		cam_yaw = wrapf(cam_yaw + d.x, -PI, PI)
+		cam_tilt = clampf(cam_tilt + d.y * 1.5, -1.0, 1.0)
+
+## Зона события — как круг в 2D: мигает при предупреждении, ровно светит в активной фазе.
+func _event_zone(dt: float) -> void:
+	_t += dt
+	var d: EventDirector = world.director
+	var id: String = d.current.get("id", "")
+	var zoned: bool = id in ["meteors", "flare", "geyser", "spore_bloom", "ring_debris"]
+	_zone.visible = zoned
+	if not zoned:
+		return
+	var warn: bool = d.current.phase == "warn"
+	var r: float = (float(d.current.radius) + 0.5) * S
+	var col := Color(0.8, 0.5, 1.0) if id == "flare" else (Color(0.8, 0.9, 1.0) if id == "geyser" else Color(1.0, 0.45, 0.2))
+	var m := _zone.material_override as StandardMaterial3D
+	m.albedo_color = col
+	m.emission = col
+	m.emission_energy_multiplier = 1.5 * (0.5 + 0.5 * sin(_t * (6.0 if warn else 3.0))) + (0.0 if warn else 0.8)
+	_zone.position = terrain.cell_pos(d.center()) + Vector3(0, 0.2, 0)
+	_zone.scale = Vector3(r, 4.0, r)
 
 func _cam_dist() -> float:
 	var z := 1.5
@@ -395,9 +527,15 @@ func _cam_dist() -> float:
 func _follow(dt: float) -> void:
 	var k := _cam_dist()
 	var target := robot.position + Vector3(0, 1.0, 0)
-	var want := target + Vector3(0, CAM_UP * k, CAM_BACK * k)
+	var look := ProtoControls.stick_look()      # Q/E в игре — вставить и повернуть
+	cam_yaw = wrapf(cam_yaw - look.x * dt * 2.4, -PI, PI)
+	cam_tilt = clampf(cam_tilt - look.y * dt * 1.2, -1.0, 1.0)
+	var rot := Basis(Vector3.UP, cam_yaw)
+	var up := CAM_UP * (1.0 + 0.6 * cam_tilt)
+	var want := target + rot * Vector3(0, up * k, CAM_BACK * k)
+	want.y = maxf(want.y, terrain.surface_h(want.x, want.z) + 0.8)
 	cam.position = cam.position.lerp(want, minf(1.0, dt * 6.0))
-	cam.look_at(target + Vector3(0, 0, -2.0 * k))
+	cam.look_at(target + rot * Vector3(0, 0, -2.0 * k))
 	if particles != null:
 		particles.position = robot.position + Vector3(0, 8, -10)
 
@@ -425,3 +563,15 @@ func screen_to_world(screen: Vector2) -> Vector2:
 			return Vector2(b.x, b.z) / S
 		prev = p
 	return Vector2(prev.x, prev.z) / S
+
+## Порция вещества шариком (твёрдое — матовое, светящееся — по тегам материала).
+func _portion_mesh(sub: Substance, r: float, _glow: bool) -> MeshInstance3D:
+	var mi := MeshInstance3D.new()
+	var sp := SphereMesh.new()
+	sp.radius = r
+	sp.height = r * 2.0
+	sp.radial_segments = 10
+	sp.rings = 5
+	mi.mesh = sp
+	mi.material_override = ProtoMachines.surface(sub)
+	return mi

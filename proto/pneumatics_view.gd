@@ -21,6 +21,7 @@ var _labels := {}         # id → Label3D
 var _ghost: Node3D
 var _ghost_key := ""
 var _t := 0.0
+var _flights: Array = []  # MeshInstance3D капсул пушек в полёте (пул)
 
 func setup(n: ProtoPneumatics, o: Vector3) -> void:
 	net = n
@@ -55,6 +56,7 @@ func sync() -> void:
 		_rebuild()
 	_update_live()
 	_update_caps()
+	_update_flights()
 	_play_events()
 
 # ---------------------------------------------------------------- корпуса
@@ -71,6 +73,8 @@ func _rebuild() -> void:
 		n.position = ProtoPneumatics.cell_pos(origin, c)
 		add_child(n)
 		_nodes[part.id] = n
+		# Робот не проходит сквозь детали: трубы низкие — на них можно наступить.
+		ProtoMachines.add_box_collider(n)
 		var g := n.find_child("gauge", true, false) as MeshInstance3D
 		if g:
 			_gauges[part.id] = g.material_override
@@ -81,7 +85,9 @@ func _rebuild() -> void:
 			l.font_size = 40
 			l.outline_size = 10
 			l.modulate = Color(0.95, 0.97, 1.0)
-			l.position = Vector3(0, {"tank": 2.7, "intake": 2.5, "pump": 1.9}.get(part.kind, 2.2), 0)
+			var model := n.get_node_or_null("model")
+			var top: float = float(model.get_meta("h", 1.6)) * 0.85 + 0.9 if model != null else 2.2
+			l.position = Vector3(0, {"tank": 2.7, "intake": 2.5, "pump": 1.9}.get(part.kind, top), 0)
 			l.no_depth_test = true
 			n.add_child(l)
 			_labels[part.id] = l
@@ -144,7 +150,10 @@ static func build_part(kind: String, sub: Substance, dir: int, links: Array, hol
 		"lab":
 			core = _lab_mesh(body)
 		_:
-			core = Node3D.new()
+			# Пушка и машины обработки 2D-игры — общие модели (MachineModels).
+			core = MachineModels.build(kind, body)
+			core.scale = Vector3(0.85, 0.85, 0.85)
+			core.name = "model"
 	# Машины смотрят выходом по dir: модель строится выходом на +Z.
 	if kind != "pipe":
 		core.rotation.y = _yaw(dir)
@@ -481,6 +490,17 @@ func _update_live() -> void:
 					board.material_override.emission = bc
 					board.material_override.emission_energy_multiplier = 3.0 if flash > 0.0 else (1.5 if busy else 0.2)
 					n.set_meta("flash", maxf(0.0, flash - 0.03))
+			_:
+				var model := n.get_node_or_null("model")
+				if model == null:
+					continue
+				var on: bool = part.get("work", false)
+				var lamp := model.get_node_or_null("lamp") as MeshInstance3D
+				if lamp:
+					lamp.material_override = MachineModels.mat("lamp_work" if on else ("lamp_starved" if part.items.is_empty() and part.kind != "cannon" else "lamp_idle"))
+				var spin := model.find_child("spin", true, false) as Node3D
+				if spin and on:
+					spin.rotation.y += 0.15
 
 ## Уровень груза в баке: цилиндр внутри стекла, цвет — материал.
 func _tank_fill(n: Node3D, part: Dictionary) -> void:
@@ -546,6 +566,33 @@ func _update_caps() -> void:
 			mi.material_override = ProtoMachines.glow(cap.p.substance.color, 1.4)
 			mi.set_meta("sub", sid)
 
+## Капсулы пушек: дуга от пушки к приёмнику (высота — треть дальности).
+func _update_flights() -> void:
+	var fl: Array = net.flights
+	while _flights.size() < fl.size():
+		var mi := MeshInstance3D.new()
+		mi.mesh = _cap_mesh
+		mi.scale = Vector3.ONE * 1.4
+		add_child(mi)
+		_flights.append(mi)
+	for i in _flights.size():
+		var mi: MeshInstance3D = _flights[i]
+		mi.visible = i < fl.size()
+		if not mi.visible:
+			continue
+		var f: Dictionary = fl[i]
+		var k: float = clampf(f.t / f.dur, 0.0, 1.0)
+		var a := ProtoPneumatics.cell_pos(origin, f.from) + Vector3(0, 1.6, 0)
+		var b := ProtoPneumatics.cell_pos(origin, f.to) + Vector3(0, 1.3, 0)
+		var h := a.distance_to(b) * 0.35
+		mi.position = a.lerp(b, k) + Vector3(0, sin(PI * k) * h, 0)
+		var v := (b - a) + Vector3(0, cos(PI * k) * PI * h, 0)
+		mi.rotation = Vector3(PI / 2.0 - atan2(v.y, Vector2(v.x, v.z).length()), atan2(v.x, v.z), 0)
+		var sid: String = f.p.substance.id
+		if mi.get_meta("sub", "") != sid:
+			mi.material_override = ProtoMachines.glow(f.p.substance.color, 1.4)
+			mi.set_meta("sub", sid)
+
 func _play_events() -> void:
 	for e in net.events:
 		match e.kind:
@@ -554,7 +601,7 @@ func _play_events() -> void:
 			"lost":
 				var d: Vector2i = ProtoPneumatics.DIRS[e.dir]
 				_puff(ProtoPneumatics.cell_pos(origin, e.cell) + Vector3(d.x, PIPE_Y, d.y), e.sub.color, 14)
-			"done":
+			"done", "caught":
 				_puff(ProtoPneumatics.cell_pos(origin, e.cell) + Vector3(0, 1.2, 0), e.sub.color, 10)
 			"lab":
 				if e.learned:
@@ -562,6 +609,9 @@ func _play_events() -> void:
 					var ln: Node3D = _nodes.get(net.parts.get(e.cell, {}).get("id", -1))
 					if ln:
 						ln.set_meta("flash", 1.0)
+			"shot":
+				var sd: Vector2i = ProtoPneumatics.DIRS[e.dir]
+				_puff(ProtoPneumatics.cell_pos(origin, e.cell) + Vector3(sd.x * 1.1, 1.8, sd.y * 1.1), Color(0.9, 0.95, 1.0), 24)
 	net.events.clear()
 
 func _puff(at: Vector3, col: Color, amount: int) -> void:

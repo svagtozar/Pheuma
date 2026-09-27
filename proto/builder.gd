@@ -32,10 +32,12 @@ var mat_i := 0
 var rot := 0
 var hud: Label
 var note := ""
+var unloaded_kg := 0.0       # всего выгружено в приёмники (обучение проверяет по нему)
 var _note_t := 0.0
 
-static func ensure_actions() -> void:
-	var layout := {
+## Раскладка стройки по умолчанию: действие → события.
+static func layout() -> Dictionary:
+	return {
 		BUILD_MODE: [_key(KEY_B), _button(JOY_BUTTON_Y)],
 		BUILD_NEXT: [_key(KEY_T), _button(JOY_BUTTON_DPAD_RIGHT)],
 		BUILD_PREV: [_button(JOY_BUTTON_DPAD_LEFT)],
@@ -45,11 +47,14 @@ static func ensure_actions() -> void:
 		BUILD_REMOVE: [_key(KEY_X), _button(JOY_BUTTON_B)],
 		UNLOAD: [_key(KEY_C), _button(JOY_BUTTON_X)],
 	}
-	for a in layout:
+
+static func ensure_actions() -> void:
+	var lay := layout()
+	for a in lay:
 		if InputMap.has_action(a):
 			continue
 		InputMap.add_action(a, 0.5)
-		for e in layout[a]:
+		for e in lay[a]:
 			InputMap.action_add_event(a, e)
 
 func setup(v: ProtoPneumaticsView, r: Node3D, materials: Array) -> void:
@@ -145,6 +150,7 @@ func unload() -> bool:
 		m += p.mass
 		view.net.feed(best, p)
 	cg.clear()
+	unloaded_kg += m
 	_say("Выгружено %.1f кг" % m)
 	return true
 

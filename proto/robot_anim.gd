@@ -5,9 +5,13 @@ extends Node
 ## ставятся двухзвенным IK по целям кисти и лодыжки с полюсом локтя/колена.
 ##   покой  — контрапост, рука на бедре, дыхание, взгляд по сторонам, уши
 ##            подёргиваются, диафрагма щурится, шкала давления «дышит»;
-##   ходьба — стопы по циклу, таз покачивается, руки в противофазе.
-## Позы — словари; между покоем и ходьбой плавный переход по скорости speed
-## (м/с): частота шага = скорость / длина цикла, стопы не скользят.
+##   ходьба — стопы по циклу, таз покачивается, руки в противофазе;
+##   бег    — длинный шаг с фазой полёта, корпус наклонён вперёд, согнутые
+##            руки работают, пятки подлетают, уши прижаты;
+##   прыжок — в воздухе ноги поджаты, руки на взлёте вперёд-вверх, на спуске
+##            в стороны; при приземлении — присед по силе удара.
+## Позы — словари; покой → ходьба → бег плавно по скорости speed (м/с):
+## частота шага = скорость / длина цикла (у бега цикл длиннее), стопы не скользят.
 ## Поверх — «работа» (рука вперёд, прищур) и прицел левой руки (выстрел кистью).
 ## Бур в правом предплечье: пока работы нет, спрятан в щитке; с началом работы
 ## кисть подгибается и сжимается, бур выдвигается мимо запястья и только потом
@@ -15,21 +19,32 @@ extends Node
 
 ## Время для кадров витрины: ≥ 0 — анимация стоит в этом моменте.
 static var fixed_t := -1.0
-## idle, walk (шаг на месте), demo (покой → ходьба → покой), drill (бур
+## idle, walk (шаг на месте), run (бег на месте), jump (прыжок с разбега, цикл
+## 1.8 с), demo (покой → ходьба → покой), drill (бур
 ## выдвигается, работает и уходит, цикл 3 с), fist (выстрел кистью, см. RobotFist) — для витрины.
 static var default_mode := "idle"
 
 const CYCLE := 0.88          # м за полный цикл шага (два шага)
 const WALK_SPEED := 0.84     # м/с — обычный шаг
+const RUN_CYCLE := 1.9       # м за цикл бега
+const RUN_SPEED := 1.93      # м/с — бег (шаг × ProtoPlayer.SPRINT_MULT)
+const JUMP_PERIOD := 1.8     # цикл витрины jump
 
 var mode := ""
 var speed := 0.0             # задаёт игрок; в режимах витрины — сама анимация
 var work := 0.0              # 0..1 — работа инструментом (правая рука)
+var speed_ref := 1.0         # множитель скорости планеты: пороги бега от него
+var airborne := false        # задаёт игрок: робот в воздухе
+var vy := 0.0                # вертикальная скорость (м/с): взлёт > 0, спуск < 0
+var land := 0.0              # 0..1 — присед от приземления (затухает)
+var run_k := 0.0             # 0..1 — доля бега в походке
+var air_k := 0.0             # 0..1 — доля позы полёта
 var aim_w := 0.0             # 0..1 — прицел левой рукой
 var aim_target := Vector3.ZERO   # в пространстве робота
 var work_target := Vector3.INF   # точка работы бура (пространство робота); INF — просто вперёд
 var fill_drop := 0.0         # просадка давления после выстрела (затухает)
 var ap_kick := 0.0           # «щелчок» диафрагмой (затухает)
+var ground: RobotGround      # стопы по рельефу (RobotGround.attach), если есть
 var bit: Node3D              # сверло бура, если есть
 var drill: Node3D            # бур в предплечье (выдвигается), если есть
 var drill_rest := Transform3D()
@@ -50,6 +65,7 @@ var fill: Node3D
 var hips_rest := Transform3D()
 var chest_rest := Transform3D()
 var _sim_t := 0.0
+var _root_y := 0.0
 var _fixed_started := false
 
 func _ready() -> void:
@@ -61,6 +77,7 @@ func _ready() -> void:
 	chest = hips.get_node("chest")
 	head = chest.get_node("head")
 	hips_rest = hips.transform
+	_root_y = root.position.y
 	chest_rest = chest.transform
 	for e in ["ear_l", "ear_r"]:
 		var en: Node3D = head.get_node(e)
@@ -99,13 +116,30 @@ func _reset_sim() -> void:
 	ap_kick = 0.0
 	drill_out = 0.0
 	work = 0.0
+	run_k = 0.0
+	air_k = 0.0
+	land = 0.0
 
 ## Скорость в режимах витрины.
 func _mode_speed(tt: float) -> float:
 	match mode:
 		"walk": return WALK_SPEED
 		"demo": return WALK_SPEED if tt > 1.0 and tt < 3.6 else 0.0
+		"run", "jump": return RUN_SPEED
 	return speed
+
+## Витрина jump: разбег, отрыв в 0.3 с цикла, полёт по параболе, приземление.
+func _demo_jump(dt: float) -> void:
+	var q := fposmod(t, JUMP_PERIOD)
+	var v0 := ProtoPlayer.JUMP_V
+	var g := ProtoPlayer.G
+	var ta := q - 0.3
+	var was := airborne
+	airborne = ta > 0.0 and ta < 2.0 * v0 / g
+	vy = v0 - g * ta if airborne else 0.0
+	root.position.y = _root_y + (v0 * ta - 0.5 * g * ta * ta if airborne else 0.0)
+	if was and not airborne:
+		land = 0.8
 
 func _step(dt: float) -> void:
 	t += dt
@@ -122,11 +156,20 @@ func _step(dt: float) -> void:
 	var spin := work if drill == null else work * smoothstep(0.85, 1.0, drill_out)
 	if bit and spin > 0.01:
 		bit.rotate_object_local(Vector3.UP, dt * 28.0 * spin)
+	if mode == "jump":
+		_demo_jump(dt)
+	land = move_toward(land, 0.0, dt * 3.0)
+	air_k = move_toward(air_k, 1.0 if airborne else 0.0, dt / (0.12 if airborne else 0.08))
 	var v := _mode_speed(t) if mode != "play" else speed
 	var want := clampf(v / WALK_SPEED, 0.0, 1.0)
 	walk_k = move_toward(walk_k, want, dt / 0.3)
+	# Бег — выше полутора шагов; пороги — от скорости хода на этой планете.
+	var rn := smoothstep(WALK_SPEED * 1.45 * speed_ref, RUN_SPEED * 0.92 * speed_ref, v)
+	run_k = move_toward(run_k, rn, dt / 0.25)
 	# Пока шаг затухает, стопы доходят цикл до конца — не зависают в воздухе.
-	var rate := maxf(v, walk_k * WALK_SPEED * 0.6) / CYCLE
+	var rate := maxf(v, walk_k * WALK_SPEED * 0.6) / lerpf(CYCLE, RUN_CYCLE, run_k)
+	if air_k > 0.5:
+		rate *= 0.15             # в полёте ноги поджаты, цикл почти стоит
 	if walk_k > 0.001:
 		phase += dt * rate
 	else:
@@ -135,7 +178,15 @@ func _step(dt: float) -> void:
 func _apply() -> void:
 	var p := _idle(t)
 	if walk_k > 0.001:
-		p = _blend(p, _walk(phase, clampf(walk_k * 1.2, 0.0, 1.0)), smoothstep(0.0, 1.0, walk_k))
+		var amp := clampf(walk_k * 1.2, 0.0, 1.0)
+		var gait := _walk(phase, amp)
+		if run_k > 0.001:
+			gait = _blend(gait, _run(phase, amp), smoothstep(0.0, 1.0, run_k))
+		p = _blend(p, gait, smoothstep(0.0, 1.0, walk_k))
+	if air_k > 0.001:
+		p = _blend(p, _air(p), smoothstep(0.0, 1.0, air_k))
+	if land > 0.001:
+		p = _landing(p, land)
 	if work > 0.001:
 		p = _blend(p, _work(p), work)
 	if aim_w > 0.001:
@@ -146,6 +197,8 @@ func _apply() -> void:
 		pa.pole_l = Vector3(-0.3, -1, -0.2)
 		pa.head_rot = Vector3(-0.05, clampf(atan2(d.x, d.z), -0.8, 0.8) * 0.6, 0.0)
 		p = _blend(p, pa, aim_w)
+	if ground and not airborne:
+		ground.fit(p)
 	p.fill -= fill_drop
 	p.ap -= 0.3 * sin(ap_kick * PI)
 	_apply_pose(p)
@@ -203,6 +256,93 @@ func _walk(w: float, amp: float) -> Dictionary:
 	p.ear_r = 0.1 * sin(2.0 * ph + 0.6) * amp
 	p.ap = 1.0
 	p.fill = 0.72
+	return p
+
+## Бег в фазе w: опора короче полёта, шаг длиннее, пятки подлетают к тазу.
+func _run(w: float, amp: float) -> Dictionary:
+	var p := {}
+	var ph := TAU * w
+	var stride := 0.95 * amp
+	# Таз ниже всего посреди опоры (w = 0.17 и 0.67), выше — в полёте.
+	var bob := cos(2.0 * TAU * (w - 0.17))
+	p.hips_off = Vector3(0.012 * sin(ph) * amp, (-0.075 - 0.035 * bob) * amp, 0.03 * amp)
+	p.hips_rot = Vector3(0.1 * amp, 0.16 * sin(ph) * amp, 0.025 * sin(ph) * amp)
+	p.chest_rot = Vector3(0.24 * amp, -0.26 * sin(ph) * amp, -0.03 * sin(ph) * amp)
+	# Голова компенсирует наклон корпуса — взгляд вперёд.
+	p.head_rot = Vector3(-0.22 + 0.03 * bob, 0.09 * sin(ph) * amp, 0.0)
+	var fl := _run_foot(w, 0.0, stride)
+	var fr := _run_foot(w, 0.5, stride)
+	p.foot_l = s.an_l + Vector3(0, fl.y * amp, fl.z)
+	p.foot_l_rot = Vector3(fl.x * amp, 0, 0)
+	p.foot_r = s.an_r + Vector3(0, fr.y * amp, fr.z)
+	p.foot_r_rot = Vector3(fr.x * amp, 0, 0)
+	# Руки согнуты под прямым углом и ходят в противофазе ногам: кисть вперёд-вверх,
+	# когда своя нога сзади.
+	var sl := -fl.z / maxf(stride * 0.5, 0.01)
+	var sr := -fr.z / maxf(stride * 0.5, 0.01)
+	p.arm_l = _pose_shoulder(p, "l") + Vector3(0.05, -0.27 + 0.07 * sl, 0.08 + 0.2 * sl)
+	p.pole_l = Vector3(-0.25, -0.2, -1)
+	p.arm_r = _pose_shoulder(p, "r") + Vector3(-0.05, -0.27 + 0.05 * sr, 0.08 + 0.15 * sr)
+	p.pole_r = Vector3(0.25, -0.2, -1)
+	# Уши прижаты встречным ветром и чуть дрожат.
+	p.ear_l = -0.35 + 0.06 * sin(4.0 * ph)
+	p.ear_r = 0.35 + 0.06 * sin(4.0 * ph + 1.0)
+	p.ap = 0.86
+	p.fill = 0.66 + 0.02 * sin(2.0 * ph)
+	return p
+
+## Стопа в цикле бега: опора 38 % цикла, остальное — мах с подброшенной пяткой.
+func _run_foot(w: float, off: float, stride: float) -> Vector3:
+	var q := fposmod(w + off, 1.0)
+	if q < 0.38:
+		var a := q / 0.38
+		return Vector3(0.3 * smoothstep(0.6, 1.0, a), 0.0, stride * (0.32 - 0.72 * a))
+	var b := (q - 0.38) / 0.62
+	# Сначала пятка вверх-назад, потом колено выносит стопу далеко вперёд.
+	var lift := 0.3 * sin(PI * smoothstep(0.0, 1.0, b)) * (1.0 - 0.35 * b)
+	var z := stride * (-0.4 + 0.72 * smoothstep(0.2, 0.95, b)) - 0.08 * sin(PI * minf(b * 1.8, 1.0))
+	return Vector3(-0.55 * sin(PI * b), lift, z)
+
+## Полёт: ноги поджаты (одна выше), руки на взлёте вперёд-вверх, на спуске — в стороны.
+func _air(base: Dictionary) -> Dictionary:
+	var p := base.duplicate()
+	var up := clampf(vy / 4.0, -1.0, 1.0)    # 1 — взлёт, −1 — спуск
+	var rise := clampf(up, 0.0, 1.0)
+	var fall := clampf(-up, 0.0, 1.0)
+	p.hips_off = Vector3(0, -0.03, 0.0)
+	p.hips_rot = Vector3(0.05, 0, 0)
+	p.chest_rot = Vector3(0.12 * rise - 0.06 * fall, 0, 0)
+	p.head_rot = Vector3(-0.12 * rise + 0.16 * fall, 0, 0)
+	# На спуске ноги вытягиваются к земле — готовятся принять удар.
+	var tuck := lerpf(1.0, 0.45, fall)
+	p.foot_l = s.an_l + Vector3(0, 0.3 * tuck, 0.1 + 0.08 * tuck)
+	p.foot_l_rot = Vector3(-0.35 * tuck, 0, 0)
+	p.foot_r = s.an_r + Vector3(0, 0.18 * tuck, -0.1)
+	p.foot_r_rot = Vector3(-0.5 * tuck, 0, 0)
+	var sl := _pose_shoulder(p, "l")
+	var sr := _pose_shoulder(p, "r")
+	var arm_up := Vector3(0, 0.08, 0.34)
+	var arm_out := Vector3(0.36, -0.12, 0.06)
+	p.arm_l = sl + arm_up.lerp(Vector3(-arm_out.x, arm_out.y, arm_out.z), fall) + Vector3(-0.08 * rise, 0, 0)
+	p.pole_l = Vector3(-0.6, -0.4, -0.6)
+	p.arm_r = sr + arm_up.lerp(arm_out, fall) + Vector3(0.08 * rise, 0, 0)
+	p.pole_r = Vector3(0.6, -0.4, -0.6)
+	# Уши торчком, диафрагма раскрыта — «ух».
+	p.ear_l = -0.5 * rise + 0.25 * fall
+	p.ear_r = 0.5 * rise - 0.25 * fall
+	p.ap = 1.08
+	return p
+
+## Приземление: таз проседает, корпус подаётся вперёд, руки чуть вниз-в стороны.
+func _landing(base: Dictionary, k: float) -> Dictionary:
+	var p := base.duplicate()
+	var e := sin(PI * minf(1.0, (1.0 - k) * 1.6 + 0.35)) * k   # быстрый присед, плавный подъём
+	p.hips_off = base.hips_off + Vector3(0, -0.2 * e, -0.03 * e)
+	p.chest_rot = base.chest_rot + Vector3(0.3 * e, 0, 0)
+	p.head_rot = base.head_rot + Vector3(-0.2 * e, 0, 0)
+	p.arm_l = base.arm_l + Vector3(-0.08, -0.08, 0.1) * e
+	p.arm_r = base.arm_r + Vector3(0.08, -0.08, 0.1) * e
+	p.ap = base.ap - 0.25 * e
 	return p
 
 ## Работа инструментом: правая рука вперёд-вниз, корпус подаётся вперёд, прищур.
