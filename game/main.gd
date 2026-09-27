@@ -349,16 +349,16 @@ func _process(dt: float) -> void:
 	sim.paused = paused or manual_pause
 	if not paused:
 		var dir := Vector2.ZERO
-		if Input.is_key_pressed(KEY_W) or Input.is_key_pressed(KEY_UP): dir.y -= 1
-		if Input.is_key_pressed(KEY_S) or Input.is_key_pressed(KEY_DOWN): dir.y += 1
-		if Input.is_key_pressed(KEY_A) or Input.is_key_pressed(KEY_LEFT): dir.x -= 1
-		if Input.is_key_pressed(KEY_D) or Input.is_key_pressed(KEY_RIGHT): dir.x += 1
-		if dir != Vector2.ZERO:
+		if Input.is_key_pressed(KEY_UP): dir.y -= 1
+		if Input.is_key_pressed(KEY_DOWN): dir.y += 1
+		if Input.is_key_pressed(KEY_LEFT): dir.x -= 1
+		if Input.is_key_pressed(KEY_RIGHT): dir.x += 1
+		# WASD и левый стик — действия ProtoControls (переназначаются в «Управлении»);
+		# наклон стика задаёт скорость.
+		var mv := ProtoControls.move_vector()
+		dir += Vector2(mv.x, -mv.y)
+		if dir.length() > 1.0:
 			dir = dir.normalized()
-		else:
-			# Левый стик геймпада (раскладка ProtoControls): наклон задаёт скорость.
-			var stick := ProtoControls.move_vector()
-			dir = Vector2(stick.x, -stick.y)
 		if dir != Vector2.ZERO and use_3d and view3d != null:
 			dir = dir.rotated(-view3d.cam_yaw)   # в 3D — относительно камеры
 		if dir != Vector2.ZERO:

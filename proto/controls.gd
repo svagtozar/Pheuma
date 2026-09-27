@@ -13,6 +13,8 @@ extends RefCounted
 ##   чувствительность — mouse_sens (--sens=1.5 в предпросмотре)
 ## Действия регистрируются кодом (ensure()), если их ещё нет в InputMap, —
 ## так их видят и прототип, и игра, и тесты без правки project.godot.
+## Переназначенные кнопки и чувствительность хранятся в user://controls.cfg
+## (экран ProtoControlsMenu); ensure() подхватывает их при первом вызове.
 
 const STICK_DEADZONE := 0.2
 const TRIGGER_DEADZONE := 0.3
@@ -32,9 +34,25 @@ const WORK := &"tool_work"
 const FIST := &"fist_fire"
 const JUMP := &"jump"
 
-## Чувствительность мыши (1 — по умолчанию) и инверсия вертикали.
+## Чувствительность мыши и стика (1 — по умолчанию) и инверсия вертикали.
 static var mouse_sens := 1.0
 static var mouse_invert_y := false
+static var stick_sens := 1.0
+static var stick_invert_y := false
+static var save_path := "user://controls.cfg"
+static var _loaded := false
+
+## Что можно переназначить, по порядку в меню: [действие, подпись].
+const REBIND := [
+	[MOVE_FORWARD, "Вперёд"], [MOVE_BACK, "Назад"], [MOVE_LEFT, "Влево"], [MOVE_RIGHT, "Вправо"],
+	[SPRINT, "Бег"], [JUMP, "Прыжок"],
+	[CAM_LEFT, "Камера влево"], [CAM_RIGHT, "Камера вправо"], [CAM_UP, "Камера вверх"], [CAM_DOWN, "Камера вниз"],
+	[CAM_ZOOM_IN, "Камера ближе"], [CAM_ZOOM_OUT, "Камера дальше"],
+	[WORK, "Бур"], [FIST, "Кисть"],
+	[&"build_mode", "Стройка вкл/выкл"], [&"build_next", "Следующая деталь"], [&"build_prev", "Предыдущая деталь"],
+	[&"build_rotate", "Повернуть деталь"], [&"build_material", "Материал детали"],
+	[&"build_place", "Поставить"], [&"build_remove", "Разобрать"], [&"cargo_unload", "Выгрузить груз"],
+]
 
 ## Действие → [мёртвая зона, события...]. Клавиши — физические (раскладка не важна).
 static func _layout() -> Dictionary:
@@ -55,7 +73,8 @@ static func _layout() -> Dictionary:
 		JUMP: [0.5, _key(KEY_SPACE), _button(JOY_BUTTON_A)],
 	}
 
-## Добавляет недостающие действия. Уже заданные (в project.godot или раньше) не трогает.
+## Добавляет недостающие действия (свои и стройки). Уже заданные (в
+## project.godot или раньше) не трогает. Сохранённые настройки — один раз.
 static func ensure() -> void:
 	var layout := _layout()
 	for action in layout:
@@ -65,6 +84,122 @@ static func ensure() -> void:
 		InputMap.add_action(action, spec[0])
 		for i in range(1, spec.size()):
 			InputMap.action_add_event(action, spec[i])
+	ProtoBuilder.ensure_actions()
+	if not _loaded:
+		_loaded = true
+		load_settings()
+
+# ---------------------------------------------------------------- переназначение
+
+static func is_pad(e: InputEvent) -> bool:
+	return e is InputEventJoypadButton or e is InputEventJoypadMotion
+
+## Первое событие действия с клавиатуры (pad = false) или геймпада (pad = true).
+static func binding(action: StringName, pad: bool) -> InputEvent:
+	if not InputMap.has_action(action):
+		return null
+	for e in InputMap.action_get_events(action):
+		if is_pad(e) == pad:
+			return e
+	return null
+
+## Назначить событие: заменяет прежнюю клавишу (или кнопку геймпада) действия.
+## Событие приводится к виду раскладки: физическая клавиша, любой геймпад,
+## ось — только направление.
+static func rebind(action: StringName, e: InputEvent) -> void:
+	var clean := _normalize(e)
+	if clean == null or not InputMap.has_action(action):
+		return
+	for old in InputMap.action_get_events(action):
+		if is_pad(old) == is_pad(clean):
+			InputMap.action_erase_event(action, old)
+	InputMap.action_add_event(action, clean)
+
+static func _normalize(e: InputEvent) -> InputEvent:
+	if e is InputEventKey:
+		var code: Key = e.physical_keycode if e.physical_keycode != KEY_NONE else e.keycode
+		return _key(code) if code != KEY_NONE else null
+	if e is InputEventJoypadButton:
+		return _button(e.button_index)
+	if e is InputEventJoypadMotion:
+		return _axis(e.axis, signf(e.axis_value) if e.axis_value != 0.0 else 1.0)
+	return null
+
+## Всё как по умолчанию: раскладка, чувствительность, инверсия.
+static func reset_defaults() -> void:
+	var all := _layout()
+	var build := ProtoBuilder.layout()
+	for a in all:
+		if InputMap.has_action(a):
+			InputMap.erase_action(a)
+	for a in build:
+		if InputMap.has_action(a):
+			InputMap.erase_action(a)
+	mouse_sens = 1.0
+	stick_sens = 1.0
+	mouse_invert_y = false
+	stick_invert_y = false
+	ensure()
+
+## Событие → строка для файла: key:код, btn:кнопка, axis:ось:знак.
+static func event_to_str(e: InputEvent) -> String:
+	if e is InputEventKey:
+		return "key:%d" % (e.physical_keycode if e.physical_keycode != KEY_NONE else e.keycode)
+	if e is InputEventJoypadButton:
+		return "btn:%d" % e.button_index
+	if e is InputEventJoypadMotion:
+		return "axis:%d:%d" % [e.axis, 1 if e.axis_value >= 0.0 else -1]
+	return ""
+
+static func str_to_event(s: String) -> InputEvent:
+	var p := s.split(":")
+	match p[0]:
+		"key": return _key(int(p[1]) as Key) if p.size() == 2 else null
+		"btn": return _button(int(p[1]) as JoyButton) if p.size() == 2 else null
+		"axis": return _axis(int(p[1]) as JoyAxis, float(p[2])) if p.size() == 3 else null
+	return null
+
+static func save_settings() -> void:
+	var cf := ConfigFile.new()
+	cf.set_value("camera", "mouse_sens", mouse_sens)
+	cf.set_value("camera", "mouse_invert_y", mouse_invert_y)
+	cf.set_value("camera", "stick_sens", stick_sens)
+	cf.set_value("camera", "stick_invert_y", stick_invert_y)
+	for r in REBIND:
+		if not InputMap.has_action(r[0]):
+			continue
+		var evs := PackedStringArray()
+		for e in InputMap.action_get_events(r[0]):
+			var t := event_to_str(e)
+			if t != "":
+				evs.append(t)
+		cf.set_value("bind", String(r[0]), evs)
+	cf.save(save_path)
+
+## Подхватить сохранённое; нет файла — всё остаётся по умолчанию.
+static func load_settings() -> void:
+	var cf := ConfigFile.new()
+	if cf.load(save_path) != OK:
+		return
+	mouse_sens = clampf(float(cf.get_value("camera", "mouse_sens", 1.0)), 0.1, 5.0)
+	mouse_invert_y = bool(cf.get_value("camera", "mouse_invert_y", false))
+	stick_sens = clampf(float(cf.get_value("camera", "stick_sens", 1.0)), 0.1, 5.0)
+	stick_invert_y = bool(cf.get_value("camera", "stick_invert_y", false))
+	if not cf.has_section("bind"):
+		return
+	for a in cf.get_section_keys("bind"):
+		if not InputMap.has_action(a):
+			continue
+		var evs := []
+		for t in cf.get_value("bind", a, PackedStringArray()):
+			var e := str_to_event(String(t))
+			if e != null:
+				evs.append(e)
+		if evs.is_empty():
+			continue
+		InputMap.action_erase_events(a)
+		for e in evs:
+			InputMap.action_add_event(a, e)
 
 ## Ходьба: x — вправо, y — вперёд; длина 0..1 (стик наполовину — полшага).
 static func move_vector() -> Vector2:
@@ -73,7 +208,9 @@ static func move_vector() -> Vector2:
 ## Камера: x — вправо, y — вверх; квадратичная кривая — точнее у центра стика.
 static func look_vector() -> Vector2:
 	var v := Input.get_vector(CAM_LEFT, CAM_RIGHT, CAM_DOWN, CAM_UP)
-	return v * v.length()
+	if stick_invert_y:
+		v.y = -v.y
+	return v * v.length() * stick_sens
 
 ## Поворот камеры от движения мыши (пиксели) → [рыскание, тангаж], радианы.
 static func mouse_look(rel: Vector2) -> Vector2:

@@ -4,7 +4,7 @@ extends Node
 ## маршрут для проверки (--auto=cave).
 ##   WASD — ходьба относительно камеры, Shift — бег, Пробел — прыжок (в режиме
 ##   стройки Пробел ставит деталь). Камера — мышью: курсор захвачен, клик —
-##   захватить снова, Esc — отпустить (без захвата крутит мышь с правой
+##   захватить снова, Esc / Start — меню управления (без захвата крутит мышь с правой
 ##   кнопкой, ещё Q/E), колесо — дистанция. F или правый курок (действие
 ##   tool_work, держать) — работать инструментом: бур выдвигается из правого
 ##   предплечья, отпустить — уходит. У друзы бур выбуривает кристаллы (ProtoMining).
@@ -135,17 +135,27 @@ func _finale(dt: float) -> void:
 	if finale > 9.0:
 		get_tree().quit(0)
 
+## Ввод (x — вправо, y — вперёд) → направление в мире для камеры с рысканием yaw.
+## Длина inp — наклон стика (клавиши дают 1): лёгкий наклон — медленный шаг.
+static func move_dir(yaw: float, inp: Vector2) -> Vector3:
+	var fwd := Vector3(sin(yaw), 0, cos(yaw))
+	# Право на экране: камера смотрит вдоль fwd, значит право — fwd × вверх.
+	var right := fwd.cross(Vector3.UP)
+	return (fwd * inp.y + right * inp.x).normalized() * minf(1.0, inp.length())
+
+## Вернуть захват курсора (после меню).
+func recapture() -> void:
+	if capture:
+		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+
 ## Камера мышью: при захваченном курсоре — всегда, без захвата — с правой кнопкой.
-## Клик — захватить курсор, Esc — отпустить (второй Esc уже выходит из сборки).
+## Клик — захватить курсор; отпускает его меню управления (Esc, ProtoControlsMenu).
 func _unhandled_input(e: InputEvent) -> void:
 	var captured := Input.mouse_mode == Input.MOUSE_MODE_CAPTURED
 	if e is InputEventMouseMotion and (captured or Input.is_mouse_button_pressed(MOUSE_BUTTON_RIGHT)):
 		var d := ProtoControls.mouse_look(e.relative)
 		cam_yaw += d.x
 		cam_pitch = clampf(cam_pitch + d.y, PITCH_MIN, PITCH_MAX)
-	elif e is InputEventKey and e.pressed and e.physical_keycode == KEY_ESCAPE and captured:
-		Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
-		get_viewport().set_input_as_handled()
 	elif e is InputEventMouseButton and e.pressed:
 		if e.button_index == MOUSE_BUTTON_LEFT and capture and not captured:
 			Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
@@ -194,10 +204,7 @@ func _process(dt: float) -> void:
 				fist.release()
 		if inp != Vector2.ZERO:
 			# Вперёд — от камеры: камера смотрит вдоль (sin yaw, cos yaw).
-			var fwd := Vector3(sin(cam_yaw), 0, cos(cam_yaw))
-			var right := Vector3(-fwd.z, 0, fwd.x)
-			# Длина inp — наклон стика (клавиши дают 1): лёгкий наклон — медленный шаг.
-			want = (fwd * inp.y - right * inp.x).normalized() * minf(1.0, inp.length())
+			want = move_dir(cam_yaw, inp)
 		if drill_auto:
 			want = _auto_drill_walk()
 	else:

@@ -2,7 +2,9 @@ extends Node3D
 ## Предпросмотр объёмного 3D-визуала (к игре не подключён).
 ##   godot --path . res://proto/preview.tscn -- --seed=14 --view=third|plan|cave|overview --screenshot=путь.png
 ##   --play — ходить самому (WASD, Shift — бег, Пробел — прыжок, камера мышью —
-##   курсор захвачен, Esc отпускает, клик захватывает; --sens=1.5 — чувствительность;
+##   курсор захвачен, клик захватывает; Esc / Start — меню «Управление»:
+##   переназначение, чувствительность, инверсия (user://controls.cfg; --menu —
+##   открыть сразу, для кадра);
 ##   колесо — дистанция; F — бур,
 ##   G — выстрел кистью и подтягивание; геймпад — см. ProtoControls); --tool=drill — бур в правом предплечье
 ##   --auto=cave --screenshot=путь.png — маршрут в пещеру, кадры путь_1..4.png
@@ -37,6 +39,8 @@ var robot_design := "clean"
 var cam: Camera3D
 var _t := 0.0
 var play := false            # --play: управление от третьего лица
+var controls_menu: ProtoControlsMenu   # Esc / Start в --play
+var show_menu := false       # --menu: открыть меню управления сразу (для кадра)
 var auto := ""               # --auto=cave: скриптовый маршрут с кадрами
 var record := ""             # --record=путь.wav: записать звук (с --play или --auto)
 var mute := false            # --mute: без звука
@@ -83,8 +87,7 @@ func _ready() -> void:
 		elif a == "--cargo": demo_cargo = true
 		elif a == "--build": build = true
 		elif a == "--fresh": fresh = true
-		elif a.begins_with("--sens="): ProtoControls.mouse_sens = float(a.substr(7))
-		elif a == "--invert-y": ProtoControls.mouse_invert_y = true
+		elif a == "--menu": show_menu = true
 	if auto == "drill":
 		RobotDesigns.tool_r = "drill"
 		view = "cave"
@@ -144,6 +147,7 @@ func _ready() -> void:
 	if play or auto != "" or show_hud:
 		_hud()
 	if play and auto == "":
+		_controls_menu()
 		saves = ProtoSave.new()
 		saves.name = "saves"
 		add_child(saves)
@@ -726,17 +730,44 @@ func _hud() -> void:
 	if hud_pad:
 		hud.pad = true
 	if OS.has_feature("play3d"):
-		hud.extra_hints = [["Сохранить", "F5", "R3"], ["Другая планета", "Tab", "View"], ["Выход", "Esc", "Menu"]]
+		hud.extra_hints = [["Сохранить", "F5", "R3"], ["Другая планета", "Tab", "View"], ["Меню", "Esc", "Menu"]]
 	add_child(hud)
 
-## Сборка для проверки: другая планета и выход с геймпада или клавиатуры.
+## Меню «Управление» (ProtoControlsMenu): пауза, мышь свободна; после — снова захват.
+func _controls_menu() -> void:
+	controls_menu = ProtoControlsMenu.new()
+	controls_menu.name = "controls_menu"
+	if OS.has_feature("play3d"):
+		controls_menu.quit_text = "Сохранить и выйти"
+	controls_menu.closed.connect(func():
+		var pl := get_node_or_null("player") as ProtoPlayer
+		if pl:
+			pl.recapture())
+	controls_menu.quit_requested.connect(func():
+		if saves != null:
+			saves.save_now(true)
+		get_tree().quit())
+	add_child(controls_menu)
+	if show_menu:
+		controls_menu.pause_tree = false   # без паузы, чтобы кадр снялся
+		controls_menu.open()
+
+## Esc / Start — меню управления (там же выход в сборке для проверки);
+## Tab / View в сборке — другая планета.
 func _unhandled_input(e: InputEvent) -> void:
-	if not OS.has_feature("play3d") or not e.is_pressed() or e.is_echo():
+	if not e.is_pressed() or e.is_echo():
+		return
+	var menu: bool = (e is InputEventJoypadButton and e.button_index == JOY_BUTTON_START) \
+		or (e is InputEventKey and e.physical_keycode == KEY_ESCAPE)
+	if menu and controls_menu != null:
+		controls_menu.open()
+		get_viewport().set_input_as_handled()
+		return
+	if not OS.has_feature("play3d"):
 		return
 	var next: bool = (e is InputEventJoypadButton and e.button_index == JOY_BUTTON_BACK) \
 		or (e is InputEventKey and e.physical_keycode == KEY_TAB)
-	var quit: bool = (e is InputEventJoypadButton and e.button_index == JOY_BUTTON_START) \
-		or (e is InputEventKey and e.physical_keycode == KEY_ESCAPE)
+	var quit := menu
 	if (next or quit) and saves != null:
 		saves.save_now(true)
 	if next:
