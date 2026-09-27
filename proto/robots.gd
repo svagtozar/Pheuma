@@ -1,6 +1,6 @@
 extends Node3D
 ## Витрина вариантов робота (к игре не подключена).
-##   godot --path . res://proto/robots.tscn -- --shot=front|back|top|close:N|closeback:N|head:N|hand:N|far:N|gauge:N  [--toon] --screenshot=путь.png
+##   godot --path . res://proto/robots.tscn -- --shot=front|back|top|close:N|closeback:N|head:N|hand:N|far:N|tank:N --screenshot=путь.png
 
 var shot := "front"
 var shot_path := ""
@@ -11,7 +11,6 @@ func _ready() -> void:
 	for a in OS.get_cmdline_user_args():
 		if a.begins_with("--shot="): shot = a.substr(7)
 		elif a.begins_with("--screenshot="): shot_path = a.substr(13)
-		elif a == "--toon": RobotDesigns.toon = true
 	_stage()
 	var n := RobotDesigns.DESIGNS.size()
 	for i in n:
@@ -40,7 +39,7 @@ func _ready() -> void:
 		l.rotation = Vector3(-PI / 2.0 + 0.5, 0, 0)
 		l.modulate = Color(0.9, 0.93, 1.0)
 		l.outline_size = 8
-		if shot == "back" or shot.begins_with("closeback:") or shot.begins_with("gauge:"):
+		if shot == "back" or shot.begins_with("closeback:") or shot.begins_with("tank:"):
 			l.rotation.y = PI
 			l.position.z = -0.75
 		add_child(l)
@@ -116,8 +115,8 @@ func _camera(n: int) -> void:
 		cam.position = Vector3(kx + 0.75, 1.0, 0.5)
 		cam.look_at(Vector3(kx + 0.3, 0.88, 0.08))
 		cam.fov = 30.0
-	if shot.begins_with("gauge:"):
-		var gx := (int(shot.substr(6)) - (n - 1) / 2.0) * GAP
+	if shot.begins_with("tank:"):
+		var gx := (int(shot.substr(5)) - (n - 1) / 2.0) * GAP
 		cam.position = Vector3(gx + 0.75, 1.6, -0.9)
 		cam.look_at(Vector3(gx + 0.2, 1.4, -0.3))
 		cam.fov = 35.0

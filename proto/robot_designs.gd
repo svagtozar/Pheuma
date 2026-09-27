@@ -5,7 +5,7 @@ extends RefCounted
 ## Гибрид «каркас, обрастающий планетой» — в трёх уровнях детальности (h1, h2, h3),
 ## плюс концепции pneumat, geologist, miner, jumper и concept — по концепт-арту
 ## (concept_b — он же с корпусом из металла другой планеты). clean — чистый
-## хард-серфейс, buddy — коренастый компаньон. toon — стилизованная отрисовка.
+## хард-серфейс, buddy — коренастый компаньон.
 
 const DESIGNS := ["h1", "h2", "h3", "concept", "concept_b", "clean", "buddy", "pneumat", "geologist", "miner", "jumper"]
 const NAMES := {"h1": "Гибрид · Н1 силуэт", "h2": "Гибрид · Н2 рабочий", "h3": "Гибрид · Н3 детальный",
@@ -17,25 +17,6 @@ const COPPER := Color(0.78, 0.47, 0.29)
 const ALT_METAL := Color(0.42, 0.55, 0.72)
 
 static var _mats := {}
-## Стилизованная отрисовка: ступенчатый свет и контур. Ставится до build().
-static var toon := false
-static var _outline_mat: ShaderMaterial
-
-const OUTLINE := """
-shader_type spatial;
-render_mode unshaded, cull_front, depth_draw_opaque;
-void vertex() {
-	vec4 wp = MODEL_MATRIX * vec4(VERTEX, 1.0);
-	vec3 wn = normalize(MODEL_NORMAL_MATRIX * NORMAL);
-	float d = length(CAMERA_POSITION_WORLD - wp.xyz);
-	wp.xyz += wn * clamp(d * 0.0035, 0.004, 0.04);
-	POSITION = PROJECTION_MATRIX * VIEW_MATRIX * wp;
-}
-void fragment() {
-	ALBEDO = vec3(0.035, 0.035, 0.045);
-}
-"""
-
 # ---------------------------------------------------------------- материалы
 
 static func mat(key: String) -> Material:
@@ -51,9 +32,9 @@ static func mat(key: String) -> Material:
 		"glow":
 			m.albedo_color = Color(0.3, 0.9, 1.0); m.emission_enabled = true
 			m.emission = Color(0.3, 0.9, 1.0); m.emission_energy_multiplier = 3.0
-		"gauge":
-			m.albedo_color = Color(0.93, 0.92, 0.86); m.roughness = 0.5
-			m.emission_enabled = true; m.emission = Color(0.93, 0.92, 0.86); m.emission_energy_multiplier = 0.15
+		"glow_dim":
+			m.albedo_color = Color(0.08, 0.2, 0.24); m.emission_enabled = true
+			m.emission = Color(0.1, 0.35, 0.45); m.emission_energy_multiplier = 0.3
 		"gunmetal": m.albedo_color = Color(0.34, 0.36, 0.4); m.metallic = 0.8; m.roughness = 0.3
 		"steel": m.albedo_color = Color(0.72, 0.74, 0.77); m.metallic = 0.7; m.roughness = 0.28
 		"iris":
@@ -95,18 +76,6 @@ static func mat(key: String) -> Material:
 			elif key.begins_with("pod:"):
 				var c := Color(key.substr(4))
 				m.albedo_color = c; m.emission_enabled = true; m.emission = c; m.emission_energy_multiplier = 0.6
-	if toon and m.transparency == BaseMaterial3D.TRANSPARENCY_DISABLED:
-		# Ступенчатый свет ярче обычного — чуть приглушаем цвет, чтобы не выгорал.
-		if not m.emission_enabled:
-			m.albedo_color = m.albedo_color.darkened(0.18)
-		m.diffuse_mode = BaseMaterial3D.DIFFUSE_TOON
-		m.specular_mode = BaseMaterial3D.SPECULAR_TOON
-		if _outline_mat == null:
-			_outline_mat = ShaderMaterial.new()
-			var sh := Shader.new()
-			sh.code = OUTLINE
-			_outline_mat.shader = sh
-		m.next_pass = _outline_mat
 	_mats[key] = m
 	return m
 
@@ -807,11 +776,17 @@ static func _head(p: Node3D, pos: Vector3, r: float, shell_m: String, trim_m: St
 
 ## Колба на ремнях и кассета капсул под ней; r — радиус стекла. Возвращает точку
 ## над клапаном (для шлангов).
-static func _flask_pack(n: Node3D, fb: Vector3, fh: float, r: float, hull: String) -> Vector3:
+## body — пусто: стеклянная колба с видимым газом; иначе непрозрачный баллон из
+## этого материала со светящейся полосой-шкалой давления, обращённой к face.
+static func _flask_pack(n: Node3D, fb: Vector3, fh: float, r: float, hull: String, body: String = "", face := Vector3.BACK, level: float = 0.8) -> Vector3:
 	var k := r / 0.115
 	rod(n, fb, fb + Vector3(0, 0.05 * k, 0), 0.122 * k, hull)
-	rod(n, fb + Vector3(0, 0.05 * k, 0), fb + Vector3(0, fh - 0.05 * k, 0), 0.115 * k, "glass")
-	rod(n, fb + Vector3(0, 0.06 * k, 0), fb + Vector3(0, 0.06 * k + (fh - 0.12 * k) * 0.8, 0), 0.1 * k, "gas")
+	if body == "":
+		rod(n, fb + Vector3(0, 0.05 * k, 0), fb + Vector3(0, fh - 0.05 * k, 0), 0.115 * k, "glass")
+		rod(n, fb + Vector3(0, 0.06 * k, 0), fb + Vector3(0, 0.06 * k + (fh - 0.12 * k) * 0.8, 0), 0.1 * k, "gas")
+	else:
+		rod(n, fb + Vector3(0, 0.05 * k, 0), fb + Vector3(0, fh - 0.05 * k, 0), 0.115 * k, body)
+		_pressure_bar(n, fb + Vector3(0, 0.08 * k, 0), fh - 0.16 * k, 0.115 * k, face, level)
 	rod(n, fb + Vector3(0, fh - 0.05 * k, 0), fb + Vector3(0, fh, 0), 0.122 * k, hull)
 	rod(n, fb + Vector3(0, fh, 0), fb + Vector3(0, fh + 0.04 * k, 0), 0.03 * k, "steel")
 	ball(n, fb + Vector3(0, fh + 0.045 * k, 0), 0.028 * k, hull)
@@ -831,32 +806,29 @@ static func _flask_pack(n: Node3D, fb: Vector3, fh: float, r: float, hull: Strin
 	_socket(n, "socket_pods", pc2)
 	return fb + Vector3(0, fh + 0.045 * k, 0)
 
-## Манометр: ободок, светлая шкала с делениями (последнее — красное) и стрелка в
-## узле gauge_needle (в игре — поворот по давлению в колбе). normal — куда смотрит
-## шкала, level — доля давления 0..1.
-static func _gauge(n: Node3D, c: Vector3, normal: Vector3, r: float, metal: String, level: float = 0.7) -> Node3D:
-	var z := normal.normalized()
-	var y := (Vector3.UP - z * z.dot(Vector3.UP)).normalized()
-	var g := Node3D.new()
-	g.name = "gauge"
-	g.transform = Transform3D(Basis(y.cross(z), y, z), c)
-	n.add_child(g)
-	disc(g, Vector3.ZERO, Vector3.BACK, r * 1.18, r * 0.5, metal)
-	disc(g, Vector3(0, 0, r * 0.2), Vector3.BACK, r, r * 0.2, "gauge")
-	ring(g, Vector3(0, 0, r * 0.26), Vector3.BACK, r * 0.98, r * 1.14, metal)
-	# Шкала от -135° до +135°, отсчёт по часовой стрелке от левого-нижнего края.
-	for i in 7:
-		var a := deg_to_rad(225.0 - i * 45.0)
-		var d := Vector3(cos(a), sin(a), 0)
-		rbox(g, d * r * 0.78 + Vector3(0, 0, r * 0.31), Vector3(r * 0.08, r * 0.22, r * 0.03), 0.0, "pod:#e05a4a" if i == 6 else "dark", Basis(Vector3.BACK, a - PI / 2.0))
-	var nd := Node3D.new()
-	nd.name = "gauge_needle"
-	nd.position = Vector3(0, 0, r * 0.34)
-	nd.rotation.z = deg_to_rad(135.0 - level * 270.0)
-	g.add_child(nd)
-	rbox(nd, Vector3(0, r * 0.32, 0), Vector3(r * 0.07, r * 0.72, r * 0.03), 0.0, "dark")
-	ball(nd, Vector3.ZERO, r * 0.1, metal)
-	return g
+## Полоса-шкала давления на баллоне радиуса r: тёмный паз, светящееся заполнение
+## снизу (узел pressure_fill — в игре масштаб по Y = доля давления) и риски.
+static func _pressure_bar(n: Node3D, base: Vector3, h: float, r: float, face: Vector3, level: float) -> void:
+	var z := Vector3(face.x, 0, face.z).normalized()
+	var bas := Basis(Vector3.UP.cross(z), Vector3.UP, z)
+	var bar := Node3D.new()
+	bar.name = "pressure_bar"
+	# Поверх ремней баллона: паз стоит на кронштейнах.
+	bar.transform = Transform3D(bas, base + z * r * 1.16)
+	n.add_child(bar)
+	var w := r * 0.3
+	rbox(bar, Vector3(0, h / 2.0, 0.002), Vector3(w * 1.5, h + w * 0.5, 0.014), 0.005, "dark")
+	rbox(bar, Vector3(0, h / 2.0, 0.008), Vector3(w * 0.8, h, 0.004), 0.0, "glow_dim")
+	var fill := Node3D.new()
+	fill.name = "pressure_fill"
+	fill.position = Vector3(0, 0, 0.011)
+	fill.scale = Vector3(1, maxf(level, 0.001), 1)
+	bar.add_child(fill)
+	rbox(fill, Vector3(0, h / 2.0, 0), Vector3(w * 0.8, h, 0.004), 0.0, "iris")
+	for t in [0.12, 0.88]:
+		rbox(bar, Vector3(0, h * t, -r * 0.08), Vector3(w * 0.9, 0.018, r * 0.2), 0.003, "dark")
+	for i in 5:
+		rbox(bar, Vector3(w * 0.62, h * (i + 1) / 6.0, 0.011), Vector3(w * 0.35, 0.004, 0.004), 0.0, "pod:#e05a4a" if i == 4 else "steel")
 
 ## По концепт-арту: голова-объектив с антеннами-ушами, тонкий каркас с открытым
 ## позвоночником, шарниры-шары с бандажами, колба за правым плечом, под ней кассета
@@ -1087,12 +1059,8 @@ static func _clean(n: Node3D, hull_col: Color) -> void:
 	# --- Колба за правым плечом, два шланга.
 	var fb := Vector3(0.15, 1.13, -0.24)
 	var fh := 0.46
-	var top := _flask_pack(n, fb, fh, 0.105, metal)
-	# Манометр на колбе — давление видно со спины, с камеры от третьего лица.
-	var gn := Vector3(0.55, 0.1, -0.83).normalized()
-	var gc := fb + Vector3(0, fh * 0.6, 0) + Vector3(gn.x, 0, gn.z).normalized() * 0.142
-	rod(n, fb + Vector3(0, fh * 0.6, 0) + Vector3(gn.x, 0, gn.z).normalized() * 0.09, gc, 0.012, "dark")
-	_gauge(n, gc, gn, 0.046, metal, 0.72)
+	# Непрозрачный баллон: давление — светящаяся полоса, обращённая назад-наружу.
+	var top := _flask_pack(n, fb, fh, 0.105, metal, paint, Vector3(0.3, 0, -0.95), 0.72)
 	for y in [1.26, 1.4]:
 		rod(n, Vector3(0.04, y, -0.1), Vector3(0.13, y, -0.22), 0.013, "dark")
 	hose(n, fb + Vector3(-0.06, fh - 0.02, -0.02), fb + Vector3(-0.18, fh + 0.08, -0.02), s.sh_l + Vector3(0.1, 0.12, -0.12), s.sh_l + Vector3(0.02, 0.03, -0.05), 0.013)
