@@ -219,10 +219,6 @@ func _build_deposits() -> void:
 				mi.position = Vector3(rng.randf_range(-0.6, 0.6), r * 0.35, rng.randf_range(-0.6, 0.6))
 				mi.rotation = Vector3(rng.randf(), rng.randf() * TAU, rng.randf())
 				n.add_child(mi)
-		# «?» — вещество залежи ещё не опознано (сама залежь выглядит как обычно).
-		var badge := ProtoMachines.unknown_badge()
-		badge.position = Vector3(0, 1.3 * k + 0.4, 0)
-		n.add_child(badge)
 		_content.add_child(n)
 		var pebble := MeshInstance3D.new()
 		var ps := SphereMesh.new()
@@ -367,9 +363,6 @@ func _sync(dt: float, force := false) -> void:
 		var left: bool = dep != null and dep.amount > 0.0
 		var seen: bool = world.revealed.has(c) or world.near_robot(c, 4.5)
 		_deposits[c][0].visible = left and seen
-		var badge := _deposits[c][0].get_node_or_null("unknown_badge") as Label3D
-		if badge != null and dep != null:
-			badge.visible = not world.is_identified(world.db.get_sub(dep.sub))
 		_deposits[c][1].visible = left and not seen
 
 func _process(dt: float) -> void:

@@ -25,8 +25,6 @@ var mining = null             # ProtoMining — друзы (прототип)
 var net = null                # ProtoPneumatics (прототип)
 var origin := Vector3.ZERO    # начало сетки завода
 var analyzer_cd := 0.0
-var badges: Array = []        # [Label3D «?», друза] — прототип: друзы неопознанного вещества
-var _badge_t := 0.0
 var last := ""                # текст последнего результата (для панели)
 var _ev_seen := 0
 
@@ -283,51 +281,9 @@ func _settle(s: Substance, lent: String) -> void:
 
 # ---------------------------------------------------------------- время
 
-## Метки «?» над друзами: видны, пока вещество кристаллов не опознано и в друзе
-## остались кристаллы.
-func add_druse_badges() -> void:
-	if mining == null:
-		return
-	for d in mining.druses:
-		var node: Node3D = d.node
-		if not node.is_inside_tree():
-			continue
-		if d.crystals.is_empty():
-			continue
-		# Над серединой друзы (кристаллы стоят в координатах сцены), по нормали стены.
-		var mid := Vector3.ZERO
-		var top := 0.3
-		for c in d.crystals:
-			mid += c.global_position
-			top = maxf(top, float(c.get_meta("len")))
-		mid /= float(d.crystals.size())
-		var nrm: Vector3 = node.get_meta("normal", Vector3.UP)
-		var b := ProtoMachines.unknown_badge()
-		b.top_level = true       # метка своего размера и места, как бы ни стояла друза
-		node.add_child(b)
-		b.global_position = mid + nrm.normalized() * (top + 0.35)
-		badges.append([b, d])
-	_update_badges()
-
-func _update_badges() -> void:
-	if mining == null:
-		return
-	var known := world.is_identified(mining.sub)
-	for bd in badges:
-		var left := false
-		for c in bd[1].crystals:
-			if is_instance_valid(c) and not c.has_meta("broken"):
-				left = true
-				break
-		bd[0].visible = left and not known
-
-## Перезарядка анализатора, метки над друзами и подкачка баллона у завода (прототип).
+## Перезарядка анализатора и подкачка баллона у завода (прототип).
 func tick(dt: float) -> void:
 	analyzer_cd = maxf(0.0, analyzer_cd - dt)
-	_badge_t -= dt
-	if _badge_t <= 0.0 and not badges.is_empty():
-		_badge_t = 0.3
-		_update_badges()
 	if net == null or robot == null:
 		return
 	var cap := world.robot.tank_cap()

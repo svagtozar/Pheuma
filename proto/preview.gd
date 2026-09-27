@@ -741,7 +741,6 @@ func _hud() -> void:
 func _lab() -> void:
 	lab_desk.robot = robot
 	lab_desk.mining = mining
-	lab_desk.add_druse_badges()
 	if not (play or auto != "" or show_hud or lab_demo):
 		return
 	lab_panel = ProtoLabPanel.new()
