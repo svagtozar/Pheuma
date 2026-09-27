@@ -12,7 +12,8 @@ extends Node3D
 ##   кадры путь_1..4.png; в --play бур по действию tool_work (F / правый курок);
 ##   --form=vein — бурить залежь этой формы (ProtoDeposit: vein, nodules, strata…)
 ##   --view=factory — пневмозавод крупно; --build — режим стройки (призрак детали)
-##   --view=goals — ряд сооружений целей планеты: маяк, купол с печью, пусковая шахта
+##   --view=goals — ряд сооружений целей планеты: маяк, купол с печью, пусковая шахта;
+##   --goal-style=landmark|sleek — другой облик этих сооружений (GoalModels)
 ##   В --play: B — стройка, T — деталь, R — повернуть, Пробел — поставить,
 ##   X — разобрать, C — выгрузить груз в приёмник (подробно — ProtoBuilder)
 ##   --auto=bump --screenshot=путь.png — упереться в дробилку и перешагнуть трубу
@@ -140,6 +141,7 @@ func _ready() -> void:
 	for a in OS.get_cmdline_user_args():
 		if a.begins_with("--seed="): seed_value = int(a.substr(7))
 		elif a.begins_with("--view="): view = a.substr(7)
+		elif a.begins_with("--goal-style="): ProtoPneumaticsView.goal_style = a.substr(13)
 		elif a.begins_with("--screenshot="): shot_path = a.substr(13)
 		elif a.begins_with("--robot="): robot_design = a.substr(8)
 		elif a == "--play": play = true

@@ -9,6 +9,8 @@ const PIPE_Y := 0.55
 const PIPE_R := 0.16
 
 var net: ProtoPneumatics
+## Облик сооружений целей (GoalModels.STYLES): "" — MachineModels.
+static var goal_style := ""
 var origin := Vector3.ZERO
 var running := true
 ## В игре подпись видна только у ближней к роботу машины (в LABEL_R м): иначе
@@ -178,7 +180,7 @@ static func build_part(kind: String, sub: Substance, dir: int, links: Array, hol
 			core = _lab_mesh(body)
 		_:
 			# Пушка и машины обработки 2D-игры — общие модели (MachineModels).
-			core = MachineModels.build(kind, body)
+			core = GoalModels.build(kind, body, goal_style)
 			core.scale = Vector3(0.85, 0.85, 0.85)
 			core.name = "model"
 	# Машины смотрят выходом по dir: модель строится выходом на +Z.
