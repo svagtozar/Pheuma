@@ -9,7 +9,8 @@ extends Node3D
 ##   G — выстрел кистью и подтягивание; геймпад — см. ProtoControls); --tool=drill — бур в правом предплечье
 ##   --auto=cave --screenshot=путь.png — маршрут в пещеру, кадры путь_1..4.png
 ##   --auto=drill --screenshot=путь.png — подойти к друзе и выбурить её (ProtoMining),
-##   кадры путь_1..4.png; в --play бур по действию tool_work (F / правый курок)
+##   кадры путь_1..4.png; в --play бур по действию tool_work (F / правый курок);
+##   --form=vein — бурить залежь этой формы (ProtoDeposit: vein, nodules, strata…)
 ##   --view=factory — пневмозавод крупно; --build — режим стройки (призрак детали)
 ##   В --play: B — стройка, T — деталь, R — повернуть, Пробел — поставить,
 ##   X — разобрать, C — выгрузить груз в приёмник (подробно — ProtoBuilder)
@@ -29,6 +30,8 @@ extends Node3D
 ##   Разведка материалов (ProtoLabDesk, ProtoLabPanel): Z / B — коснуться друзы, машины
 ##   или груза и открыть карточку (пробы, догадки), V / RB — анализатор; в линии
 ##   завода — лаборатория. --lab — открыть карточку сразу (для кадра)
+##   Обучение первых минут (ProtoTutorial) — в --play, пока не пройдено; --tutorial —
+##   заново, --tutorial=N — с шага N (для кадра), --no-tutorial — без него
 ##   --robot=clean (по умолчанию; другой вариант из RobotDesigns или old — прежний
 ##   каркас; корпус — металл планеты)
 ## Сборка для проверки (фича play3d в export_presets.cfg) стартует с главного
@@ -67,6 +70,7 @@ var pneu_view: ProtoPneumaticsView
 var build := false           # --build: режим стройки (с --play или для кадра)
 var fresh := false           # --fresh: не загружать сохранение
 var saves: ProtoSave
+var drill_form := ""         # --form=vein: --auto=drill бурит залежь этой формы
 var run: ProtoRun            # цель, награды, прокачка, события (ProtoRun)
 var run_ui: ProtoRunUi
 var want_run := false        # --run: ран и без --play (для кадра)
@@ -79,6 +83,8 @@ var _strike_seen = null
 var lab_desk: ProtoLabDesk   # знания о веществах (касание, пробы, догадки, лаборатория)
 var lab_panel: ProtoLabPanel
 var lab_demo := false        # --lab: карточка материала открыта с самого начала
+var tutorial: ProtoTutorial
+var tutorial_mode := ""      # --tutorial — начать обучение заново; --tutorial=N — с шага N (для кадра); --no-tutorial
 
 ## Сид следующей планеты в сборке для проверки (переживает перезагрузку сцены).
 static var build_seed := 14
@@ -117,17 +123,20 @@ func _ready() -> void:
 		elif a == "--cargo": demo_cargo = true
 		elif a == "--build": build = true
 		elif a == "--fresh": fresh = true
-		elif a == "--menu": show_menu = true
+		elif a.begins_with("--form="): drill_form = a.substr(7)
 		elif a == "--run": want_run = true
 		elif a.begins_with("--open="):
 			open_win = a.substr(7)
 			want_run = true
 		elif a == "--lab": lab_demo = true
+		elif a == "--tutorial": tutorial_mode = "0"
+		elif a.begins_with("--tutorial="): tutorial_mode = a.substr(11)
+		elif a == "--no-tutorial": tutorial_mode = "off"
 	if auto == "drill":
 		RobotDesigns.tool_r = "drill"
 		view = "cave"
-	if auto == "sound" and RobotDesigns.tool_r == "":
-		RobotDesigns.tool_r = "drill"
+	if (auto == "sound" or play) and RobotDesigns.tool_r == "":
+		RobotDesigns.tool_r = "drill"          # играя, робот добывает: бур в предплечье
 	planet = PlanetGen.generate(seed_value)
 	lab_desk = ProtoLabDesk.new(ProtoLabDesk.for_planet(planet))
 	var t0 := Time.get_ticks_msec()
@@ -163,7 +172,15 @@ func _ready() -> void:
 		pl.capture = play and auto == "" and DisplayServer.get_name() != "headless"
 		pl.mining = mining
 		if auto == "drill":
+			# --form: на время выбора цели бур видит только залежи этой формы.
+			var all := mining.druses
+			if drill_form != "":
+				mining.druses = all.filter(func(d): return String(d.node.get_meta("form", "druse")) == drill_form)
+				if mining.druses.is_empty():
+					print("Залежей формы %s на этой планете нет" % drill_form)
+					mining.druses = all
 			pl.auto_drill(shot_path.get_basename() if shot_path != "" else "user://drill")
+			mining.druses = all
 			shot_path = ""
 		elif auto == "cave":
 			pl.auto_cave(shot_path.get_basename() if shot_path != "" else "user://route")
@@ -187,8 +204,10 @@ func _ready() -> void:
 	if play or auto != "" or show_hud:
 		_hud()
 	_lab()
+	_tutorial()
 	if play and auto == "" and show_menu:
 		_controls_menu()
+	if play and auto == "":
 		saves = ProtoSave.new()
 		saves.name = "saves"
 		add_child(saves)
@@ -407,6 +426,71 @@ func _cave_crystals() -> void:
 			lights += 1
 		mining.add_druse(druse)
 		made += 1
+	_cave_deposits(cs_sub, rng)
+
+## Залежи прочих твёрдых веществ планеты — каждая в своей форме (ProtoDeposit):
+## жилы и пласты — в стенах, конкреции, корки, глыбы и натёки — на полу.
+func _cave_deposits(skip: Substance, rng: RandomNumberGenerator) -> void:
+	var look := ProtoDeposit.planet_look(planet, style.habit)
+	var cc: Vector3 = terrain.cave_c
+	var placed: Array = []
+	for d in mining.druses:
+		if not d.crystals.is_empty():
+			placed.append(d.crystals[0].global_position)
+	var subs := _solid_mats().filter(func(m): return m != skip)
+	var kinds := 0
+	for s: Substance in subs:
+		if kinds >= 4:
+			break
+		var form := ProtoDeposit.form_for(s)
+		var mat := ProtoDeposit.material(s, form, look)
+		var floor_form := ProtoDeposit.on_floor(form)
+		var made := 0
+		for i in 400:
+			if made >= 2:
+				break
+			var dy := rng.randf_range(-0.95, -0.55) if floor_form else rng.randf_range(-0.6, 0.0)
+			var dir := Vector3(rng.randf_range(-1, 1), dy, rng.randf_range(-1, 1)).normalized()
+			var p := cc
+			var hit := false
+			for k in 60:
+				p += dir * 0.2
+				if terrain.solid(p.x, p.y, p.z):
+					hit = true
+					break
+			if not hit or not _clear_of_view(p):
+				continue
+			var nrm := _normal_at(p)
+			if floor_form and nrm.y < 0.6:
+				continue
+			if not floor_form:
+				# В стене — на высоте, до которой робот дотянется с пола.
+				var fl := terrain.floor_at(p + Vector3(nrm.x, 0, nrm.z).normalized() * 0.8 + Vector3(0, 0.5, 0))
+				if absf(nrm.y) > 0.6 or p.y - fl < 0.2 or p.y - fl > 1.5:
+					continue
+			var pcq: Vector3 = terrain.pool_c()
+			if Vector2(p.x, p.z).distance_to(Vector2(pcq.x, pcq.z)) < terrain.pool_r + 0.8:
+				continue
+			if placed.any(func(q): return q.distance_to(p) < 1.8):
+				continue
+			var n := ProtoDeposit.build(s, form, rng.randf_range(0.8, 1.1), rng, look, mat)
+			add_child(n)
+			ProtoDeposit.place(n, p - dir * 0.04, nrm, rng)
+			n.name = "deposit_%s_%d" % [form, mining.druses.size()]
+			mining.add_druse(n)
+			placed.append(p)
+			if made == 0:
+				# Неяркий свет у первой залежи: в тёмной пещере её видно издали.
+				var l := OmniLight3D.new()
+				l.light_color = s.color.lerp(Color.WHITE, 0.5)
+				l.light_energy = 0.9
+				l.omni_range = 3.5
+				l.position = p + nrm * 1.0
+				add_child(l)
+			made += 1
+		if made > 0:
+			kinds += 1
+			print("Залежь: %s — %s" % [ProtoDeposit.NAMES[form], _label(s)])
 
 ## Место робота в пещере и желаемая точка камеры: [робот, цель взгляда, камера].
 func _cave_spot() -> Array:
@@ -580,7 +664,8 @@ func _solid_mats() -> Array:
 	return ProtoSky.solid_mats(planet)
 
 ## Живой пневмозавод на площадке: приёмник с добытыми кристаллами → трубы →
-## дробилка → печь → бак, насос сбоку (ProtoPneumatics). Корпуса — из металла
+## дробилка → печь → бак, насос сбоку; за ним пушка бьёт через площадку в
+## приёмник → центрифуга → спекатель → бак (ProtoPneumatics). Корпуса — из металла
 ## планеты; к моменту кадра завод уже работает.
 func _factory() -> void:
 	var metal = _mat_with("metallic")
@@ -589,8 +674,8 @@ func _factory() -> void:
 	var ore: Substance = cryst if cryst != null else (_solid_mats()[0] if not _solid_mats().is_empty() else a)
 	var pc := terrain.plateau()
 	var top := pc.y + 0.1
-	var slab := ProtoMachines.slab(Vector3(15, 0.6, 9), terrain.ground.lerp(Color(0.5, 0.5, 0.52), 0.6))
-	slab.position = Vector3(pc.x, top - 0.28, pc.z)
+	var slab := ProtoMachines.slab(Vector3(17, 0.6, 15), terrain.ground.lerp(Color(0.5, 0.5, 0.52), 0.6))
+	slab.position = Vector3(pc.x, top - 0.28, pc.z + 2.5)
 	add_child(slab)
 	ProtoMachines.add_box_collider(slab, ProtoMachines.LAYER_GROUND)
 	pneu = ProtoPneumatics.new(planet)
@@ -599,6 +684,9 @@ func _factory() -> void:
 	pneu.remove(Vector2i(-1, 0))
 	pneu.place("lab", Vector2i(-1, 0), 0, a)
 	pneu.feed(Vector2i(-3, 0), Portion.new(ore, 30.0, planet.ambient_temp))
+	var cannon := pneu.build_logistics(Vector2i(-4, 3), a)
+	for i in 3:
+		cannon.items.append(Portion.new(ore, 2.0, planet.ambient_temp))
 	pneu_view = ProtoPneumaticsView.new()
 	pneu_view.name = "pneumatics"
 	add_child(pneu_view)
@@ -789,6 +877,21 @@ func _hud() -> void:
 		# Выход — из меню рана (Esc / Menu, строка «Меню» в HUD).
 		hud.extra_hints = [["Сохранить", "F5", "R3"]]
 	add_child(hud)
+
+## Обучение первых минут: в игре — пока не пройдено или не закрыто
+## (ProtoTutorial помнит это в user://settings.json), --tutorial — заново.
+func _tutorial() -> void:
+	if tutorial_mode == "off" or hud == null:
+		return
+	var forced := tutorial_mode != ""
+	if not forced and (not play or auto != "" or ProtoTutorial.is_done()):
+		return
+	if tutorial_mode == "0":
+		ProtoTutorial.reset()
+	tutorial = ProtoTutorial.new()
+	tutorial.name = "tutorial"
+	tutorial.setup(self, hud, int(tutorial_mode) if forced else -1)
+	add_child(tutorial)
 
 ## Разведка материалов: карточка с пробами и догадками, анализатор, лента находок.
 func _lab() -> void:

@@ -32,6 +32,7 @@ var mat_i := 0
 var rot := 0
 var hud: Label
 var note := ""
+var unloaded_kg := 0.0       # всего выгружено в приёмники (обучение проверяет по нему)
 var _note_t := 0.0
 
 ## Раскладка стройки по умолчанию: действие → события.
@@ -149,6 +150,7 @@ func unload() -> bool:
 		m += p.mass
 		view.net.feed(best, p)
 	cg.clear()
+	unloaded_kg += m
 	_say("Выгружено %.1f кг" % m)
 	return true
 

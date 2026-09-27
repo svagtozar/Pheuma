@@ -29,6 +29,7 @@ var sim: Sim
 var view: Node2D
 var view3d: Node3D = null      # объёмный вид (F3); создаётся при первом включении
 var use_3d := false
+var _show_deposits := false      # --deposits: все залежи разведаны, робот у ближайшей (кадр форм)
 var lab_panel: ProtoLabPanel = null   # 3D: карточка материала с геймпада (Z / A)
 var cam: Camera2D
 var hud: Control
@@ -51,6 +52,7 @@ var tutorial: Tutorial = null
 var _uitest := false
 var _demo := false          # --demo[=N]: у робота строится завод из N машин (для скриншотов и замера кадров)
 var _demo_n := 13
+var _showcase := ""         # --showcase[=near]: все машины и подвижное для 3D-вида (скриншоты)
 var _lab_demo := false      # --lab: 3D-вид, робот у залежи, открыта карточка материала (для кадра)
 var _bench := false         # --bench: 5 с кадрового профиля и выход
 var _bench_t := 0.0
@@ -102,10 +104,15 @@ func _ready() -> void:
 			_demo = true
 			if a.begins_with("--demo="):
 				_demo_n = int(a.substr(7))
+		elif a == "--showcase" or a.begins_with("--showcase="):
+			_demo = true
+			_showcase = a.substr(11) if a.begins_with("--showcase=") else "all"
 		elif a == "--flow":
 			flow_view = true
 		elif a == "--3d":
 			use_3d = true
+		elif a == "--deposits":
+			_show_deposits = true
 		elif a == "--pad":
 			pad_used = true
 		elif a == "--lab":
@@ -276,6 +283,8 @@ func new_world(s: int, loaded: World = null) -> void:
 	audio.set_world(world)
 	_autosave_t = 0.0
 	view.world = world
+	if _show_deposits:
+		_reveal_deposits()
 	set_3d(use_3d)
 	cam.position = world.robot.pos * T
 	cam.reset_smoothing()
@@ -373,6 +382,8 @@ func _process(dt: float) -> void:
 		world.meta.end_shown = true
 		menus.show_run_end(world)
 	sim.paused = paused or manual_pause
+	if _showcase != "" and not sim.paused:
+		DemoFactory.showcase_tick(world, dt)
 	var lab_open: bool = lab_panel != null and lab_panel.open
 	if lab_panel != null and use_3d:
 		lab_panel.focus_cell = mouse_cell()
@@ -847,8 +858,30 @@ func _wire_ends(w: Dictionary) -> Array:
 # ---------------------------------------------------------------- автотест и скриншот
 
 ## Демо-завод у робота (--demo=N): для скриншотов и замеров.
+## Кадр форм залежей: всё разведано, робот стоит южнее ближайшей к старту залежи.
+func _reveal_deposits() -> void:
+	var best = null
+	for c in world.planet.deposits:
+		world.revealed[c] = true
+		if best == null or Vector2(c).distance_to(world.robot.pos) < Vector2(best).distance_to(world.robot.pos):
+			best = c
+	if best != null:
+		world.robot.pos = Vector2(best) + Vector2(0.5, 3.5)
+
 func _build_demo() -> void:
 	var w := world
+	if _showcase != "":
+		var o := Vector2i(clampi(w.planet.spawn.x - 10, 2, w.planet.width - 34), clampi(w.planet.spawn.y - 12, 2, w.planet.height - 30))
+		w.robot.pos = DemoFactory.showcase(w, o)
+		cam.zoom = Vector2(0.85, 0.85) if _showcase in ["near", "machines"] else Vector2(0.4, 0.4)
+		if _showcase == "machines":
+			w.robot.pos = Vector2(o) + Vector2(8.5, 6.5)
+		if _showcase == "near":
+			w.robot.pos += Vector2(-2, 3.5)
+		hud.inv_collapsed = true
+		cam.position = w.robot.pos * T
+		cam.reset_smoothing()
+		return
 	var c := DemoFactory.build(w, w.planet.spawn + Vector2i(2, -3), _demo_n)
 	w.robot.pos = c + Vector2(0.5, 0.5)
 	cam.position = w.robot.pos * T
