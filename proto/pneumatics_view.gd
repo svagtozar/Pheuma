@@ -141,6 +141,8 @@ static func build_part(kind: String, sub: Substance, dir: int, links: Array, hol
 		"tank":
 			core = ProtoMachines.tank(body, Color(0.2, 0.2, 0.22), 0.001)
 			core.name = "tank_body"
+		"lab":
+			core = _lab_mesh(body)
 		_:
 			core = Node3D.new()
 	# Машины смотрят выходом по dir: модель строится выходом на +Z.
@@ -271,6 +273,81 @@ static func _intake_mesh(body: Material) -> Node3D:
 	n.add_child(heap)
 	return n
 
+## Лаборатория: стол с пятью щупами (по одному на пробу) под стеклянным колпаком,
+## в центре — вращающаяся чашка с образцом, сбоку табло.
+static func _lab_mesh(body: Material) -> Node3D:
+	var n := Node3D.new()
+	var base := MeshInstance3D.new()
+	var bm := BoxMesh.new()
+	bm.size = Vector3(1.3, 0.7, 1.3)
+	base.mesh = bm
+	base.material_override = body
+	base.position = Vector3(0, 0.35, 0)
+	n.add_child(base)
+	var dome := MeshInstance3D.new()
+	var dm := SphereMesh.new()
+	dm.radius = 0.55
+	dm.height = 0.8
+	dm.is_hemisphere = true
+	dome.mesh = dm
+	dome.material_override = ProtoMachines.glass()
+	dome.position = Vector3(0, 0.7, 0)
+	n.add_child(dome)
+	var cup := Node3D.new()
+	cup.name = "carousel"
+	cup.position = Vector3(0, 0.78, 0)
+	n.add_child(cup)
+	var dish := MeshInstance3D.new()
+	var cm := CylinderMesh.new()
+	cm.top_radius = 0.22
+	cm.bottom_radius = 0.14
+	cm.height = 0.08
+	dish.mesh = cm
+	dish.material_override = body
+	cup.add_child(dish)
+	var sample := MeshInstance3D.new()
+	sample.name = "sample"
+	var sm := SphereMesh.new()
+	sm.radius = 0.12
+	sm.height = 0.16
+	sm.radial_segments = 6
+	sm.rings = 3
+	sample.mesh = sm
+	sample.position = Vector3(0, 0.08, 0)
+	sample.visible = false
+	cup.add_child(sample)
+	# Пять щупов по кругу — цвета проб (нагрев, капля, магнит, ток, счётчик).
+	var cols := [Color(1.0, 0.45, 0.15), Color(0.5, 0.95, 0.4), Color(0.45, 0.55, 1.0), Color(1.0, 0.95, 0.4), Color(0.4, 1.0, 0.8)]
+	for i in 5:
+		var a := i * TAU / 5.0
+		var arm := MeshInstance3D.new()
+		var am := CylinderMesh.new()
+		am.top_radius = 0.025
+		am.bottom_radius = 0.035
+		am.height = 0.42
+		arm.mesh = am
+		arm.material_override = body
+		arm.position = Vector3(cos(a) * 0.32, 0.9, sin(a) * 0.32)
+		arm.rotation = Vector3(sin(a) * 0.6, 0, -cos(a) * 0.6)
+		n.add_child(arm)
+		var tip := MeshInstance3D.new()
+		var tm := SphereMesh.new()
+		tm.radius = 0.04
+		tm.height = 0.08
+		tip.mesh = tm
+		tip.material_override = ProtoMachines.glow(cols[i], 1.2)
+		tip.position = Vector3(cos(a) * 0.2, 0.74, sin(a) * 0.2)
+		n.add_child(tip)
+	var board := MeshInstance3D.new()
+	board.name = "lamp"
+	var pm := BoxMesh.new()
+	pm.size = Vector3(0.5, 0.22, 0.04)
+	board.mesh = pm
+	board.material_override = ProtoMachines.glow(Color(0.3, 0.3, 0.3), 0.2)
+	board.position = Vector3(0, 0.45, 0.67)
+	n.add_child(board)
+	return n
+
 ## Дробилка: корпус, приёмный бункер сверху, два вала с зубьями по бокам.
 static func _crusher_mesh(body: Material) -> Node3D:
 	var n := Node3D.new()
@@ -385,6 +462,25 @@ func _update_live() -> void:
 					heap.scale = Vector3.ONE * clampf(0.4 + m / 20.0, 0.4, 1.1)
 			"tank":
 				_tank_fill(n, part)
+			"lab":
+				var busy: bool = part.busy != null
+				var car := n.find_child("carousel", true, false) as Node3D
+				if car and busy:
+					car.rotation.y += 0.05
+				var smp := n.find_child("sample", true, false) as MeshInstance3D
+				if smp:
+					smp.visible = busy
+					if busy and smp.get_meta("sub", "") != part.busy.substance.id:
+						smp.material_override = ProtoMachines.surface(part.busy.substance)
+						smp.set_meta("sub", part.busy.substance.id)
+				var board := n.find_child("lamp", true, false) as MeshInstance3D
+				if board:
+					var flash: float = n.get_meta("flash", 0.0)
+					var bc := Color(0.35, 0.9, 1.0) if flash > 0.0 else (Color(0.3, 1.0, 0.4) if busy else Color(0.3, 0.3, 0.3))
+					board.material_override.albedo_color = bc
+					board.material_override.emission = bc
+					board.material_override.emission_energy_multiplier = 3.0 if flash > 0.0 else (1.5 if busy else 0.2)
+					n.set_meta("flash", maxf(0.0, flash - 0.03))
 
 ## Уровень груза в баке: цилиндр внутри стекла, цвет — материал.
 func _tank_fill(n: Node3D, part: Dictionary) -> void:
@@ -460,6 +556,12 @@ func _play_events() -> void:
 				_puff(ProtoPneumatics.cell_pos(origin, e.cell) + Vector3(d.x, PIPE_Y, d.y), e.sub.color, 14)
 			"done":
 				_puff(ProtoPneumatics.cell_pos(origin, e.cell) + Vector3(0, 1.2, 0), e.sub.color, 10)
+			"lab":
+				if e.learned:
+					_puff(ProtoPneumatics.cell_pos(origin, e.cell) + Vector3(0, 1.3, 0), Color(0.35, 0.9, 1.0), 24)
+					var ln: Node3D = _nodes.get(net.parts.get(e.cell, {}).get("id", -1))
+					if ln:
+						ln.set_meta("flash", 1.0)
 	net.events.clear()
 
 func _puff(at: Vector3, col: Color, amount: int) -> void:
