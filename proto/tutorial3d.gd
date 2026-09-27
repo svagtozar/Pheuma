@@ -6,6 +6,7 @@ extends CanvasLayer
 ## и сами переключаются между клавиатурой и геймпадом, как в ProtoHud.
 ## Над целью шага (друза, приёмник) в мире висит метка ▼ с расстоянием.
 ##   F1 / D-pad влево, удерживать — пропустить шаг; дольше — закрыть обучение.
+##   В стройке (там D-pad выбирает деталь) и в окнах рана пропуск не работает.
 ## Прогресс и «пройдено» — в user://settings.json (общий с игрой файл
 ## настроек): ключи tutorial3d_step и tutorial3d_done. Пройденное или закрытое
 ## обучение больше не показывается; --tutorial в предпросмотре начинает заново.
@@ -40,8 +41,8 @@ const STEPS := [
 		"text": "{build_mode} — стройка. {build_prev} {build_next} — выбрать «Насос», {build_place} — поставить перед собой."},
 	{"id": "pipe", "title": "Проложите трубу",
 		"text": "Выберите «Трубу» и поставьте рядом с деталью завода, {build_rotate} — повернуть. Соседние детали — одна газовая сеть. {build_mode} — выйти из стройки."},
-	{"id": "goal", "title": "Дальше — сами",
-		"text": "Цель — наладить завод: добывать, сдавать в приёмник, держать давление насосами. Кнопки — справа внизу."},
+	{"id": "goal", "title": "Цель планеты",
+		"text": "Слева вверху — цель планеты из трёх этапов и совет, что делать дальше. {run_menu} — меню: цель, прокачка ({run_skills}), выход. Дальше — сами!"},
 ]
 
 var root: Node                   # сцена предпросмотра
@@ -231,7 +232,9 @@ func _process(dt: float) -> void:
 	if hud != null:
 		pad = hud.pad
 	var busy := _robot() != null and bool(_robot().get_meta("ui_busy", false))
-	_hold_input(dt, busy)
+	busy = busy or _modal()
+	var b := _builder()
+	_hold_input(dt, busy or (b != null and bool(b.get("active"))))
 	if done:
 		return
 	advance(dt)
@@ -366,6 +369,11 @@ func _player() -> Node:
 func _builder() -> Node:
 	return root.get_node_or_null("builder") if root != null else null
 
+## Открыто окно рана (ProtoRunUi: высадка, меню, награда…).
+func _modal() -> bool:
+	var ui = _field("run_ui")
+	return ui != null and str(ui.get("modal")) != ""
+
 func _cargo_kg() -> float:
 	var r := _robot()
 	if r == null or not r.has_meta("cargo"):
@@ -457,6 +465,11 @@ func _place() -> void:
 		var l := cap.get_child(0) as Control
 		if l != null:
 			y = maxf(y, (l.position.y + l.size.y) / maxf(_root_c.scale.y, 0.01) + 12.0)
+	# В ране слева сверху — панель цели (ProtoRunUi): встаём под неё.
+	var ui = _field("run_ui")
+	var gp = ui.get("_goal_panel") if ui != null else null
+	if gp is Control and gp.visible:
+		y = maxf(y, gp.position.y + gp.size.y + 12.0)
 	_panel.position.y = y
 
 ## Куда идти относительно камеры: «впереди», «сзади справа»…
