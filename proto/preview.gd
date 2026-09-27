@@ -1,7 +1,8 @@
 extends Node3D
 ## Предпросмотр объёмного 3D-визуала (к игре не подключён).
 ##   godot --path . res://proto/preview.tscn -- --seed=14 --view=third|plan|cave --screenshot=путь.png
-##   --robot=concept (или другой вариант из RobotDesigns; корпус — металл планеты)
+##   --robot=clean (по умолчанию; другой вариант из RobotDesigns или old — прежний
+##   каркас; корпус — металл планеты)
 ## Планета — настоящий генератор: теги задают небо, свет и дымку, жидкие при её
 ## температуре материалы — реки и озёра, твёрдые — корпуса машин.
 
@@ -11,7 +12,7 @@ var shot_path := ""
 var planet: Planet
 var terrain: ProtoTerrain
 var robot: Node3D
-var robot_design := ""
+var robot_design := "clean"
 var cam: Camera3D
 var _t := 0.0
 
@@ -297,7 +298,9 @@ func _label(s: Substance) -> String:
 
 func _robot_and_camera() -> void:
 	var drill = _mat_with("metallic")
-	if robot_design != "":
+	if robot_design != "old":
+		# Идёт по планете; в пещере — стоит и светит глазом.
+		RobotAnim.default_mode = "idle" if view == "cave" else "walk"
 		robot = RobotDesigns.build(robot_design, drill.color if drill != null else Color(0, 0, 0, 0))
 	else:
 		robot = ProtoRobot.new(Color(0.78, 0.8, 0.84), drill.color if drill != null else Color(0.6, 0.6, 0.65), Color(0.9, 0.55, 0.2))
@@ -334,6 +337,10 @@ func _robot_and_camera() -> void:
 			if robot is ProtoRobot:
 				(robot as ProtoRobot).walk = false
 				(robot as ProtoRobot).eye_light.light_energy = 2.5
+			else:
+				var eye := robot.find_child("eye_light", true, false) as OmniLight3D
+				if eye:
+					eye.light_energy = 2.5
 			var tg3 := Vector3(cc.x + 3.0, rp3.y, cc.z - 3.0)
 			robot.look_at(tg3, Vector3.UP, true)
 			var f3 := (tg3 - rp3).normalized()

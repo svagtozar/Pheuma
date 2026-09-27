@@ -1,9 +1,14 @@
 extends Node3D
 ## Витрина вариантов робота (к игре не подключена).
-##   godot --path . res://proto/robots.tscn -- --shot=front|back|top|close:N|closeback:N|head:N|hand:N|far:N|tank:N --screenshot=путь.png
+##   godot --path . res://proto/robots.tscn -- --shot=front|back|top|close:N|closeback:N|head:N|hand:N|far:N|tank:N|side:N  [--anim=idle|walk] [--t=сек] [--sheet=кадров] [--only=N] --screenshot=путь.png
 
 var shot := "front"
 var shot_path := ""
+var only := -1           # показать только робота с этим индексом
+var sheet := 0            # раскадровка: столько кадров анимации в одном PNG
+var sheet_frames: Array = []
+var sheet_i := 0
+var sheet_wait := 0
 var _t := 0.0
 const GAP := 1.6
 
@@ -11,9 +16,15 @@ func _ready() -> void:
 	for a in OS.get_cmdline_user_args():
 		if a.begins_with("--shot="): shot = a.substr(7)
 		elif a.begins_with("--screenshot="): shot_path = a.substr(13)
+		elif a.begins_with("--anim="): RobotAnim.default_mode = a.substr(7)
+		elif a.begins_with("--t="): RobotAnim.fixed_t = float(a.substr(4))
+		elif a.begins_with("--sheet="): sheet = int(a.substr(8))
+		elif a.begins_with("--only="): only = int(a.substr(7))
 	_stage()
 	var n := RobotDesigns.DESIGNS.size()
 	for i in n:
+		if only >= 0 and i != only:
+			continue
 		var d: String = RobotDesigns.DESIGNS[i]
 		var x := (i - (n - 1) / 2.0) * GAP
 		var ped := MeshInstance3D.new()
@@ -120,6 +131,11 @@ func _camera(n: int) -> void:
 		cam.position = Vector3(gx + 0.75, 1.6, -0.9)
 		cam.look_at(Vector3(gx + 0.2, 1.4, -0.3))
 		cam.fov = 35.0
+	if shot.begins_with("side:"):
+		var sx := (int(shot.substr(5)) - (n - 1) / 2.0) * GAP
+		cam.position = Vector3(sx + 3.2, 1.1, 0.4)
+		cam.look_at(Vector3(sx, 0.85, 0))
+		cam.fov = 36.0
 	if shot.begins_with("head:"):
 		var hx := (int(shot.substr(5)) - (n - 1) / 2.0) * GAP
 		cam.position = Vector3(hx + 0.35, 1.85, 1.0)
@@ -139,8 +155,38 @@ func _camera(n: int) -> void:
 
 func _process(dt: float) -> void:
 	_t += dt
+	if sheet > 0 and shot_path != "" and _t > 1.0:
+		_sheet_step()
+		return
 	if shot_path != "" and _t > 1.0:
 		get_viewport().get_texture().get_image().save_png(shot_path)
 		print("скриншот: ", shot_path)
 		shot_path = ""
 		get_tree().quit(0)
+
+## Раскадровка: кадры с шагом по времени анимации — за цикл шага или 8 с покоя.
+func _sheet_step() -> void:
+	if sheet_wait > 0:
+		sheet_wait -= 1
+		return
+	if sheet_i > 0:
+		var img := get_viewport().get_texture().get_image()
+		img.resize(img.get_width() / 2, img.get_height() / 2)
+		sheet_frames.append(img)
+	if sheet_i >= sheet:
+		var fw: int = sheet_frames[0].get_width()
+		var fh: int = sheet_frames[0].get_height()
+		var cols := mini(sheet, 4)
+		var rows := int(ceil(sheet / float(cols)))
+		var out := Image.create(fw * cols, fh * rows, false, sheet_frames[0].get_format())
+		for i in sheet_frames.size():
+			out.blit_rect(sheet_frames[i], Rect2i(0, 0, fw, fh), Vector2i((i % cols) * fw, (i / cols) * fh))
+		out.save_png(shot_path)
+		print("раскадровка: ", shot_path)
+		shot_path = ""
+		get_tree().quit(0)
+		return
+	var period := 1.0 / 0.95 if RobotAnim.default_mode == "walk" else 8.0
+	RobotAnim.fixed_t = sheet_i * period / sheet
+	sheet_i += 1
+	sheet_wait = 2

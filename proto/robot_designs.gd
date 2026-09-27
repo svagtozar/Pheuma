@@ -950,57 +950,72 @@ static func _scheme(hull_col: Color) -> Array:
 	var paint := hull_col.lerp(Color(0.86, 0.84, 0.8), 0.55).darkened(0.08)
 	return ["paint:#" + paint.to_html(false), "metal:#" + hull_col.to_html(false)]
 
+## Кость рига: узел в точке сустава (в покое без поворота).
+static func _bone(bname: String, pos: Vector3, parent: Node3D = null, parent_pos := Vector3.ZERO) -> Node3D:
+	var b := Node3D.new()
+	b.name = bname
+	b.position = pos - parent_pos
+	if parent != null:
+		parent.add_child(b)
+	return b
+
+## Переносит детали, добавленные в n начиная с индекса from, в кость bone,
+## стоящую в точке bone_pos (кости в покое не повёрнуты — достаточно сдвига).
+static func _grab(n: Node3D, from: int, bone: Node3D, bone_pos: Vector3) -> void:
+	var kids := []
+	for i in range(from, n.get_child_count()):
+		kids.append(n.get_child(i))
+	for c in kids:
+		n.remove_child(c)
+		c.position -= bone_pos
+		bone.add_child(c)
+
 ## «Хард-серфейс»: крупные гладкие панели с фасками, кираса, массивные
-## предплечья и голени, тёмная механика, медь — акцентом; поза с контрапостом.
+## предплечья и голени, тёмная механика, медь — акцентом. Собран на риге в
+## нейтральной позе: hips → chest → head, shoulder → elbow; hips → hip → knee →
+## ankle. Позу (контрапост, рука на бедре) и движение задаёт RobotAnim.
 static func _clean(n: Node3D, hull_col: Color) -> void:
 	var sc := _scheme(hull_col)
 	var paint: String = sc[0]
 	var metal: String = sc[1]
-	# Вес на левой ноге: левое бедро выше, левое плечо ниже, правое колено согнуто.
 	var s := {
-		"pelvis": Vector3(0, 0.93, 0),
-		"sh_l": Vector3(-0.24, 1.43, 0), "sh_r": Vector3(0.24, 1.455, 0),
-		# Левая рука упёрта в бедро, правая — с инструментом — чуть вперёд, наготове.
-		"el_l": Vector3(-0.37, 1.18, -0.07), "el_r": Vector3(0.31, 1.18, 0.02),
-		"ha_l": Vector3(-0.2, 1.0, 0.02), "ha_r": Vector3(0.33, 1.0, 0.19),
-		"hi_l": Vector3(-0.11, 0.93, 0), "hi_r": Vector3(0.11, 0.91, 0),
-		"kn_l": Vector3(-0.12, 0.5, 0.04), "kn_r": Vector3(0.14, 0.49, 0.1),
-		"an_l": Vector3(-0.13, 0.09, 0.0), "an_r": Vector3(0.18, 0.09, 0.07),
+		"pelvis": Vector3(0, 0.93, 0), "waist": Vector3(0, 1.1, 0),
+		"sh_l": Vector3(-0.24, 1.445, 0), "sh_r": Vector3(0.24, 1.445, 0),
+		"el_l": Vector3(-0.275, 1.17, -0.01), "el_r": Vector3(0.275, 1.17, -0.01),
+		"ha_l": Vector3(-0.285, 0.935, 0.02), "ha_r": Vector3(0.285, 0.935, 0.02),
+		"hi_l": Vector3(-0.11, 0.92, 0), "hi_r": Vector3(0.11, 0.92, 0),
+		"kn_l": Vector3(-0.12, 0.5, 0.02), "kn_r": Vector3(0.12, 0.5, 0.02),
+		"an_l": Vector3(-0.13, 0.09, 0.0), "an_r": Vector3(0.13, 0.09, 0.0),
 	}
-	var tilt := Basis(Vector3.BACK, 0.05)
-	# --- Голова: наклон вбок и чуть вниз — «присматривается».
 	var hc := Vector3(0.0, 1.63, 0.03)
-	_head(n, hc, 0.14, paint, metal, Vector3(-0.08, 0.14, 0.14), true)
+	var hips := _bone("hips", s.pelvis)
+	var chest := _bone("chest", s.waist, hips, s.pelvis)
+	# --- Таз, гофра, стойка позвоночника.
+	var k0 := n.get_child_count()
+	rod(n, Vector3(0, 0.96, -0.01), Vector3(0, 1.1, -0.01), 0.045, "dark")
+	for k in 4:
+		disc(n, Vector3(0, 1.0 + k * 0.021, -0.01), Vector3.UP, 0.075 - abs(k - 2.5) * 0.004, 0.017, "rubber" if k % 2 else "dark")
+	rbox(n, s.pelvis + Vector3(0, 0.02, 0), Vector3(0.27, 0.1, 0.17), 0.03, "dark")
+	rbox(n, s.pelvis + Vector3(0, 0.01, 0.09), Vector3(0.16, 0.075, 0.03), 0.012, paint, Basis(Vector3.RIGHT, -0.2))
+	_grab(n, k0, hips, s.pelvis)
+	# --- Грудь: кираса клином, медная полоса, светящиеся щели, верх гофры, шея.
+	k0 = n.get_child_count()
+	rod(n, Vector3(0, 1.08, -0.01), Vector3(0, 1.18, -0.01), 0.045, "dark")
+	for k in 2:
+		disc(n, Vector3(0, 1.084 + k * 0.021, -0.01), Vector3.UP, 0.073, 0.017, "dark" if k % 2 else "rubber")
+	rbox(n, Vector3(0, 1.145, -0.005), Vector3(0.22, 0.07, 0.15), 0.022, "dark")
+	rbox(n, Vector3(0, 1.37, 0), Vector3(0.39, 0.18, 0.25), 0.045, paint)
+	rbox(n, Vector3(0, 1.235, 0.005), Vector3(0.29, 0.12, 0.21), 0.035, paint)
+	rbox(n, Vector3(0, 1.31, 0.121), Vector3(0.05, 0.24, 0.03), 0.01, metal)
+	for sg in [-1.0, 1.0]:
+		rbox(n, Vector3(sg * 0.105, 1.41, 0.126), Vector3(0.09, 0.013, 0.01), 0.003, "glow")
 	rod(n, Vector3(0, 1.44, -0.01), hc + Vector3(0, -0.1, -0.02), 0.03, "dark")
 	disc(n, Vector3(0, 1.475, -0.01), Vector3.UP, 0.07, 0.035, "dark")
-	# --- Кираса: грудь с фаской, медная полоса, светящиеся щели.
-	# Верх шире низа — «героический» клин.
-	rbox(n, Vector3(0, 1.37, 0), Vector3(0.39, 0.18, 0.25), 0.045, paint, tilt)
-	rbox(n, Vector3(0, 1.235, 0.005), Vector3(0.29, 0.12, 0.21), 0.035, paint, tilt)
-	rbox(n, Vector3(0, 1.31, 0.121), Vector3(0.05, 0.24, 0.03), 0.01, metal, tilt)
+	# Наплечники: левый крупнее, с полосами опасности и номером.
 	for sg in [-1.0, 1.0]:
-		rbox(n, Vector3(sg * 0.105, 1.41 + sg * 0.005, 0.126), Vector3(0.09, 0.013, 0.01), 0.003, "glow", tilt)
-	# Живот, поясница-гофра, таз.
-	# Сплошной переход грудь → таз: стойка позвоночника и гофра до самого таза.
-	rbox(n, Vector3(0, 1.145, -0.005), Vector3(0.22, 0.07, 0.15), 0.022, "dark")
-	rod(n, Vector3(0, 0.96, -0.01), Vector3(0, 1.18, -0.01), 0.045, "dark")
-	for k in 6:
-		disc(n, Vector3(0, 1.0 + k * 0.021, -0.01), Vector3.UP, 0.075 - abs(k - 2.5) * 0.004, 0.017, "rubber" if k % 2 else "dark")
-	var pb := Basis(Vector3.BACK, -0.04)
-	rbox(n, s.pelvis + Vector3(0, 0.02, 0), Vector3(0.27, 0.1, 0.17), 0.03, "dark", pb)
-	rbox(n, s.pelvis + Vector3(0, 0.01, 0.09), Vector3(0.16, 0.075, 0.03), 0.012, paint, pb * Basis(Vector3.RIGHT, -0.2))
-	# --- Руки и ноги.
-	for side in ["l", "r"]:
-		var sg: float = -1.0 if side == "l" else 1.0
-		var sh: Vector3 = s["sh_" + side]
-		var el: Vector3 = s["el_" + side]
-		var ha: Vector3 = s["ha_" + side]
-		var hi: Vector3 = s["hi_" + side]
-		var kn: Vector3 = s["kn_" + side]
-		var an: Vector3 = s["an_" + side]
-		# Наплечник с фаской; левый крупнее, с полосами опасности и номером.
+		var sh: Vector3 = s["sh_l"] if sg < 0.0 else s["sh_r"]
 		var pbas := Basis(Vector3.BACK, -sg * 0.35)
-		if side == "l":
+		if sg < 0.0:
 			var pc := sh + Vector3(-0.03, 0.055, 0)
 			rbox(n, pc, Vector3(0.155, 0.075, 0.185), 0.028, paint, pbas)
 			for dz in [-0.035, 0.035]:
@@ -1015,13 +1030,44 @@ static func _clean(n: Node3D, hull_col: Color) -> void:
 			lb.transform = Transform3D(pbas * Basis(Vector3.UP, -PI / 2.0), pc + pbas * Vector3(-0.08, -0.005, 0))
 			n.add_child(lb)
 		else:
-			rbox(n, sh + Vector3(sg * 0.025, 0.05, 0), Vector3(0.13, 0.065, 0.16), 0.025, paint, pbas)
+			rbox(n, sh + Vector3(0.025, 0.05, 0), Vector3(0.13, 0.065, 0.16), 0.025, paint, pbas)
+	# Баллон за правым плечом: непрозрачный, давление — светящаяся полоса.
+	var fb := Vector3(0.15, 1.13, -0.24)
+	var fh := 0.46
+	var top := _flask_pack(n, fb, fh, 0.105, metal, paint, Vector3(0.3, 0, -0.95), 0.72)
+	for y in [1.26, 1.4]:
+		rod(n, Vector3(0.04, y, -0.1), Vector3(0.13, y, -0.22), 0.013, "dark")
+	hose(n, fb + Vector3(-0.06, fh - 0.02, -0.02), fb + Vector3(-0.18, fh + 0.08, -0.02), s.sh_l + Vector3(0.1, 0.12, -0.12), s.sh_l + Vector3(0.02, 0.03, -0.05), 0.013)
+	hose(n, top, top + Vector3(0.02, 0.1, 0.0), s.sh_r + Vector3(0.04, 0.14, -0.12), s.sh_r + Vector3(0.0, 0.04, -0.05), 0.013)
+	_socket(n, "socket_plate_chest", Vector3(0, 1.33, 0.13))
+	_socket(n, "socket_plate_sh_l", s.sh_l + Vector3(-0.03, 0.09, 0))
+	_socket(n, "socket_plate_sh_r", s.sh_r + Vector3(0.03, 0.09, 0))
+	# Голова — сама кость head (узел из _head), с подсветкой глаза для пещер.
+	var hd := _head(n, hc, 0.14, paint, metal, Vector3.ZERO, true)
+	var eye := OmniLight3D.new()
+	eye.name = "eye_light"
+	eye.light_color = Color(0.7, 0.95, 1.0)
+	eye.light_energy = 0.0
+	eye.omni_range = 9.0
+	eye.position = Vector3(0, 0, 0.3)
+	hd.add_child(eye)
+	_grab(n, k0, chest, s.waist)
+	# --- Руки.
+	for side in ["l", "r"]:
+		var sg: float = -1.0 if side == "l" else 1.0
+		var sh: Vector3 = s["sh_" + side]
+		var el: Vector3 = s["el_" + side]
+		var ha: Vector3 = s["ha_" + side]
+		var shb := _bone("shoulder_" + side, sh, chest, s.waist)
+		var elb := _bone("elbow_" + side, el, shb, sh)
+		k0 = n.get_child_count()
 		ball(n, sh, 0.05, "dark")
 		rod(n, sh, el, 0.034, "dark")
 		piston(n, sh, el, Vector3(sg * 0.04, 0, -0.025), 0.017)
+		_grab(n, k0, shb, sh)
+		# Предплечье — массивный щиток; правое — рабочая перчатка с пневмосоплом.
+		k0 = n.get_child_count()
 		ball(n, el, 0.042, "dark")
-		# Предплечье — массивный щиток с медным бандажом у запястья; правое —
-		# рабочая перчатка крупнее, с пневмосоплом снаружи.
 		var big := 1.25 if side == "r" else 1.0
 		rbox_along(n, el.lerp(ha, 0.12), el.lerp(ha, 0.8), 0.085 * big, 0.095 * big, 0.022, Vector3(sg * 0.3, 0, 1), paint)
 		rbox_along(n, el.lerp(ha, 0.8), el.lerp(ha, 0.9), 0.09 * big, 0.1 * big, 0.012, Vector3(sg * 0.3, 0, 1), metal)
@@ -1035,43 +1081,48 @@ static func _clean(n: Node3D, hull_col: Color) -> void:
 			rod(n, t1 + ax * 0.05, t1 + ax * 0.056, 0.012, "glow")
 			for t in [0.3, 0.6]:
 				ring(n, t0.lerp(t1, t), ax, 0.024, 0.031, "dark")
-			hose(n, sh + Vector3(0.05, 0.0, -0.06), sh + Vector3(0.14, -0.1, -0.08), t0 + Vector3(0.05, 0.08, -0.06), t0 + Vector3(0.0, 0.0, -0.02), 0.011)
+			hose(n, el + Vector3(0.05, 0.02, -0.05), el + Vector3(0.1, -0.02, -0.06), t0 + Vector3(0.03, 0.04, -0.04), t0 + Vector3(0.0, 0.0, -0.02), 0.011, "rubber", 6)
 		ball(n, ha, 0.03, "dark")
 		hand(n, ha, (ha - el).normalized() + Vector3(0, -0.6, 0), Vector3(-sg, 0, 0), paint, 1.25)
-		# Бедро — тёмная кость с поршнем, колено — щиток.
+		_socket(n, "socket_hand_" + side, ha + Vector3(0, -0.12, 0))
+		_grab(n, k0, elb, el)
+	# --- Ноги.
+	for side in ["l", "r"]:
+		var sg: float = -1.0 if side == "l" else 1.0
+		var hi: Vector3 = s["hi_" + side]
+		var kn: Vector3 = s["kn_" + side]
+		var an: Vector3 = s["an_" + side]
+		var hib := _bone("hip_" + side, hi, hips, s.pelvis)
+		var knb := _bone("knee_" + side, kn, hib, hi)
+		var anb := _bone("ankle_" + side, an, knb, kn)
+		k0 = n.get_child_count()
 		ball(n, hi, 0.05, "dark")
 		rod(n, hi, kn, 0.038, "dark")
 		piston(n, hi, kn, Vector3(sg * 0.055, 0, -0.02), 0.02)
 		rbox_along(n, hi.lerp(kn, 0.14), hi.lerp(kn, 0.72), 0.09, 0.1, 0.024, Vector3(sg * 0.2, 0, 1), paint)
+		_socket(n, "socket_plate_thigh_" + side, hi.lerp(kn, 0.5) + Vector3(0, 0, 0.05))
+		_grab(n, k0, hib, hi)
+		# Колено-щиток, голень с медным бандажом, поршень сзади.
+		k0 = n.get_child_count()
 		ball(n, kn, 0.046, "dark")
 		rbox(n, kn + Vector3(0, 0.015, 0.05), Vector3(0.085, 0.1, 0.05), 0.018, paint, Basis(Vector3.RIGHT, -0.2))
-		# Голень — щиток с медным бандажом, поршень сзади.
 		rbox_along(n, kn.lerp(an, 0.14), kn.lerp(an, 0.86), 0.1, 0.12, 0.026, Vector3.BACK, paint)
 		rbox_along(n, kn.lerp(an, 0.2), kn.lerp(an, 0.27), 0.106, 0.126, 0.012, Vector3.BACK, metal)
 		piston(n, kn, an, Vector3(0, 0, -0.07), 0.02)
 		ball(n, an, 0.038, "dark")
-		# Ступня: корпус, подошва, скошенный носок; правая развёрнута наружу.
-		var fbas := Basis(Vector3.UP, 0.0 if side == "l" else 0.28)
+		_grab(n, k0, knb, kn)
+		# Ступня: подошва, корпус, скошенный носок.
+		k0 = n.get_child_count()
 		var fc := Vector3(an.x, 0, an.z)
-		rbox(n, fc + fbas * Vector3(0, 0.017, 0.05), Vector3(0.14, 0.034, 0.27), 0.012, "dark", fbas)
-		rbox(n, fc + fbas * Vector3(0, 0.06, 0.02), Vector3(0.13, 0.07, 0.19), 0.025, paint, fbas)
-		rbox(n, fc + fbas * Vector3(0, 0.05, 0.14), Vector3(0.125, 0.05, 0.08), 0.02, paint, fbas * Basis(Vector3.RIGHT, 0.3))
-	# --- Колба за правым плечом, два шланга.
-	var fb := Vector3(0.15, 1.13, -0.24)
-	var fh := 0.46
-	# Непрозрачный баллон: давление — светящаяся полоса, обращённая назад-наружу.
-	var top := _flask_pack(n, fb, fh, 0.105, metal, paint, Vector3(0.3, 0, -0.95), 0.72)
-	for y in [1.26, 1.4]:
-		rod(n, Vector3(0.04, y, -0.1), Vector3(0.13, y, -0.22), 0.013, "dark")
-	hose(n, fb + Vector3(-0.06, fh - 0.02, -0.02), fb + Vector3(-0.18, fh + 0.08, -0.02), s.sh_l + Vector3(0.1, 0.12, -0.12), s.sh_l + Vector3(0.02, 0.03, -0.05), 0.013)
-	hose(n, top, top + Vector3(0.02, 0.1, 0.0), s.sh_r + Vector3(0.04, 0.14, -0.12), s.sh_r + Vector3(0.0, 0.04, -0.05), 0.013)
-	_socket(n, "socket_hand_l", s.ha_l + Vector3(0, -0.12, 0))
-	_socket(n, "socket_hand_r", s.ha_r + Vector3(0, -0.12, 0))
-	_socket(n, "socket_plate_chest", Vector3(0, 1.33, 0.13))
-	_socket(n, "socket_plate_sh_l", s.sh_l + Vector3(-0.03, 0.09, 0))
-	_socket(n, "socket_plate_sh_r", s.sh_r + Vector3(0.03, 0.09, 0))
-	_socket(n, "socket_plate_thigh_l", s.hi_l.lerp(s.kn_l, 0.5) + Vector3(0, 0, 0.05))
-	_socket(n, "socket_plate_thigh_r", s.hi_r.lerp(s.kn_r, 0.5) + Vector3(0, 0, 0.05))
+		rbox(n, fc + Vector3(0, 0.017, 0.05), Vector3(0.14, 0.034, 0.27), 0.012, "dark")
+		rbox(n, fc + Vector3(0, 0.06, 0.02), Vector3(0.13, 0.07, 0.19), 0.025, paint)
+		rbox(n, fc + Vector3(0, 0.05, 0.14), Vector3(0.125, 0.05, 0.08), 0.02, paint, Basis(Vector3.RIGHT, 0.3))
+		_grab(n, k0, anb, an)
+	n.add_child(hips)
+	n.set_meta("rig", s)
+	var anim := RobotAnim.new()
+	anim.name = "anim"
+	n.add_child(anim)
 
 ## «Компаньон»: коренастый, торс-яйцо, крупная голова на плечах, короткие толстые
 ## конечности, крупные кисти и ступни.
