@@ -27,16 +27,17 @@ func _ready() -> void:
 	terrain = ProtoTerrain.new(seed_value)
 	_palette()
 	terrain.build_field()
-	var mesh := terrain.build_mesh()
-	print("Рельеф %d×%d×%d: %d мс, вершин %d" % [terrain.sx, terrain.sy, terrain.sz, Time.get_ticks_msec() - t0, mesh.surface_get_array_len(0)])
-	var tm := StandardMaterial3D.new()
-	tm.vertex_color_use_as_albedo = true
-	tm.roughness = 0.95
-	tm.cull_mode = BaseMaterial3D.CULL_DISABLED
-	var ground := MeshInstance3D.new()
-	ground.mesh = mesh
-	ground.material_override = tm
-	add_child(ground)
+	# Основная сетка (1 м) без пещерной коробки и детальная сетка пещеры (0,5 м).
+	var mesh := terrain.build_mesh(Vector3.ZERO, Vector3i(-1, -1, -1), 1.0, terrain.coarse_skip())
+	var cmesh := terrain.build_cave_mesh()
+	print("Рельеф %d×%d×%d: %d мс, вершин %d + пещера %d" % [terrain.sx, terrain.sy, terrain.sz, Time.get_ticks_msec() - t0,
+		mesh.surface_get_array_len(0), cmesh.surface_get_array_len(0)])
+	var tm := terrain.material()
+	for m in [mesh, cmesh]:
+		var ground := MeshInstance3D.new()
+		ground.mesh = m
+		ground.material_override = tm
+		add_child(ground)
 	_environment()
 	_liquids()
 	_cave_crystals()
@@ -96,6 +97,10 @@ func _environment() -> void:
 	env.fog_light_color = horizon.lerp(Color(0.6, 0.6, 0.62), 0.4)
 	env.fog_density = 0.0015 + 0.0035 * clampf(planet.atm_pressure, 0.0, 3.0) + (0.006 if planet.has_tag("toxic_atmosphere") else 0.0)
 	env.fog_sky_affect = 0.3
+	if view == "cave":
+		# Под землёй: тёмный плотный воздух — дальние стены уходят в темноту.
+		env.fog_light_color = Color(0.04, 0.045, 0.055)
+		env.fog_density = 0.06
 	var we := WorldEnvironment.new()
 	we.environment = env
 	add_child(we)
@@ -170,9 +175,10 @@ func _liquids() -> void:
 		add_child(ProtoLiquids.vapor(Vector3(40, terrain.river_level_at(40) + 0.8, 58), Vector3(38, 0.5, 5), river_mat.color, rl.haze))
 	_liquid_surface(lake_mat, terrain.lake_level, func(x, z): return Vector2(x, z).distance_to(terrain.lake_c) < terrain.lake_r + 4.5,
 		Vector3(terrain.lake_c.x, terrain.lake_level + 0.8, terrain.lake_c.y), Vector3(10, 0.5, 10))
-	var floor_y: float = _floor_at(terrain.cave_c) + 0.35
-	_liquid_surface(cave_mat, floor_y, func(x, z): return Vector2(x, z).distance_to(Vector2(terrain.cave_c.x, terrain.cave_c.z)) < terrain.cave_r - 1.0,
-		Vector3(terrain.cave_c.x, floor_y + 0.6, terrain.cave_c.z), Vector3(4, 0.3, 4))
+	var pc: Vector3 = terrain.pool_c()
+	var lv: float = terrain.pool_level()
+	_liquid_surface(cave_mat, lv, func(x, z): return Vector2(x, z).distance_to(Vector2(pc.x, pc.z)) < terrain.pool_r + 1.0,
+		Vector3(pc.x, lv + 0.6, pc.z), Vector3(2.5, 0.3, 2.5))
 
 func _liquid_surface(s: Substance, level: float, area: Callable, vpos: Vector3, vext: Vector3) -> void:
 	var mi := MeshInstance3D.new()
@@ -193,42 +199,123 @@ func _liquid_surface(s: Substance, level: float, area: Callable, vpos: Vector3, 
 # ---------------------------------------------------------------- пещера
 
 func _cave_crystals() -> void:
-	var col: Color = terrain.vein
+	var col: Color = terrain.vein.lerp(Color(0.45, 0.8, 1.0), 0.25)
 	var rng := RandomNumberGenerator.new()
 	rng.seed = seed_value
-	var placed := 0
-	for i in 400:
-		if placed >= 14:
+	var rock := StandardMaterial3D.new()
+	rock.albedo_color = terrain.cliff.lerp(terrain.ground, 0.3).darkened(0.1)
+	rock.roughness = 0.95
+	var glow := ProtoMachines.glow(col, 0.75)
+	var cc: Vector3 = terrain.cave_c
+	# Натёки: сталактиты со свода, сталагмиты с пола.
+	var made := 0
+	for i in 300:
+		if made >= 18:
 			break
-		var dir := Vector3(rng.randf_range(-1, 1), rng.randf_range(-0.6, 0.8), rng.randf_range(-1, 1)).normalized()
-		var p: Vector3 = terrain.cave_c
+		var q := cc + Vector3(rng.randf_range(-1, 1) * terrain.cave_r, 0, rng.randf_range(-1, 1) * terrain.cave_r)
+		if terrain.solid(q.x, q.y, q.z):
+			continue
+		var pcq: Vector3 = terrain.pool_c()
+		if Vector2(q.x, q.z).distance_to(Vector2(pcq.x, pcq.z)) < terrain.pool_r + 0.6 and rng.randf() < 0.8:
+			continue
+		var down := rng.randf() < 0.55
+		var p := q
 		var hit := false
 		for k in 40:
-			p += dir * 0.25
+			p.y += 0.2 if down else -0.2
 			if terrain.solid(p.x, p.y, p.z):
 				hit = true
 				break
 		if not hit:
 			continue
+		if not _clear_of_view(p):
+			continue
+		var len := rng.randf_range(0.3, 1.1) * (1.6 if rng.randf() < 0.2 else 1.0)
 		var c := CylinderMesh.new()
-		c.top_radius = 0.0
-		c.bottom_radius = rng.randf_range(0.12, 0.3)
-		c.height = rng.randf_range(0.6, 1.5)
-		c.radial_segments = 5
+		c.top_radius = rng.randf_range(0.08, 0.22) if down else 0.02
+		c.bottom_radius = 0.02 if down else rng.randf_range(0.1, 0.26)
+		c.height = len
+		c.radial_segments = 7
 		var mi := MeshInstance3D.new()
 		mi.mesh = c
-		mi.material_override = ProtoMachines.glow(col.lerp(Color(0.4, 0.8, 1.0), 0.35), 0.9)
+		mi.material_override = rock
+		mi.position = p + Vector3(0, -len / 2.0 + 0.1 if down else len / 2.0 - 0.1, 0)
 		add_child(mi)
-		mi.position = p - dir * 0.3
-		mi.look_at(mi.position - dir, Vector3.UP if abs(dir.y) < 0.95 else Vector3.RIGHT)
-		mi.rotate_object_local(Vector3.RIGHT, PI / 2.0)
-		placed += 1
-	var l := OmniLight3D.new()
-	l.light_color = col
-	l.light_energy = 1.4
-	l.omni_range = 9.0
-	l.position = terrain.cave_c
-	add_child(l)
+		made += 1
+	# Друзы кристаллов на стенах там, где выходит жила; у крупных — свой свет.
+	var lights := 0
+	made = 0
+	for i in 600:
+		if made >= 9:
+			break
+		# Друзы ниже середины стен и на полу — их видно в луче фары, они «стоят», а не висят.
+		var dir := Vector3(rng.randf_range(-1, 1), rng.randf_range(-0.9, 0.15), rng.randf_range(-1, 1)).normalized()
+		var p := cc
+		var hit := false
+		for k in 60:
+			p += dir * 0.2
+			if terrain.solid(p.x, p.y, p.z):
+				hit = true
+				break
+		if not hit:
+			continue
+		if not _clear_of_view(p):
+			continue
+		var nrm := _normal_at(p)
+		var base := p - dir * 0.05
+		var cnt := rng.randi_range(3, 6)
+		for m in cnt:
+			var tilt := (nrm + Vector3(rng.randf_range(-0.5, 0.5), rng.randf_range(-0.5, 0.5), rng.randf_range(-0.5, 0.5))).normalized()
+			var len := rng.randf_range(0.4, 1.1) * (1.5 if m == 0 else 1.0)
+			var pr := CylinderMesh.new()
+			pr.top_radius = 0.0
+			pr.bottom_radius = rng.randf_range(0.07, 0.17)
+			pr.height = len
+			pr.radial_segments = 6
+			var ci := MeshInstance3D.new()
+			ci.mesh = pr
+			ci.material_override = glow
+			var y := tilt
+			var ref := Vector3.UP if absf(y.dot(Vector3.UP)) < 0.9 else Vector3.RIGHT
+			var x := y.cross(ref).normalized()
+			ci.transform = Transform3D(Basis(x, y, x.cross(y)), base + tilt * len * 0.45 + Vector3(rng.randf_range(-0.12, 0.12), rng.randf_range(-0.12, 0.12), rng.randf_range(-0.12, 0.12)))
+			add_child(ci)
+		if lights < 4:
+			var l := OmniLight3D.new()
+			l.light_color = col
+			l.light_energy = 1.6
+			l.omni_range = 6.0
+			l.position = base + nrm * 0.7
+			add_child(l)
+			lights += 1
+		made += 1
+
+## Место робота в пещере и желаемая точка камеры: [робот, цель взгляда, камера].
+func _cave_spot() -> Array:
+	var cc: Vector3 = terrain.cave_c
+	var rp := Vector3(cc.x - 4.0, cc.y + 1.0, cc.z + 3.0)
+	rp.y = terrain.floor_at(rp)
+	var tg := Vector3(cc.x + 3.0, rp.y, cc.z - 3.0)
+	var f := (tg - rp).normalized()
+	var r := f.cross(Vector3.UP).normalized()
+	return [rp, tg, rp - f * 4.2 + r * 2.0 + Vector3(0, 2.8, 0)]
+
+## Не загораживать кадр: у робота и на линии к камере натёков и друз нет.
+func _clear_of_view(p: Vector3) -> bool:
+	var sp := _cave_spot()
+	var a: Vector3 = sp[0]
+	var b: Vector3 = sp[2]
+	var ab := b - a
+	var t := clampf((p - a).dot(ab) / ab.length_squared(), 0.0, 1.0)
+	return p.distance_to(a + ab * t) > 2.2
+
+## Нормаль поверхности породы по полю плотности (наружу, в воздух).
+func _normal_at(p: Vector3) -> Vector3:
+	var e := 0.3
+	var g := Vector3(terrain.density(p.x + e, p.y, p.z) - terrain.density(p.x - e, p.y, p.z),
+		terrain.density(p.x, p.y + e, p.z) - terrain.density(p.x, p.y - e, p.z),
+		terrain.density(p.x, p.y, p.z + e) - terrain.density(p.x, p.y, p.z - e))
+	return (-g).normalized()
 
 # ---------------------------------------------------------------- завод
 
@@ -330,9 +417,9 @@ func _robot_and_camera() -> void:
 			cam.position = rp2 - f2 * 5.0 + f2.cross(Vector3.UP).normalized() * 1.5 + Vector3(0, 3.5, 0)
 			cam.look_at(rp2 + f2 * 20.0 + Vector3(0, -3.0, 0))
 		"cave":
-			var cc: Vector3 = terrain.cave_c
-			var rp3 := Vector3(cc.x - 2.0, cc.y, cc.z + 2.0)
-			rp3.y = _floor_at(rp3)
+			# Робот у края зала лицом к центру; камера над плечом смотрит вдоль зала.
+			var sp := _cave_spot()
+			var rp3: Vector3 = sp[0]
 			robot.position = rp3
 			if robot is ProtoRobot:
 				(robot as ProtoRobot).walk = false
@@ -340,15 +427,17 @@ func _robot_and_camera() -> void:
 			else:
 				var eye := robot.find_child("eye_light", true, false) as OmniLight3D
 				if eye:
-					eye.light_energy = 2.5
-			var tg3 := Vector3(cc.x + 3.0, rp3.y, cc.z - 3.0)
+					eye.light_energy = 1.0
+					eye.omni_range = 5.0
+				var lamp := robot.find_child("head_lamp", true, false) as SpotLight3D
+				if lamp:
+					lamp.light_energy = 4.0
+				robot.add_child(_dust())
+			var tg3: Vector3 = sp[1]
 			robot.look_at(tg3, Vector3.UP, true)
 			var f3 := (tg3 - rp3).normalized()
-			var cp := rp3 - f3 * 2.6 + Vector3(0, 2.0, 0)
-			if terrain.solid(cp.x, cp.y, cp.z):
-				cp = cc + Vector3(-1.0, 1.0, 1.0)
-			cam.position = cp
-			cam.look_at(tg3 + Vector3(0, 1.0, 0))
+			cam.position = _spring(rp3 + Vector3(0, 1.6, 0), sp[2])
+			cam.look_at(rp3 + f3 * 3.5 + Vector3(0, 0.3, 0))
 		_:
 			var rp := Vector3(pc.x + 5.0, 0, pc.z + 4.0)
 			rp.y = terrain.surface_h(rp.x, rp.z)
@@ -367,6 +456,46 @@ func _floor_at(p: Vector3) -> float:
 	while y > 1.0 and not terrain.solid(p.x, y - 0.1, p.z):
 		y -= 0.1
 	return y
+
+## Камера на пружинной штанге: от опоры к желаемой точке, пока не упрётся в породу.
+func _spring(from: Vector3, want: Vector3) -> Vector3:
+	var d := want - from
+	var steps := int(d.length() / 0.15) + 1
+	var last := from
+	for i in range(1, steps + 1):
+		var q := from + d * (float(i) / steps)
+		if terrain.solid(q.x, q.y, q.z) or terrain.solid(q.x, q.y + 0.3, q.z):
+			return last - d.normalized() * 0.2
+		last = q
+	return want
+
+## Пылинки в луче фары.
+func _dust() -> CPUParticles3D:
+	var p := CPUParticles3D.new()
+	p.amount = 45
+	p.lifetime = 6.0
+	p.preprocess = 6.0
+	p.emission_shape = CPUParticles3D.EMISSION_SHAPE_BOX
+	p.emission_box_extents = Vector3(1.5, 0.8, 2.5)
+	p.position = Vector3(0, 1.4, 4.0)
+	p.direction = Vector3(0, 0.2, 0)
+	p.spread = 180.0
+	p.gravity = Vector3(0.02, -0.01, 0)
+	p.initial_velocity_min = 0.02
+	p.initial_velocity_max = 0.08
+	p.scale_amount_min = 0.004
+	p.scale_amount_max = 0.01
+	var q := SphereMesh.new()
+	q.radius = 1.0
+	q.height = 2.0
+	q.radial_segments = 4
+	q.rings = 2
+	var m := StandardMaterial3D.new()
+	m.albedo_color = Color(0.9, 0.9, 0.85)
+	m.roughness = 1.0
+	q.material = m
+	p.mesh = q
+	return p
 
 func _caption() -> void:
 	var layer := CanvasLayer.new()

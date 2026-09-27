@@ -1051,6 +1051,18 @@ static func _clean(n: Node3D, hull_col: Color) -> void:
 	eye.omni_range = 9.0
 	eye.position = Vector3(0, 0, 0.3)
 	hd.add_child(eye)
+	# Фара — прожектор вперёд (включается в пещерах).
+	var lamp := SpotLight3D.new()
+	lamp.name = "head_lamp"
+	lamp.light_color = Color(0.85, 0.95, 1.0)
+	lamp.light_energy = 0.0
+	lamp.spot_range = 14.0
+	lamp.spot_angle = 26.0
+	lamp.spot_attenuation = 0.8
+	lamp.shadow_enabled = false
+	lamp.position = Vector3(0, 0, 0.12)
+	lamp.rotation = Vector3(-0.3, PI, 0)
+	hd.add_child(lamp)
 	_grab(n, k0, chest, s.waist)
 	# --- Руки.
 	for side in ["l", "r"]:
