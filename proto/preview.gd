@@ -1,6 +1,6 @@
 extends Node3D
 ## Предпросмотр объёмного 3D-визуала (к игре не подключён).
-##   godot --path . res://proto/preview.tscn -- --seed=14 --view=third|plan|cave|overview --screenshot=путь.png
+##   godot --path . res://proto/preview.tscn -- --seed=14 --view=third|plan|cave|overview|vista|flora --screenshot=путь.png
 ##   --play — ходить самому (WASD, Shift — бег, Пробел — прыжок, камера мышью —
 ##   курсор захвачен, клик захватывает; Esc / Start — пауза, в ней Настройки →
 ##   Управление: переназначение, чувствительность, инверсия
@@ -60,6 +60,7 @@ var shot_path := ""
 var planet: Planet
 var terrain: ProtoTerrain
 var style: ProtoWorldStyle
+var flora: ProtoFlora          # органика планеты (ProtoFlora)
 var robot: Node3D
 var robot_design := "clean"
 var cam: Camera3D
@@ -184,6 +185,8 @@ func _ready() -> void:
 	terrain = ProtoTerrain.new(seed_value, style)
 	print("Облик планеты: ", style.summary())
 	_palette()
+	flora = ProtoFlora.for_planet(planet, style, seed_value)
+	flora.attach(terrain)
 	_lap("planet")
 	terrain.build_field()
 	_lap("terrain_field")
@@ -212,9 +215,13 @@ func _ready() -> void:
 	_lap("cave_crystals")
 	_surface_features()
 	_lap("surface_features")
+	_flora()
+	_lap("flora")
 	_factory()
 	_lap("factory")
 	_robot_and_camera()
+	if view == "flora" and flora.best != Vector3.INF:
+		_flora_shot()
 	_caption()
 	_map_data()
 	_lap("robot")
@@ -708,6 +715,46 @@ func _surface_features() -> void:
 			_mushroom(p, rng.randf_range(0.35, 0.9), rng)
 			made += 1
 
+## Инопланетная органика по тегам (ProtoFlora): мох, заросли, пещерные трутовики.
+func _flora() -> void:
+	var keep := func(p: Vector3) -> bool:
+		return not terrain.cave_box.has_point(p) or _clear_of_view(p)
+	var meshes := flora.build(self, terrain, keep, ProtoDeck.active)
+	print("Флора: %s; %d растений, %d вершин, %d сеток" % [flora.summary(), flora.plants, flora.verts(), meshes])
+
+## --view=flora: робот у самых густых зарослей, камера из-за плеча на них.
+func _flora_shot() -> void:
+	var tg := flora.best
+	# Откуда смотреть: посуше и поровнее, в 4,5 м от зарослей.
+	var d := Vector3.FORWARD
+	var rp := tg
+	var best_h := -INF
+	for i in 12:
+		var dd := Vector3(cos(TAU * i / 12.0), 0, sin(TAU * i / 12.0))
+		var q := tg - dd * 4.5
+		q.y = terrain.floor_at(Vector3(q.x, terrain.sy, q.z))
+		var dry := q.y - maxf(terrain.lake_level, terrain.river_level_at(q.x))
+		var score := minf(dry, 1.0) - absf(q.y - tg.y) * 0.3
+		if style.volcano and Vector2(q.x, q.z).distance_to(ProtoTerrain.VOLC_C) < 11.0:
+			score -= 5.0
+		# Камера за спиной должна видеть заросли, а не стену расщелины.
+		var cp := q - dd * 4.0 + Vector3(0, 2.4, 0)
+		for k in 10:
+			var m := cp.lerp(tg + Vector3(0, 0.8, 0), k / 10.0)
+			if terrain.solid(m.x, m.y, m.z):
+				score -= 2.0
+				break
+		if score > best_h:
+			best_h = score
+			d = dd
+			rp = q
+	robot.position = rp
+	robot.look_at(Vector3(tg.x, rp.y, tg.z), Vector3.UP, true)
+	var r := d.cross(Vector3.UP).normalized()
+	cam.position = rp - d * 4.0 + r * 1.6 + Vector3(0, 2.4, 0)
+	cam.position.y = maxf(cam.position.y, terrain.surface_h(cam.position.x, cam.position.z) + 1.2)
+	cam.look_at(tg + Vector3(0, 0.8, 0))
+
 ## Друза: главный кристалл и поросль вокруг, веером от поверхности.
 func _druze(base: Vector3, nrm: Vector3, main_len: float, cmat: Material, rng: RandomNumberGenerator) -> void:
 	# Друза на поверхности не бурится — одной сеткой.
@@ -1014,8 +1061,9 @@ func _caption() -> void:
 	l.add_theme_color_override("font_outline_color", Color(0, 0, 0))
 	l.add_theme_constant_override("outline_size", 5)
 	var liq := _liquid_mats().map(func(m): return "%s %s" % [m.name, ", ".join(PackedStringArray(m.tags.map(func(t): return MaterialTags.display(t))))])
-	l.text = "%s (seed %d) — %s\n%.0f °C, %.2f атм, %.1f g, вид: %s\n%s\nЖидкости: %s" % [planet.name, seed_value,
+	l.text = "%s (seed %d) — %s\n%.0f °C, %.2f атм, %.1f g, вид: %s\n%s; %s\nЖидкости: %s" % [planet.name, seed_value,
 		", ".join(PackedStringArray(planet.tags.map(func(t): return PlanetTags.display(t)))), planet.ambient_temp, planet.atm_pressure, planet.gravity, view, style.summary(),
+		flora.summary(),
 		"; ".join(PackedStringArray(liq)) if not liq.is_empty() else "нет"]
 	if hazard != null:
 		l.text += "; %s в озере" % hazard.name.to_lower()
