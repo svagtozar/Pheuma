@@ -28,6 +28,7 @@ var ground := Color(0.36, 0.31, 0.26)
 var cliff := Color(0.3, 0.27, 0.25)
 var vein := Color(0.5, 0.8, 1.0)
 var outcrops: Array = []        # цвета материалов, выходящих на поверхность пятнами
+var bio := Callable()           # (x, z) → цвет поросли, a — доля (ProtoFlora.carpet)
 var patch_noise := FastNoiseLite.new()
 
 var style: ProtoWorldStyle
@@ -702,6 +703,10 @@ func _color_h(p: Vector3, n: Vector3, vein_m: float, h: float) -> Color:
 			if pn > 0.35:
 				var k := int(floor((patch_noise.get_noise_2d(p.x * 0.3 + 100.0, p.z * 0.3) + 1.0) * 0.5 * outcrops.size())) % outcrops.size()
 				c = c.lerp(outcrops[k], clamp((pn - 0.35) * 3.0, 0.0, 0.5))
+		# Поросль ковром по ровному (у живых планет).
+		if bio.is_valid() and n.y > 0.5 and depth < 0.5:
+			var bc: Color = bio.call(p.x, p.z)
+			c = c.lerp(Color(bc.r, bc.g, bc.b), bc.a * clampf((n.y - 0.5) * 3.0, 0.0, 1.0))
 	c = c * (0.94 + 0.12 * noise.get_noise_2d(p.x * 5.0, p.z * 5.0))
 	c.a = 1.0
 	return c
