@@ -40,6 +40,6 @@ func test_builds_batched_meshes():
 	var n := f.build(root, t, func(_q): return true)
 	assert_gt(f.plants, 100, "растений много")
 	assert_between(n, 1, 30, "склеены по кускам — десятки сеток, не тысячи")
-	assert_eq(root.get_child_count(), n)
+	assert_eq(f.node.get_child_count(), n, "все куски — под общим узлом флоры")
 	assert_lt(f.verts(), 400000, "в пределах бюджета вершин")
 	assert_true(t.bio.is_valid(), "ковёр поросли красит грунт")

@@ -11,8 +11,11 @@ class FakeRoot:
 	var robot: Node3D
 	var pneu = null
 	var restored: Array = []
+	var restored_cut: Array = []
 	func restore_mined(ids: Array) -> void:
 		restored = ids
+	func restore_cut(ids: Array) -> void:
+		restored_cut = ids
 
 var _dir := ""
 
@@ -44,6 +47,7 @@ func test_robot_cargo_and_mined_roundtrip():
 	var derived := a.planet.db.derive(ore, ["dense", "porous"] if ore.tags != ["dense", "porous"] else ["porous", "metallic"])
 	a.robot.set_meta("cargo", [Portion.new(ore, 4.5, 20.0), Portion.new(derived, 1.5, 300.0)])
 	a.set_meta("mined", [2, 5])
+	a.set_meta("cut", [4, 40, 400])
 	assert_eq(ProtoSave.write(a), "")
 	assert_eq(ProtoSave.last_seed(), 21)
 
@@ -60,6 +64,7 @@ func test_robot_cargo_and_mined_roundtrip():
 	assert_almost_eq(cargo[1].temp, 300.0, 0.001)
 	assert_eq(b.get_meta("mined"), [2, 5])
 	assert_eq(b.restored, [2, 5], "корень узнал, какие друзы уже добыты")
+	assert_eq(b.restored_cut, [4, 40, 400], "…и какие растения срезаны")
 
 func test_each_planet_has_own_file():
 	var a := _root(3)
