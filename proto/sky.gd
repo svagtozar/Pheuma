@@ -14,7 +14,8 @@ static func palette(planet: Planet, terrain: ProtoTerrain) -> void:
 
 ## Цвет грунта по тегам (рельеф, диск планеты в меню).
 static func ground_color(planet: Planet) -> Color:
-	var c := Color(0.36, 0.31, 0.26)
+	var r := Rng.new(planet.seed_value).fork("ground")
+	var c: Color = ROCKS[r.range_i(0, ROCKS.size() - 1)]
 	if planet.has_tag("volcanic"): c = Color(0.30, 0.20, 0.18)
 	if planet.has_tag("frozen"): c = Color(0.62, 0.68, 0.74)
 	if planet.has_tag("oceanic"): c = Color(0.25, 0.36, 0.30)
@@ -22,7 +23,17 @@ static func ground_color(planet: Planet) -> Color:
 	if planet.has_tag("toxic_atmosphere"): c = c.lerp(Color(0.4, 0.45, 0.2), 0.25)
 	if planet.has_tag("fungal_biosphere"): c = c.lerp(Color(0.42, 0.33, 0.4), 0.3)
 	if planet.has_tag("anomalous_field"): c = c.lerp(Color(0.4, 0.3, 0.5), 0.3)
-	return c
+	# Свой оттенок у каждой планеты, даже с одинаковыми тегами.
+	return Color.from_hsv(fposmod(c.h + r.range_f(-0.05, 0.05), 1.0), clampf(c.s * r.range_f(0.8, 1.3), 0.0, 1.0),
+		clampf(c.v * r.range_f(0.85, 1.15), 0.0, 1.0))
+
+## Породы без особых тегов: бурая, охра, ржавая, базальт, светлый песок, сланец, зеленоватая.
+const ROCKS := [Color(0.36, 0.31, 0.26), Color(0.48, 0.36, 0.22), Color(0.45, 0.24, 0.18), Color(0.30, 0.30, 0.31),
+	Color(0.58, 0.52, 0.42), Color(0.28, 0.31, 0.36), Color(0.33, 0.36, 0.27)]
+## Небо без особых тегов: голубое, бирюзовое, сиреневое, пыльно-янтарное, розоватое.
+const SKIES := [[Color(0.25, 0.42, 0.7), Color(0.7, 0.72, 0.75)], [Color(0.18, 0.5, 0.55), Color(0.65, 0.78, 0.76)],
+	[Color(0.38, 0.33, 0.62), Color(0.75, 0.7, 0.8)], [Color(0.55, 0.45, 0.3), Color(0.82, 0.72, 0.55)],
+	[Color(0.55, 0.35, 0.42), Color(0.85, 0.7, 0.68)]]
 
 ## Твёрдые при температуре планеты материалы.
 static func solid_mats(planet: Planet) -> Array:
@@ -39,10 +50,13 @@ static func mat_with(planet: Planet, tag: String):
 ## Возвращает {"env": Environment, "world_env": WorldEnvironment, "sun": DirectionalLight3D,
 ## "particles": CPUParticles3D или null}.
 static func build(planet: Planet, parent: Node, cave := false) -> Dictionary:
-	var sky_top := Color(0.25, 0.42, 0.7)
-	var horizon := Color(0.7, 0.72, 0.75)
+	var r := Rng.new(planet.seed_value).fork("sky")
+	var sk: Array = SKIES[r.range_i(0, SKIES.size() - 1)]
+	var sky_top: Color = sk[0]
+	var horizon: Color = sk[1]
 	var sun_col := Color(1.0, 0.96, 0.9)
-	var sun_pitch := -48.0
+	var sun_pitch := r.range_f(-58.0, -36.0)
+	var sun_yaw := r.range_f(-80.0, 10.0)
 	if planet.has_tag("volcanic"):
 		sky_top = Color(0.3, 0.2, 0.18); horizon = Color(0.7, 0.5, 0.38); sun_col = Color(1.0, 0.7, 0.5); sun_pitch = -22.0
 	if planet.has_tag("frozen"):
@@ -84,7 +98,7 @@ static func build(planet: Planet, parent: Node, cave := false) -> Dictionary:
 	sun.light_color = sun_col
 	sun.light_energy = 1.35
 	sun.shadow_enabled = true
-	sun.rotation_degrees = Vector3(sun_pitch, -35.0, 0)
+	sun.rotation_degrees = Vector3(sun_pitch, sun_yaw, 0)
 	parent.add_child(sun)
 	var p := _particles(planet)
 	if p != null:
