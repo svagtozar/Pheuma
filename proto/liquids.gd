@@ -20,6 +20,8 @@ uniform vec2 flow = vec2(0.0);     // течение, м/с (река): поло
 uniform float rip_speed = 1.6;     // скорость кругов на воде, м/с
 uniform float rip_damp = 1.2;      // затухание кругов, 1/с
 uniform vec4 rip[8];               // круги: x, z, возраст (с), сила; сила 0 — нет
+uniform bool vheat = false;        // живая лава (ProtoFlow): цвет вершины r — жар, остывшее — корка
+varying float vh;
 
 float hash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
 float vnoise(vec2 p) {
@@ -50,6 +52,7 @@ float waves(vec2 p, float t) {
 void vertex() {
 	vec3 w = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
 	float t = TIME * speed;
+	vh = vheat ? COLOR.r : 1.0;
 	VERTEX.y += waves(w.xz, t) + ripples(w.xz) * 0.06;
 }
 
@@ -74,16 +77,18 @@ void fragment() {
 	}
 	col += vec3(clamp(h0, 0.0, 1.0)) * 0.5 * (1.0 - crust);
 	float c = smoothstep(0.55, 0.7, vnoise(uv * 0.7 + vec2(t * 0.05, 0.0) - fl * 0.2)) * crust;
-	col = mix(col, vec3(0.08, 0.06, 0.05), c);
+	// Остывая, лава затягивается коркой с краёв пятен, пока не застынет целиком.
+	c = max(c, 1.0 - smoothstep(0.15, 0.65, vh + (vnoise(uv * 1.7) - 0.5) * 0.3));
+	col = mix(col, vec3(0.045, 0.04, 0.042) * (0.7 + 0.6 * vnoise(uv * 4.0)), c);
 	float b = step(0.93, vnoise(uv * 6.0 + vec2(0.0, t * 1.5))) * bubbles;
 	col += vec3(b) * 0.6;
 	vec3 nm = vec3(0.5 + (r - 0.5) * 0.6 * wave - grad.x * 0.1, 0.5 + (vnoise(uv * 2.0 + t) - 0.5) * 0.6 * wave - grad.y * 0.1, 1.0);
 	if (FRONT_FACING) {
 		ALBEDO = col;
 		ALPHA = mix(base_color.a, 1.0, c);
-		METALLIC = metal;
-		ROUGHNESS = rough + r * 0.04;
-		SPECULAR = 0.8;
+		METALLIC = metal * (1.0 - c);
+		ROUGHNESS = mix(rough + r * 0.04, 0.9, c);
+		SPECULAR = mix(0.8, 0.05, c);
 		EMISSION = base_color.rgb * glow * (1.0 - c) * (0.7 + 0.6 * r);
 	} else {
 		// Снизу: светлое колышущееся «окно» неба, по краям ряби — блики.
