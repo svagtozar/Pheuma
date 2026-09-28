@@ -159,8 +159,16 @@ func test_machine_parts_move_only_while_working():
 		var still := anims.map(func(a): return a.transform if a is Node3D else Transform3D())
 		MachineKit.animate(n, false, 1.3, 0.1)
 		assert_eq(anims.map(func(a): return a.transform if a is Node3D else Transform3D()), still, "%s: в простое стоит" % kind)
-		MachineKit.animate(n, true, 1.3, 0.1)
-		assert_ne(anims.map(func(a): return a.transform if a is Node3D else Transform3D()), still, "%s: в работе движется" % kind)
+		# Фаза у каждой машины своя (пресс большую часть такта стоит внизу):
+		# смотрим несколько моментов.
+		var moved := false
+		for i in 8:
+			MachineKit.animate(n, true, 1.3 + i * 0.17, 0.1)
+			var now := anims.map(func(a): return a.transform if a is Node3D else Transform3D())
+			for j in now.size():
+				if not (now[j] as Transform3D).is_equal_approx(still[j]):
+					moved = true
+		assert_true(moved, "%s: в работе движется" % kind)
 		MachineKit.animate(n, false, 2.0, 0.1)
 		for a in anims:
 			if a is CPUParticles3D:
