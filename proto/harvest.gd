@@ -16,6 +16,7 @@ extends Node3D
 ##   (ProtoSave).
 
 const REACH := 1.35          # м от плеча до точки среза
+const AIM_TOL := 0.5          # луч прицела проходит мимо растения не дальше, м
 const MOW_R := 0.6           # полоса выкоса вокруг мелкой поросли, м
 const LOW := ["moss", "tuft", "curls"]
 const NAMES := {"moss": "мох", "tuft": "щетину", "curls": "завитки", "frond": "ваи",
@@ -23,6 +24,9 @@ const NAMES := {"moss": "мох", "tuft": "щетину", "curls": "завитк
 	"shelf": "трутовик"}
 const CELL := 2.0
 
+var aim_from := Vector3.INF  # луч прицела из камеры (ProtoPlayer); INF — без прицела
+var aim_dir := Vector3.ZERO
+var aim_hit := Vector3.INF
 var flora: ProtoFlora
 var mining: ProtoMining      # подсказка, полоса прогресса и груз — общие с буром
 var sub: Substance
@@ -148,6 +152,8 @@ func pick(r: Node3D) -> int:
 	var c0 := Vector2i(floori(sh.x / CELL), floori(sh.z / CELL))
 	var best := -1
 	var best_d := INF
+	var aimed := aim_from != Vector3.INF
+	var ground := aimed and ProtoMining.aim_claims_ground(aim_hit, r.to_global(Vector3(0.23, 1.4, 0.1)))
 	for dx in range(-1, 2):
 		for dz in range(-1, 2):
 			for i: int in _cells.get(c0 + Vector2i(dx, dz), []):
@@ -161,6 +167,17 @@ func pick(r: Node3D) -> int:
 				var flat := Vector3(q.x - rp.x, 0, q.z - rp.z)
 				if flat.length() > 0.2 and flat.normalized().dot(Vector3(fwd.x, 0, fwd.z).normalized()) < 0.0:
 					continue
+				if aimed:
+					# С перекрестьем — растение, мимо которого прошёл луч; иначе
+					# (порода под прицелом близко) бур копает грунт.
+					var w := flora.node.to_global(q)
+					var along := maxf(0.0, (w - aim_from).dot(aim_dir))
+					var off := (aim_from + aim_dir * along).distance_to(w) - clampf(float(it.h) * 0.3, 0.0, 0.5)
+					if off > AIM_TOL:
+						if ground:
+							continue
+					else:
+						d -= 1.0 - off
 				# Крупное — чуть приоритетнее мелочи.
 				d -= float(it.h) * 0.2
 				if d < best_d:

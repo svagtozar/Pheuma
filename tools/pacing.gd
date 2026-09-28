@@ -339,6 +339,10 @@ func drill_trip(want: float) -> void:
 		var to: Vector3 = c.global_position - r.global_position
 		r.rotation.y = atan2(to.x, to.z) - 0.25
 		var before := run.cargo_mass()
+		# Как игрок: перекрестье на кристалл (бур берёт то, что под прицелом).
+		var ax := ProtoMining.axis(c)
+		game.get_node("player").aim_goal = (ax[0] + ax[1]) * 0.5
+		await frames(int(0.5 * FPS))
 		if OS.has_environment("PACE_DEBUG"):
 			await frames(2)
 			var hh: ProtoHealth = game.health
@@ -360,6 +364,7 @@ func drill_trip(want: float) -> void:
 			if game.health.is_wrecked():
 				break
 		Input.action_release(ProtoControls.WORK)
+		game.get_node("player").aim_goal = Vector3.INF
 		if OS.has_environment("PACE_DEBUG"):
 			print("   выход k=", k, " valid ", is_instance_valid(c), " broken ", is_instance_valid(c) and c.has_meta("broken"), " wreck ", game.health.is_wrecked(), " груз ", run.cargo_mass(), " mined_total ", m.mined_total, " falling ", m.falling.size())
 		# Куски долетают до робота.

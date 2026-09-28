@@ -219,12 +219,50 @@ func test_digger_digs_ahead_and_fills_back():
 	d.setup(t, [], robot)
 	var at := d.dig_point()
 	var before := t.floor_at(at + Vector3(0, 3, 0))
-	assert_true(d.step(0.1, true, false), "бур без кристалла копает")
-	assert_eq(d.soil, 1)
+	assert_true(d.step(0.05, true, false), "бур без кристалла копает")
+	var n := t.edits.size()
+	var s1 := d.soil
+	for i in 8:
+		d.step(0.05, true, false)
+	assert_eq(t.edits.size(), n, "лунка растёт, а не множится правками")
+	assert_gt(d.soil, s1, "грунт прибывает плавно")
 	assert_lt(t.floor_at(at + Vector3(0, 3, 0)), before - 0.4)
-	d._t = 0.0
-	d.step(0.1, false, true)
-	assert_eq(d.soil, 0, "грунт насыпан обратно")
-	d.step(0.1, false, true)
+	for i in 60:
+		d.step(0.05, false, true)
+	assert_almost_eq(d.soil, 0.0, 0.001, "грунт насыпан обратно")
+	d.step(0.05, false, true)
 	assert_string_contains(d.status, "грунта нет")
 	assert_true(InputMap.has_action(ProtoDigger.FILL))
+
+## Прицел: бур вгрызается туда, куда смотрит перекрестье — в стену, не только вниз.
+func test_digger_digs_toward_aim_and_brush_spares_robot():
+	var t := _terrain()
+	var root: Node3D = add_child_autofree(Node3D.new())
+	var robot := Node3D.new()
+	root.add_child(robot)
+	var x := 59.0
+	var z := 30.0
+	var g := t.surface_h(x, z)
+	robot.position = Vector3(x, g, z)
+	var d: ProtoDigger = add_child_autofree(ProtoDigger.new())
+	d.setup(t, [], robot)
+	# Точка сбоку и выше пола — как стена перед роботом.
+	var wall := Vector3(x + 2.0, g + 1.2, z)
+	d.aim = wall
+	d.aim_dir = Vector3.RIGHT
+	for i in 12:
+		d.step(0.05, true, false)
+	var e: Array = t.edits[t.edits.size() - 1]
+	assert_almost_eq((e[0] as Vector3).y, g + 1.2, 0.01, "лунка на высоте прицела, не в полу")
+	assert_gt((e[0] as Vector3).x, wall.x, "и чуть глубже по лучу")
+	d.aim = Vector3(x + 20.0, g, z)
+	d.step(0.05, true, false)
+	assert_string_contains(d.status, "далеко")
+	# Кисть у самых ног — насыпь не растёт на корпус.
+	d.soil = 3.0
+	d.aim = robot.position + Vector3(0.5, 0.1, 0)
+	d.aim_dir = Vector3.DOWN
+	for i in 20:
+		d.step(0.05, false, true)
+	if t.edits[t.edits.size() - 1][2] > 0.0:
+		assert_lt(float(t.edits[t.edits.size() - 1][1]), 0.6, "насыпь не накрывает робота")
