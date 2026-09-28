@@ -65,6 +65,8 @@ var route_len := 0.0
 var route_done := 0.0
 var fist: RobotFist
 var mining: ProtoMining
+var digger: ProtoDigger        # бур без кристалла копает грунт, H / D-pad влево — насыпь
+var fill_auto := false         # проверки: насыпать без кнопки
 var harvest: ProtoHarvest     # срез растений тем же буром (есть, если на планете жизнь)
 var health: ProtoHealth       # прочность корпуса: удар при приземлении, вязкость жидкости
 
@@ -311,6 +313,24 @@ func _mine(dt: float) -> void:
 	# Нет кристалла под прицелом — бур срезает растения (ProtoHarvest).
 	if harvest:
 		harvest.step(dt, robot, anim.work, anim.drill_out, mining.target == null)
+	# Ни кристалла, ни растения под прицелом — бур копает грунт (ProtoDigger), H — насыпает.
+	if digger != null:
+		var building := false
+		var b := get_parent().get_node_or_null("builder") if get_parent() else null
+		if b != null:
+			building = bool(b.get("active"))
+		var busy: bool = robot.get_meta("ui_busy", false) or get_tree().paused
+		var free: bool = mining.target == null and (harvest == null or harvest.target < 0)
+		var digging := free and anim.work > 0.6 and anim.drill_out > 0.95
+		var fill := fill_auto or (not busy and not building and Input.is_action_pressed(ProtoDigger.FILL))
+		digger.step(dt, digging, fill)
+		if free and anim.work > 0.05:
+			anim.work_target = robot.to_local(digger.dig_point())
+			if digging:
+				mining.sparks.global_position = digger.dig_point()
+				mining.crumbs.global_position = digger.dig_point()
+				mining.crumbs.emitting = true
+			return
 	var contact := Vector3.INF
 	var base := Vector3.INF
 	if mining.target:
@@ -585,8 +605,21 @@ func _move(d: Vector3) -> void:
 	var body := maxf(g, robot.position.y)
 	# Плывя — выбирается на берег до пояса.
 	var step := 1.1 if swim else maxf(terrain.style.step_height(), d.length() * 1.6)
-	if (g - robot.position.y) > step or terrain.solid(np.x, body + 1.2, np.z) \
-			or (air and terrain.solid(np.x, robot.position.y + 0.3, np.z)) or (_hits_machine(Vector3(np.x, body, np.z)) and not _hits_machine(robot.position)):
+	if _blocked(np, g, body, step):
+		# Скриптовый маршрут упёрся в породу на уровне груди (низкий свод у входа
+		# в пещеру) — обойти, взяв чуть в сторону, как сделал бы игрок.
+		if not route.is_empty() and not air:
+			for ang in [0.6, -0.6, 1.2, -1.2]:
+				var d2 := d.rotated(Vector3.UP, ang)
+				var np2 := robot.position + d2
+				var g2 := ground_at(np2 + Vector3(0, 0.7, 0))
+				if not _blocked(np2, g2, maxf(g2, robot.position.y), step):
+					d = d2
+					np = np2
+					g = g2
+					body = maxf(g2, robot.position.y)
+					break
+	if _blocked(np, g, body, step):
 		# Скриптовый маршрут упёрся в уступ (не в породу и не в машину) — перескочить,
 		# как сделал бы игрок: иначе проверка (--auto=cave, bench) стоит вечно.
 		if not route.is_empty() and not air and g - robot.position.y < JUMP_MAX_H \
@@ -600,6 +633,13 @@ func _move(d: Vector3) -> void:
 		_land(g, 0.0)
 		return
 	_settle()
+
+## Шаг в np не пройти: уступ выше step, порода на уровне груди (в прыжке — и ног)
+## или машина.
+func _blocked(np: Vector3, g: float, body: float, step: float) -> bool:
+	return (g - robot.position.y) > step or terrain.solid(np.x, body + 1.2, np.z) \
+			or (air and terrain.solid(np.x, robot.position.y + 0.3, np.z)) \
+			or (_hits_machine(Vector3(np.x, body, np.z)) and not _hits_machine(robot.position))
 
 ## Высота и наклон — по видимой сетке рельефа (RobotGround); поле плотности —
 ## запасной вариант, если сетки под роботом нет.

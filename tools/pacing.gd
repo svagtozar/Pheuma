@@ -171,7 +171,7 @@ func _best_card(list: Array) -> String:
 
 ## Путь этапа: тот, что по прикидке быстрее (стройка и бур — быстрее завода).
 func _easier(alt: Array) -> int:
-	var rank := {"p_parts": 0, "p_mine": 1, "p_process": 2, "deliveries": 3, "p_store": 4, "p_pressure": 5}
+	var rank := {"p_parts": 0, "p_mine": 1, "p_process": 2, "deliveries": 3, "p_store": 4, "p_pressure": 5, "p_vent": 6}
 	return 0 if rank.get(alt[0].type, 9) <= rank.get(alt[1].type, 9) else 1
 
 # ---------------------------------------------------------------- решение
@@ -203,6 +203,14 @@ func _step() -> void:
 			await build_one()
 		"p_pressure":
 			if run.net_pressure() < float(st.p) and _pumps() < 8:
+				await build_pump()
+			else:
+				await _feed_or_wait()
+		"p_vent":
+			# Газоотвод у сети и насосы, чтобы газ шёл в небо, а капсулы не встали.
+			if not game.pneu.parts.values().any(func(pt): return pt.kind == "vent"):
+				await build_part("vent")
+			elif _pumps() < 6:
 				await build_pump()
 			else:
 				await _feed_or_wait()
