@@ -44,6 +44,11 @@ var spires: Array = []        # [x, z, радиус основания, высо
 var craters: Array = []       # Vector3(x, z, радиус)
 var fissures: Array = []      # [Vector2 a, Vector2 b, ширина, глубина, рамка]
 var floaters: Array = []      # [центр, радиус]
+# Правки рельефа игроком (бур копает, насыпь): [центр, радиус, +1 насыпь | -1 выемка],
+# по порядку; корзины по XZ — чтобы density() не перебирал все.
+var edits: Array = []
+var _edit_bins := {}          # Vector2i(x/EDIT_BIN, z/EDIT_BIN) → [индексы правок]
+const EDIT_BIN := 8.0
 
 func _init(seed_value: int, st: ProtoWorldStyle = null) -> void:
 	style = st if st != null else ProtoWorldStyle.new()
@@ -369,10 +374,92 @@ func _site_density(x: float, y: float, z: float, h := NAN) -> float:
 	if style.worms > 0.0 and y < h - 4.0 and not cave_box.has_point(Vector3(x, y, z)):
 		var w := absf(noise3.get_noise_3d(x, y * 1.4, z))
 		d = min(d, (w - style.worms) * 30.0)
+	if not edits.is_empty():
+		d = _apply_edits(x, y, z, d)
 	# Пол у края карты и дно — всегда порода.
 	if y < 1.5:
 		d = max(d, 1.0)
 	return d
+
+# ---------------------------------------------------------------- правка рельефа
+
+## Можно ли править рельеф в точке: не площадка завода (она укреплена), не край
+## карты и не дно.
+func can_edit(c: Vector3) -> bool:
+	var q := (Vector2(c.x, c.z) - PAD_C).abs() - PAD_HALF
+	if q.x < 1.0 and q.y < 1.0:
+		return false
+	return c.x > 2.0 and c.z > 2.0 and c.x < sx - 2.0 and c.z < sz - 2.0 and c.y > 2.5 and c.y < sy - 2.0
+
+## Выемка (add = false) или насыпь шаром радиуса r. Поле в узлах вокруг
+## пересчитывается; возвращает задетую область (для перестройки сеток).
+func edit(c: Vector3, r: float, add: bool) -> AABB:
+	var i := edits.size()
+	edits.append([c, r, 1.0 if add else -1.0])
+	for bx in range(floori((c.x - r) / EDIT_BIN), floori((c.x + r) / EDIT_BIN) + 1):
+		for bz in range(floori((c.z - r) / EDIT_BIN), floori((c.z + r) / EDIT_BIN) + 1):
+			var k := Vector2i(bx, bz)
+			if not _edit_bins.has(k):
+				_edit_bins[k] = []
+			_edit_bins[k].append(i)
+	var box := AABB(c - Vector3.ONE * (r + 1.0), Vector3.ONE * (2.0 * r + 2.0))
+	if not dens.is_empty():
+		var sxn := sx + 1
+		var syz := (sx + 1) * (sy + 1)
+		for z in range(maxi(0, floori(box.position.z)), mini(sz, ceili(box.end.z)) + 1):
+			for x in range(maxi(0, floori(box.position.x)), mini(sx, ceili(box.end.x)) + 1):
+				var h := surface_h(x, z)
+				for y in range(maxi(0, floori(box.position.y)), mini(sy, ceili(box.end.y)) + 1):
+					dens[x + sxn * y + syz * z] = density(x, y, z, h)
+	return box
+
+## Правки поверх природного поля: по порядку, как CSG (насыпь после выемки — сверху).
+func _apply_edits(x: float, y: float, z: float, d: float) -> float:
+	var list = _edit_bins.get(Vector2i(floori(x / EDIT_BIN), floori(z / EDIT_BIN)))
+	if list == null:
+		return d
+	var p := Vector3(x, y, z)
+	for i in list:
+		var e: Array = edits[i]
+		var dist: float = p.distance_to(e[0]) - float(e[1])
+		if dist > 0.8:
+			if e[2] > 0.0:
+				d = maxf(d, -dist)
+			else:
+				d = minf(d, dist)
+			continue
+		# Неровный край: лунка и куча не идеальные шары.
+		dist += noise3.get_noise_3d(x * 2.3, y * 2.3, z * 2.3) * 0.18
+		d = maxf(d, -dist) if e[2] > 0.0 else minf(d, dist)
+	return d
+
+## Насколько насыпи подняли верх над природной поверхностью в столбце (x, z).
+func edit_raise(x: float, z: float) -> float:
+	var list = _edit_bins.get(Vector2i(floori(x / EDIT_BIN), floori(z / EDIT_BIN)))
+	if list == null:
+		return 0.0
+	var top := 0.0
+	var h := surface_h(x, z)
+	for i in list:
+		var e: Array = edits[i]
+		if e[2] < 0.0:
+			continue
+		var c: Vector3 = e[0]
+		var dxz := Vector2(x - c.x, z - c.z).length()
+		if dxz < e[1]:
+			top = maxf(top, c.y + sqrt(e[1] * e[1] - dxz * dxz) - h)
+	return top
+
+func edits_to_array() -> Array:
+	return edits.map(func(e): return [e[0].x, e[0].y, e[0].z, e[1], e[2]])
+
+## Правки из сохранения; возвращает задетую область (сетки перестроить).
+func edits_from_array(a: Array) -> AABB:
+	var box := AABB()
+	for e in a:
+		var b := edit(Vector3(float(e[0]), float(e[1]), float(e[2])), float(e[3]), float(e[4]) > 0.0)
+		box = b if box.size == Vector3.ZERO else box.merge(b)
+	return box
 
 ## Расстояние до зала (минус — внутри): эллипсоид по осям стиля; у лавовой
 ## трубы плоский пол, у трещины неровные стены.
@@ -441,6 +528,21 @@ func build_field() -> void:
 	_fill = PackedFloat32Array()
 	lake_level = lake_level_base()
 
+## Узлы области из готового поля (шаг 1 м): origin — угол в узлах.
+func _copy_field(o: Vector3i, n: Vector3i) -> PackedFloat32Array:
+	var out := PackedFloat32Array()
+	out.resize((n.x + 1) * (n.y + 1) * (n.z + 1))
+	var sxn := sx + 1
+	var syz := (sx + 1) * (sy + 1)
+	var j := 0
+	for z in n.z + 1:
+		for y in n.y + 1:
+			var i0 := o.x + sxn * (o.y + y) + syz * (o.z + z)
+			for x in n.x + 1:
+				out[j] = dens[i0 + x]
+				j += 1
+	return out
+
 ## Поле в узлах области (для build_field и детальной сетки) — по слоям z в потоках.
 ## Пишем в член _fill: у локального массива, захваченного лямбдой, каждый поток
 ## делал бы свою копию.
@@ -503,7 +605,13 @@ func build_mesh(origin := Vector3.ZERO, n := Vector3i(-1, -1, -1), cell := 1.0, 
 	# Поле в узлах: для основной сетки уже посчитано, для детальной — считаем.
 	var f := dens
 	var reuse := origin == Vector3.ZERO and cell == 1.0 and n == Vector3i(sx, sy, sz)
-	if not reuse:
+	# Кусок основной сетки (шаг 1 м, узлы внутри поля) — тоже из готового поля.
+	var part := not reuse and not dens.is_empty() and cell == 1.0 and origin == origin.floor() \
+		and origin.x >= 0.0 and origin.y >= 0.0 and origin.z >= 0.0 \
+		and origin.x + nx <= sx and origin.y + ny <= sy and origin.z + nz <= sz
+	if part:
+		f = _copy_field(Vector3i(origin), n)
+	elif not reuse:
 		_fill = PackedFloat32Array()
 		_fill.resize((nx + 1) * (ny + 1) * (nz + 1))
 		_parallel(_fill_slice.bind(origin, n, cell), nz + 1)
@@ -585,6 +693,8 @@ func build_mesh(origin := Vector3.ZERO, n := Vector3i(-1, -1, -1), cell := 1.0, 
 	_attr_uv = PackedVector2Array()
 	_attr_uv.resize(verts.size())
 	_parallel(_attr_chunk, ceili(verts.size() / float(ATTR_CHUNK)))
+	if idx.is_empty():
+		return ArrayMesh.new()        # в куске нет поверхности (весь порода или воздух)
 	var arr := []
 	arr.resize(Mesh.ARRAY_MAX)
 	arr[Mesh.ARRAY_VERTEX] = verts
@@ -688,7 +798,7 @@ func field_at(p: Vector3) -> float:
 
 ## Пол под точкой: вниз по полю плотности до породы (снаружи и в пещере).
 func floor_at(p: Vector3) -> float:
-	var y := minf(p.y, surface_h(p.x, p.z) + 0.5)
+	var y := minf(p.y, surface_h(p.x, p.z) + 0.5 + (edit_raise(p.x, p.z) if not edits.is_empty() else 0.0))
 	if not solid(p.x, y - 0.05, p.z):
 		while y > 1.0 and not solid(p.x, y - 0.1, p.z):
 			y -= 0.1

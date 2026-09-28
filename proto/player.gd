@@ -65,6 +65,9 @@ var route_len := 0.0
 var route_done := 0.0
 var fist: RobotFist
 var mining: ProtoMining
+var digger: ProtoDigger        # бур без кристалла копает грунт, H / D-pad влево — насыпь
+var fill_auto := false         # проверки: насыпать без кнопки
+var harvest: ProtoHarvest     # срез растений тем же буром (есть, если на планете жизнь)
 var health: ProtoHealth       # прочность корпуса: удар при приземлении, вязкость жидкости
 
 # Скриптовая добыча (--auto=drill).
@@ -75,6 +78,7 @@ var drill_t := 0.0
 var drill_got := 0
 var drill_shots := 0
 var drill_prefix := ""
+var harvest_auto := false    # --auto=harvest: тот же сценарий, но срезать растения
 # Скриптовый разбег с прыжком (--auto=jump): кадры бег, взлёт, вершина, приземление.
 var jump_auto := false
 var jump_t := 0.0
@@ -260,7 +264,7 @@ func _process(dt: float) -> void:
 			# Вперёд — от камеры: камера смотрит вдоль (sin yaw, cos yaw).
 			want = move_dir(cam_yaw, inp)
 		if drill_auto:
-			want = _auto_drill_walk()
+			want = _auto_harvest_walk() if harvest_auto else _auto_drill_walk()
 	else:
 		want = _follow_route()
 		top_speed *= 1.7
@@ -306,10 +310,39 @@ func _mine(dt: float) -> void:
 	var tip_n := robot.find_child("drill_tip", true, false) as Node3D
 	var tip := tip_n.global_position if tip_n and anim.drill_out > 0.5 else Vector3.INF
 	mining.step(dt, robot, anim.work, anim.drill_out, tip)
-	if mining.target and anim.work > 0.05:
-		anim.work_target = robot.to_local(mining.contact)
+	# Нет кристалла под прицелом — бур срезает растения (ProtoHarvest).
+	if harvest:
+		harvest.step(dt, robot, anim.work, anim.drill_out, mining.target == null)
+	# Ни кристалла, ни растения под прицелом — бур копает грунт (ProtoDigger), H — насыпает.
+	if digger != null:
+		var building := false
+		var b := get_parent().get_node_or_null("builder") if get_parent() else null
+		if b != null:
+			building = bool(b.get("active"))
+		var busy: bool = robot.get_meta("ui_busy", false) or get_tree().paused
+		var free: bool = mining.target == null and (harvest == null or harvest.target < 0)
+		var digging := free and anim.work > 0.6 and anim.drill_out > 0.95
+		var fill := fill_auto or (not busy and not building and Input.is_action_pressed(ProtoDigger.FILL))
+		digger.step(dt, digging, fill)
+		if free and anim.work > 0.05:
+			anim.work_target = robot.to_local(digger.dig_point())
+			if digging:
+				mining.sparks.global_position = digger.dig_point()
+				mining.crumbs.global_position = digger.dig_point()
+				mining.crumbs.emitting = true
+			return
+	var contact := Vector3.INF
+	var base := Vector3.INF
+	if mining.target:
+		contact = mining.contact
+		base = ProtoMining.axis(mining.target)[0]
+	elif harvest and harvest.target >= 0:
+		contact = harvest.contact
+		base = contact
+	if contact != Vector3.INF and anim.work > 0.05:
+		anim.work_target = robot.to_local(contact)
 		# Доворот — по основанию кристалла (точка касания сама зависит от позы).
-		var to: Vector3 = ProtoMining.axis(mining.target)[0].lerp(mining.contact, 0.5) - robot.position
+		var to: Vector3 = base.lerp(contact, 0.5) - robot.position
 		# Только пока бур выдвигается: во время сверления корпус не крутится.
 		if vel.length() < 0.1 and anim.drill_out < 0.95 and Vector2(to.x, to.z).length() > 0.3:
 			# Доворот плечом к кристаллу: бур в правой руке.
@@ -317,7 +350,7 @@ func _mine(dt: float) -> void:
 			robot.rotation.y = lerp_angle(robot.rotation.y, yaw, minf(1.0, dt * 4.0))
 		if vel.length() < 0.1 and tip != Vector3.INF and anim.drill_out > 0.95:
 			# Налегает на бур: подшагивает, пока острие не упрётся в кристалл.
-			var gap := Vector3(mining.contact.x - tip.x, 0, mining.contact.z - tip.z)
+			var gap := Vector3(contact.x - tip.x, 0, contact.z - tip.z)
 			if gap.length() > 0.05 and Vector2(to.x, to.z).length() > 0.35:
 				_move(gap.normalized() * minf(gap.length() - 0.04, dt * 0.5))
 	else:
@@ -417,6 +450,8 @@ func _drill_view(sp: Vector3, at: Vector3) -> float:
 	return INF
 
 func _auto_drill_use() -> bool:
+	if harvest_auto:
+		return _auto_harvest_use()
 	var at := _at_stand()
 	drill_t += get_process_delta_time()
 	var shot := ""
@@ -448,6 +483,110 @@ func _auto_drill_use() -> bool:
 				drill_got += 1
 	return drill_got < 3
 
+## Скриптовый сбор органики: подойти к крупному растению у самых густых
+## зарослей и срезать его (и что ещё достанет), кадры по событиям.
+func auto_harvest(prefix: String) -> void:
+	drill_prefix = prefix
+	drill_auto = true
+	harvest_auto = true
+	cam_dist = 4.2
+	cam_pitch = 0.36
+	var fl := harvest.flora
+	var near := fl.best if fl.best != Vector3.INF else robot.position
+	var best := -1
+	var best_d := INF
+	for i in fl.items.size():
+		var it: Dictionary = fl.items[i]
+		if it.key == "cave" or ProtoHarvest.LOW.has(it.form):
+			continue
+		var d: float = (it.p as Vector3).distance_to(near) - float(it.h) * 0.5
+		if d < best_d:
+			best_d = d
+			best = i
+	if best < 0:
+		best = 0
+	var p: Vector3 = fl.items[best].p
+	var h: float = fl.items[best].h
+	# Стоянка: в метре от основания, посуше и поровнее, с чистым ракурсом.
+	var off := 0.8 + minf(float(fl.items[best].r) * 0.25, 0.4)
+	for i in 12:
+		var dd := Vector3(cos(TAU * i / 12.0), 0, sin(TAU * i / 12.0))
+		var sp := p + dd * off
+		sp.y = terrain.floor_at(Vector3(sp.x, terrain.sy, sp.z))
+		if absf(sp.y - p.y) > 0.5 or sp.y < maxf(terrain.lake_level, terrain.river_level_at(sp.x)) + 0.1:
+			continue
+		if _drill_view(sp, p + Vector3(0, h * 0.3, 0)) == INF:
+			continue
+		# Не в чужих зарослях: крупное растение рядом со стоянкой закроет кадр.
+		var crowded := false
+		for j in fl.items.size():
+			var o: Dictionary = fl.items[j]
+			if j != best and not ProtoHarvest.LOW.has(o.form) and o.key != "cave" \
+					and Vector2(o.p.x - sp.x, o.p.z - sp.z).length() < float(o.r) + 0.5:
+				crowded = true
+				break
+		if crowded:
+			continue
+		drill_stand = sp
+		break
+	if drill_stand == Vector3.INF:
+		drill_stand = p + Vector3(off, 0, 0)
+		drill_stand.y = terrain.floor_at(Vector3(drill_stand.x, terrain.sy, drill_stand.z))
+	drill_face = p
+	var f := Vector3(p.x - drill_stand.x, 0, p.z - drill_stand.z).normalized()
+	var st := drill_stand - f * 2.2
+	robot.position = fl.node.to_global(Vector3(st.x, terrain.floor_at(Vector3(st.x, terrain.sy, st.z)), st.z))
+	robot.rotation.y = atan2(f.x, f.z)
+	var yaw := _drill_view(drill_stand, p + Vector3(0, h * 0.3, 0))
+	cam_yaw = yaw if yaw != INF else atan2(f.x, f.z) - 2.0
+	_harvest_focus = drill_stand.lerp(p, 0.55) + Vector3(0, 0.5 + h * 0.25, 0)
+	cam_focus = fl.node.to_global(_harvest_focus)
+	print("Сбор: стоянка ", drill_stand, " растение ", fl.items[best].form, " h=%.2f" % h)
+
+var _harvest_last := 0.0      # когда было последнее срезание (для кадра груза)
+var _harvest_focus := Vector3.ZERO
+
+## Сбор идёт в системе флоры (участка): на планете-шаре участок поворачивается
+## вместе с шаром, и мировые координаты стоянки уплывают.
+func _auto_harvest_walk() -> Vector3:
+	var n := harvest.flora.node
+	var q := n.to_local(robot.global_position)
+	var to := Vector3(drill_stand.x - q.x, 0, drill_stand.z - q.z)
+	if to.length() > 0.12:
+		return (n.global_transform.basis * to.normalized()).normalized()
+	var f := n.to_global(drill_face) - robot.global_position
+	robot.rotation.y = lerp_angle(robot.rotation.y, atan2(f.x, f.z), minf(1.0, get_process_delta_time() * 4.0))
+	return Vector3.ZERO
+
+func _auto_harvest_use() -> bool:
+	var q := harvest.flora.node.to_local(robot.global_position)
+	var at := Vector2(drill_stand.x - q.x, drill_stand.z - q.z).length() < 0.2
+	cam_focus = harvest.flora.node.to_global(_harvest_focus)
+	drill_t += get_process_delta_time()
+	var shot := ""
+	if drill_shots == 0 and at and harvest.target >= 0 and drill_t > 1.5:
+		shot = "прицел"
+	elif drill_shots == 1 and harvest.progress > 0.5:
+		shot = "срез"
+	elif drill_shots == 2 and not harvest.falling.is_empty() and harvest.falling[0].t > 0.35:
+		shot = "валится"
+	elif drill_shots == 3 and harvest.harvested_total > 0.0 and harvest.falling.is_empty() \
+			and (harvest.cuts >= 3 or drill_t - _harvest_last > 2.5):
+		shot = "груз"
+	if harvest.cutting or not harvest.falling.is_empty():
+		_harvest_last = drill_t
+	if shot != "":
+		drill_shots += 1
+		var path := "%s_%d.png" % [drill_prefix, drill_shots]
+		get_viewport().get_texture().get_image().save_png(path)
+		print("кадр сбора (%s): %s; срезано %d, %.1f кг" % [shot, path, harvest.cuts, harvest.harvested_total])
+		if drill_shots >= 4:
+			get_tree().quit(0)
+	if drill_t > 40.0:
+		print("Сбор: время вышло, собрано ", _cargo_mass())
+		get_tree().quit(1)
+	return drill_shots >= 1 and harvest.cuts < 3
+
 func _cargo_mass() -> float:
 	var m := 0.0
 	for p: Portion in ProtoMining.cargo_of(robot):
@@ -466,8 +605,21 @@ func _move(d: Vector3) -> void:
 	var body := maxf(g, robot.position.y)
 	# Плывя — выбирается на берег до пояса.
 	var step := 1.1 if swim else maxf(terrain.style.step_height(), d.length() * 1.6)
-	if (g - robot.position.y) > step or terrain.solid(np.x, body + 1.2, np.z) \
-			or (air and terrain.solid(np.x, robot.position.y + 0.3, np.z)) or (_hits_machine(Vector3(np.x, body, np.z)) and not _hits_machine(robot.position)):
+	if _blocked(np, g, body, step):
+		# Скриптовый маршрут упёрся в породу на уровне груди (низкий свод у входа
+		# в пещеру) — обойти, взяв чуть в сторону, как сделал бы игрок.
+		if not route.is_empty() and not air:
+			for ang in [0.6, -0.6, 1.2, -1.2]:
+				var d2 := d.rotated(Vector3.UP, ang)
+				var np2 := robot.position + d2
+				var g2 := ground_at(np2 + Vector3(0, 0.7, 0))
+				if not _blocked(np2, g2, maxf(g2, robot.position.y), step):
+					d = d2
+					np = np2
+					g = g2
+					body = maxf(g2, robot.position.y)
+					break
+	if _blocked(np, g, body, step):
 		# Скриптовый маршрут упёрся в уступ (не в породу и не в машину) — перескочить,
 		# как сделал бы игрок: иначе проверка (--auto=cave, bench) стоит вечно.
 		if not route.is_empty() and not air and g - robot.position.y < JUMP_MAX_H \
@@ -481,6 +633,13 @@ func _move(d: Vector3) -> void:
 		_land(g, 0.0)
 		return
 	_settle()
+
+## Шаг в np не пройти: уступ выше step, порода на уровне груди (в прыжке — и ног)
+## или машина.
+func _blocked(np: Vector3, g: float, body: float, step: float) -> bool:
+	return (g - robot.position.y) > step or terrain.solid(np.x, body + 1.2, np.z) \
+			or (air and terrain.solid(np.x, robot.position.y + 0.3, np.z)) \
+			or (_hits_machine(Vector3(np.x, body, np.z)) and not _hits_machine(robot.position))
 
 ## Высота и наклон — по видимой сетке рельефа (RobotGround); поле плотности —
 ## запасной вариант, если сетки под роботом нет.

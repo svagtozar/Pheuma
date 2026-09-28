@@ -347,6 +347,9 @@ func _update_live(dt: float) -> void:
 				var lamp := model.get_node_or_null("lamp") as MeshInstance3D
 				if lamp:
 					lamp.material_override = MachineModels.mat("lamp_work" if on else ("lamp_starved" if part.items.is_empty() and part.kind != "cannon" else "lamp_idle"))
+				var plume := model.find_child("plume", true, false) as CPUParticles3D
+				if plume:
+					plume.emitting = on
 
 ## Деталь сейчас работает (для движений MachineKit.animate).
 func _working(part: Dictionary) -> bool:

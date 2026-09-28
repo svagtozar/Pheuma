@@ -6,6 +6,7 @@ extends Node
 ##   робот — место, поворот, камера; груз — robot.get_meta("cargo") (Array[Portion]);
 ##   добытые друзы — мета "mined" корня сцены (id задаёт бурение; при загрузке
 ##   корень получает restore_mined(ids), если такой метод есть);
+##   срезанные растения — мета "cut" (номера ProtoFlora.items, restore_cut(ids));
 ##   пневмозавод — детали, их груз, газ и капсулы (корень.pneu, если он есть);
 ##   ран — цель, прокачка и события (корень.run — ProtoRun, если он есть).
 ##   знания о веществах — корень.lab_desk (известные и исключённые теги, догадки, баллон);
@@ -147,6 +148,7 @@ static func to_dict(r: Node3D) -> Dictionary:
 		d.camera = {"yaw": pl.cam_yaw, "pitch": pl.cam_pitch, "dist": pl.cam_dist}
 	d.cargo = (robot.get_meta("cargo", []) as Array).map(func(p): return SaveGame.p_to(p))
 	d.mined = (r.get_meta("mined", []) as Array).duplicate(true)
+	d.cut = (r.get_meta("cut", []) as Array).duplicate(true)
 	d.mined_far = (r.get_meta("mined_far", []) as Array).duplicate(true)
 	var fill = r.get("planet_fill")
 	if fill != null:
@@ -168,6 +170,12 @@ static func to_dict(r: Node3D) -> Dictionary:
 	var map = r.get("map_data")
 	if map != null:
 		d.map = map.save_dict()
+	var terrain = r.get("terrain")
+	if terrain != null and not terrain.edits.is_empty():
+		d.terrain_edits = terrain.edits_to_array()
+	var dg = r.get("digger")
+	if dg != null:
+		d.soil = dg.soil
 	var dn = r.get("daynight")
 	if dn != null:
 		d.day_time = dn.time
@@ -204,6 +212,9 @@ static func apply(r: Node3D, d: Dictionary) -> void:
 	r.set_meta("mined", mined.duplicate(true))
 	if r.has_method("restore_mined"):
 		r.restore_mined(mined)
+	var cut: Array = _ints(d.get("cut", []))
+	if not cut.is_empty() and r.has_method("restore_cut"):
+		r.restore_cut(cut)
 	# Россыпи на шаре вдали от участка (ProtoPlanetFill): id строками.
 	var far: Array = (d.get("mined_far", []) as Array).map(func(x): return str(x))
 	r.set_meta("mined_far", far)
@@ -224,6 +235,15 @@ static func apply(r: Node3D, d: Dictionary) -> void:
 	var map = r.get("map_data")
 	if map != null and d.has("map"):
 		map.load_dict(d.map)
+	# Выкопанное и насыпанное роботом — поверх природного рельефа.
+	var terrain = r.get("terrain")
+	if terrain != null and d.has("terrain_edits") and terrain.edits.is_empty():
+		var box: AABB = terrain.edits_from_array(d.terrain_edits)
+		if r.has_method("terrain_changed"):
+			r.terrain_changed(box)
+	var dg = r.get("digger")
+	if dg != null:
+		dg.soil = int(d.get("soil", 0))
 	var dn = r.get("daynight")
 	if dn != null and d.has("day_time") and dn.running:
 		dn.time = float(d.day_time)

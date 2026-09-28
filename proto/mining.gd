@@ -341,7 +341,7 @@ func _falling(dt: float) -> void:
 			n.scale = Vector3.ONE * maxf(0.05, 1.0 - f.pull * 1.6)
 			n.rotate_y(dt * 8.0)
 			if to.length() < 0.25 or f.pull > 0.8:
-				_collect(f.mass, f.sub)
+				collect(f.mass, f.sub)
 				n.queue_free()
 				continue
 		else:
@@ -363,8 +363,11 @@ func _falling(dt: float) -> void:
 		keep.append(f)
 	falling = keep
 
-func _collect(m: float, s: Substance) -> void:
-	mined_total += m
+## В груз робота: порция вещества s массой m и всплывающая «+m кг».
+## count — засчитать в добычу (цели рана); срезанная органика — нет.
+func collect(m: float, s: Substance, count := true) -> void:
+	if count:
+		mined_total += m
 	var p := Portion.new(s, m, temp)
 	var list := cargo_of(robot)
 	for q: Portion in list:

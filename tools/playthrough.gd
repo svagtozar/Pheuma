@@ -271,7 +271,12 @@ func _planet(seed_v: int, full: bool) -> void:
 	check(game.seed_value == seed_v, "планета с сидом %d (выбран в меню)" % seed_v)
 	await secs(1.0)
 	check(run_ui().modal == "briefing", "брифинг высадки открыт")
-	check(game.tutorial != null, "обучение идёт")
+	if full:
+		check(game.tutorial != null, "обучение идёт")
+	else:
+		# Шаг «Цель планеты» закрывается сам через 9 с игры — успел он или нет,
+		# зависит от скорости машины. Главное — не начать обучение заново.
+		check(game.tutorial != null or ProtoTutorial.is_done(), "обучение идёт или уже пройдено")
 	await shot("briefing")
 	var s0 := state()
 	await accept()
@@ -455,6 +460,7 @@ func _complete_stage(i: int) -> void:
 		"p_parts": game.pneu.placed += int(st.n)
 		"p_process": game.pneu.processed += int(st.n)
 		"p_launch": game.pneu.launched_kg += float(st.kg) + 1.0
+		"p_vent": game.pneu.vented += float(st.amount) + 1.0
 		"p_pressure", "p_beacon", "p_dome": g.hold = float(st.hold)
 	await secs(0.6)
 	if st.type in ["p_pressure", "p_beacon", "p_dome"] and g.stage == stage:

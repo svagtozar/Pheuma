@@ -11,6 +11,8 @@ extends Node3D
 ##   --auto=drill --screenshot=путь.png — подойти к друзе и выбурить её (ProtoMining),
 ##   кадры путь_1..4.png; в --play бур по действию tool_work (F / правый курок);
 ##   --form=vein — бурить залежь этой формы (ProtoDeposit: vein, nodules, strata…)
+##   --auto=harvest --screenshot=путь.png — срезать буром растение у самых густых
+##   зарослей (ProtoHarvest), кадры путь_1..4.png: прицел, срез, валится, груз
 ##   --view=factory — пневмозавод крупно; --build — режим стройки (призрак детали)
 ##   --view=goals — ряд сооружений целей планеты: маяк, купол с печью, пусковая шахта;
 ##   --goal-style=landmark|sleek — другой облик этих сооружений (GoalModels)
@@ -90,6 +92,7 @@ var record := ""             # --record=путь.wav: записать звук 
 var mute := false            # --mute: без звука
 var env: Environment
 var mining: ProtoMining
+var harvest: ProtoHarvest       # срез растений (ProtoHarvest), если на планете жизнь
 var drill_hard := -1.0       # --drill-hard=N — твёрдость бура (иначе — по материалам планеты)
 var hud: ProtoHud
 var show_hud := false        # --hud: HUD и без --play (для кадра)
@@ -131,6 +134,11 @@ var yard_light: OmniLight3D   # прожектор над заводом — г�
 var deck: ProtoDeck           # облегчённая графика (Steam Deck или --deck)
 var health: ProtoHealth      # прочность корпуса робота: урон, починка, поломка
 var liquid_zones: Array = [] # жидкости для урона: {sub, temp, level, area}
+var _liq_root: Node3D        # узлы жидкостей (пересобираются, когда климат плавит или морозит)
+var digger: ProtoDigger      # бур копает грунт, насыпь (правка рельефа)
+var climate: ProtoClimateView # климат в сцене: небо, жидкости, флора
+var terra_demo := ""         # --terra=газ,кг[,радиус]: климат уже поменян (для кадра «после»)
+var dig_demo := false        # --dig: у робота выкопана яма и насыпан вал (для кадра)
 var liquid_life: ProtoLiquidLife   # живые озеро и лава (паводок, извержения)
 var flow_time := 0.0         # --flow=с: прокрутить жидкости вперёд (кадры паводка и извержения)
 var hazard: Substance        # лава или кислота планеты (как клетки 2D), иначе null
@@ -139,6 +147,7 @@ var hurt_t := 0.0
 var hurt_step := 0
 var hurt_mark := -1.0
 var tutorial: ProtoTutorial
+const CHUNK := 10              # клеток в куске сетки рельефа (ProtoTerrainChunks)
 var tutorial_mode := ""      # --tutorial — начать обучение заново; --tutorial=N — с шага N (для кадра); --no-tutorial
 
 ## Сид следующей планеты в сборке для проверки (переживает перезагрузку сцены).
@@ -199,10 +208,18 @@ func _ready() -> void:
 		elif a == "--tutorial": tutorial_mode = "0"
 		elif a.begins_with("--tutorial="): tutorial_mode = a.substr(11)
 		elif a == "--no-tutorial": tutorial_mode = "off"
+		elif a.begins_with("--terra="):
+			terra_demo = a.substr(8)
+			want_run = true
+		elif a == "--dig":
+			dig_demo = true
+			want_run = true
 		elif a.begins_with("--flow="): flow_time = float(a.substr(7))
 	if auto == "drill":
 		RobotDesigns.tool_r = "drill"
 		view = "cave"
+	if auto == "harvest":
+		RobotDesigns.tool_r = "drill"
 	if (auto == "sound" or play) and RobotDesigns.tool_r == "":
 		RobotDesigns.tool_r = "drill"          # играя, робот добывает: бур в предплечье
 	if OS.has_feature("steamdeck"):
@@ -221,23 +238,25 @@ func _ready() -> void:
 	_lap("planet")
 	terrain.build_field()
 	_lap("terrain_field")
-	# Основная сетка (1 м) без пещерной коробки и детальная сетка пещеры (0,5 м).
-	var mesh := terrain.build_mesh(Vector3.ZERO, Vector3i(-1, -1, -1), 1.0, terrain.coarse_skip())
-	_lap("terrain_mesh")
-	var cmesh := terrain.build_cave_mesh()
-	_lap("cave_mesh")
-	print("Рельеф %d×%d×%d: %d мс, вершин %d + пещера %d" % [terrain.sx, terrain.sy, terrain.sz, Time.get_ticks_msec() - t0,
-		mesh.surface_get_array_len(0), cmesh.surface_get_array_len(0)])
+	# Основная сетка (1 м) без пещерной коробки и детальная сетка пещеры (0,5 м) —
+	# кусками (ProtoTerrainChunks): правка рельефа перестраивает только задетые.
 	var tm := terrain.material()
-	_map_meshes = [mesh, cmesh]
-	_map_caves = [cmesh]
-	for m in [mesh, cmesh]:
-		var ground := MeshInstance3D.new()
-		ground.name = "ground" if m == mesh else "ground_cave"
-		ground.mesh = m
-		ground.material_override = tm
-		add_child(ground)
-		RobotGround.add_collision(ground)
+	var ground := ProtoTerrainChunks.new()
+	ground.name = "ground"
+	add_child(ground)
+	ground.build(terrain, AABB(Vector3.ZERO, Vector3(terrain.sx, terrain.sy, terrain.sz)), 1.0, CHUNK, tm,
+		terrain.coarse_skip())
+	_lap("terrain_mesh")
+	var cave := ProtoTerrainChunks.new()
+	cave.name = "ground_cave"
+	add_child(cave)
+	var cb := terrain.cave_box
+	cave.build(terrain, cb, 0.5, CHUNK, tm, AABB(), 0.0, 1.0)
+	_lap("cave_mesh")
+	print("Рельеф %d×%d×%d: %d мс, кусков %d + пещера %d" % [terrain.sx, terrain.sy, terrain.sz, Time.get_ticks_msec() - t0,
+		ground.chunks.size(), cave.chunks.size()])
+	_map_meshes = ground.meshes() + cave.meshes()
+	_map_caves = cave.meshes()
 	_environment()
 	_lap("environment")
 	_liquids()
@@ -286,6 +305,7 @@ func _ready() -> void:
 		pl.setup(robot, cam, terrain, env)
 		pl.capture = play and auto == "" and DisplayServer.get_name() != "headless"
 		pl.mining = mining
+		_harvest(pl)
 		if auto == "drill":
 			# --form: на время выбора цели бур видит только залежи этой формы.
 			var all := mining.druses
@@ -296,6 +316,9 @@ func _ready() -> void:
 					mining.druses = all
 			pl.auto_drill(shot_path.get_basename() if shot_path != "" else "user://drill")
 			mining.druses = all
+			shot_path = ""
+		elif auto == "harvest" and harvest != null:
+			pl.auto_harvest(shot_path.get_basename() if shot_path != "" else "user://harvest")
 			shot_path = ""
 		elif auto == "cave":
 			pl.auto_cave(shot_path.get_basename() if shot_path != "" else "user://route")
@@ -318,6 +341,14 @@ func _ready() -> void:
 			hurt_prefix = shot_path.get_basename() if shot_path != "" else "user://hurt"
 			shot_path = ""
 		_health(pl)
+		digger = ProtoDigger.new()
+		digger.name = "digger"
+		add_child(digger)
+		digger.setup(terrain, [get_node("ground"), get_node("ground_cave")], robot)
+		digger.on_edit = func(c: Vector3, r: float, _add: bool):
+			if climate != null and climate.flora != null:
+				climate.flora.terrain_changed(c, r)
+		pl.digger = digger
 		if auto == "swim":
 			var sd := ProtoSwimDemo.new()
 			sd.name = "swim_demo"
@@ -385,6 +416,22 @@ func restore_mined(ids: Array) -> void:
 	if mining:
 		mining.restore_mined(ids)
 
+## …и срезанные растения.
+func restore_cut(ids: Array) -> void:
+	if harvest:
+		harvest.restore_cut(ids)
+
+## Сбор органики тем же буром (ProtoHarvest) — если на планете есть жизнь.
+func _harvest(pl: ProtoPlayer) -> void:
+	if flora == null or flora.node == null or flora.items.is_empty() or mining == null:
+		return
+	harvest = ProtoHarvest.new()
+	harvest.name = "harvest"
+	add_child(harvest)
+	harvest.setup(flora, mining, planet)
+	pl.harvest = harvest
+	print("Органика: %s, растений %d" % [harvest.sub.name, flora.items.size()])
+
 # ---------------------------------------------------------------- палитра и свет
 
 func _palette() -> void:
@@ -418,12 +465,20 @@ func _liquid_mats() -> Array:
 	return planet.materials.filter(func(m): return m.phase_at(planet.ambient_temp) == Substance.Phase.LIQUID)
 
 func _liquids() -> void:
+	_liq_root = Node3D.new()
+	_liq_root.name = "liquids"
+	add_child(_liq_root)
 	var liq := _liquid_mats()
 	# Лава вулканических и кислота кислотных планет (как клетки 2D) — в озере;
 	# если своих жидкостей нет, то и в русле, и в пещерной луже.
 	hazard = ProtoHealth.hazard_liquid(planet)
 	if liq.is_empty() and hazard == null:
-		print("Жидких материалов нет — русла сухие")
+		# Ничего не течёт: в руслах — лёд того, что растает первым (если есть).
+		var ice = _ice_mat()
+		if ice == null:
+			print("Жидких материалов нет — русла сухие")
+			return
+		_ice(ice)
 		return
 	var river_mat: Substance = liq[0] if not liq.is_empty() else hazard
 	_sea_sub = river_mat
@@ -436,17 +491,17 @@ func _liquids() -> void:
 	# Течение к озеру (дно русла понижается к нему): полосы пены сносятся, робота сносит.
 	river_sm.set_shader_parameter("flow", Vector2(-1, 0) * ProtoSwim.flow_speed(ProtoSwim.viscosity(river_mat)))
 	rv.material_override = river_sm
-	add_child(rv)
+	_liq_root.add_child(rv)
 	_map_water.append([rv.mesh, river_mat.color])
 	var rl := ProtoLiquids.look(river_mat, planet.ambient_temp)
 	if rl.vapor or rl.haze:
-		add_child(ProtoLiquids.vapor(Vector3(40, terrain.river_level_at(40) + 0.8, 58), Vector3(38, 0.5, 5), river_mat.color, rl.haze))
+		_liq_root.add_child(ProtoLiquids.vapor(Vector3(40, terrain.river_level_at(40) + 0.8, 58), Vector3(38, 0.5, 5), river_mat.color, rl.haze))
 	# Озеро живое (ProtoLiquidLife): паводок выходит из берегов, на вулкане
 	# лава из кратера стекает в низины и застывает.
 	var in_lake := func(x, z): return Vector2(x, z).distance_to(terrain.lake_c) < terrain.lake_r + 4.5
 	liquid_life = ProtoLiquidLife.new()
 	liquid_life.name = "liquid_life"
-	add_child(liquid_life)
+	_liq_root.add_child(liquid_life)
 	var lake := liquid_life.setup_lake(terrain, lake_mat, terrain.lake_level, in_lake, seed_value)
 	var lake_sm := _liquid_surface(lake_mat, terrain.lake_level, in_lake,
 		Vector3(terrain.lake_c.x, terrain.lake_level + 0.8, terrain.lake_c.y), Vector3(10, 0.5, 10), lake)
@@ -489,19 +544,142 @@ func _liquid_surface(s: Substance, level: float, area: Callable, vpos: Vector3, 
 	if flow != null and flow.cool > 0.0:
 		sm.set_shader_parameter("vheat", true)
 	mi.material_override = sm
-	add_child(mi)
+	_liq_root.add_child(mi)
 	_map_water.append([mi.mesh, s.color])
 	var look := ProtoLiquids.look(s, planet.ambient_temp)
 	if look.vapor or look.haze:
-		add_child(ProtoLiquids.vapor(vpos, vext, s.color, look.haze))
+		_liq_root.add_child(ProtoLiquids.vapor(vpos, vext, s.color, look.haze))
 	if look.glow > 0.0:
 		var l := OmniLight3D.new()
 		l.light_color = s.color
 		l.light_energy = 1.5
 		l.omni_range = 8.0
 		l.position = vpos + Vector3(0, 1, 0)
-		add_child(l)
+		_liq_root.add_child(l)
 	return sm
+
+## Лёд: материал, который при нынешней температуре твёрдый, а плавится ближе
+## всех к ней (не дальше 150 °C) — то, что потечёт первым, если планету греть.
+## Только на морозной планете (ниже 0 °C).
+func _ice_mat():
+	if planet.ambient_temp >= 0.0:
+		return null                # на тёплой планете сухое русло — просто сухое
+	var best = null
+	var gap := 150.0
+	for m in planet.materials:
+		if m.phase_at(planet.ambient_temp) != Substance.Phase.SOLID:
+			continue
+		var g: float = m.melt - planet.ambient_temp
+		# Тает в жидкость, а не сразу в пар — иначе после потепления русло пустое.
+		if g > 0.0 and g < gap and m.boil > m.melt + 40.0:
+			gap = g
+			best = m
+	return best
+
+## Русло, озеро и пещерная лужа покрыты льдом (без урона, как суша).
+func _ice(s: Substance) -> void:
+	var m := StandardMaterial3D.new()
+	m.albedo_color = Color(s.color.lerp(Color(0.86, 0.93, 1.0), 0.75), 0.9)
+	m.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	m.roughness = 0.18
+	m.metallic = 0.1
+	var parts := [
+		ProtoLiquids.sloped_mesh(terrain, func(x, z): return terrain.river_level_at(x, z) - 0.25,
+			func(x, z): return abs(z - terrain.river_z(x)) < 6.0 and x > terrain.lake_c.x + 2.0),
+		ProtoLiquids.surface_mesh(terrain, terrain.lake_level - 0.25,
+			func(x, z): return Vector2(x, z).distance_to(terrain.lake_c) < terrain.lake_r + 4.5)]
+	for mesh in parts:
+		var mi := MeshInstance3D.new()
+		mi.name = "ice"
+		mi.mesh = mesh
+		mi.material_override = m
+		_liq_root.add_child(mi)
+		_map_water.append([mesh, m.albedo_color])
+	print("Жидкостей нет — в руслах лёд: %s (тает при %.0f °C)" % [s.name, s.melt])
+
+## --terra=газ,кг[,радиус]: выпущено столько газа, на орбите столько кг
+## зеркал, у куполов зелёная зона такого радиуса.
+func _terra_demo() -> void:
+	var v := terra_demo.split(",")
+	run.terra.vented = float(v[0])
+	run.terra.mirrors = float(v[1]) if v.size() > 1 else 0.0
+	if v.size() > 2 and pneu != null:
+		for c in pneu.parts:
+			if pneu.parts[c].kind == "dome":
+				run.terra.zones[c] = float(v[2])
+	run.terra.apply(planet, pneu)
+	climate.refresh()
+	print("Климат для кадра: ", run.terra.summary())
+
+## --dig: перед роботом яма в три приёма и вал из вынутого грунта — через тот
+## же ProtoDigger, что и бур.
+func _dig_demo() -> void:
+	var d := digger
+	if d == null:
+		d = ProtoDigger.new()
+		add_child(d)
+		d.setup(terrain, [get_node("ground"), get_node("ground_cave")], robot)
+	var f := robot.global_transform.basis.z
+	var base := robot.global_position
+	for i in 6:
+		robot.global_position = base + f * (0.6 * i)
+		for k in 3:
+			d._t = 0.0
+			d.step(0.1, true, false)
+	robot.global_position = base + Vector3(-f.z, 0, f.x) * 2.2
+	for i in 5:
+		robot.global_position += f * 0.6
+		d._t = 0.0
+		d.step(0.1, false, true)
+	robot.global_position = base
+	d.flush()
+	for n in ["ground", "ground_cave"]:
+		(get_node(n) as ProtoTerrainChunks).flush()
+	print("Копка для кадра: приёмов %d, насыпано %d, в бункере %d %s" % [d.dug, d.filled, d.soil, d.status])
+
+## Климат поменял, что жидкое (ProtoClimateView): жидкости — заново.
+func refresh_liquids() -> void:
+	var notes: Callable = liquid_life.notes if liquid_life != null else Callable()
+	liquid_life = null
+	if _liq_root != null:
+		_liq_root.queue_free()
+		remove_child(_liq_root)
+	liquid_zones.clear()
+	_map_water.clear()
+	_liquids()
+	if liquid_life != null:
+		liquid_life.notes = notes
+	print("Климат: жидкости пересобраны при %.0f °C" % planet.ambient_temp)
+
+## Где флора не растёт: 1 — под жидкостью и у входа в пещеру; 2 — площадка
+## завода (там только в зоне купола, между деталями); 0 — растёт.
+func flora_blocked(x: float, z: float, y: float) -> int:
+	for zn in liquid_zones:
+		if zn.area.call(x, z) and float(zn.level.call(x, z)) > y - 0.05:
+			return 1
+	if Vector2(x - terrain.cave_entry.x, z - terrain.cave_entry.z).length() < 3.0:
+		return 1
+	var q := (Vector2(x, z) - ProtoTerrain.PAD_C).abs() - ProtoTerrain.PAD_HALF
+	return 2 if q.x < 1.5 and q.y < 1.5 else 0
+
+## Стоит ли на месте деталь завода (флора площадки её обходит).
+func flora_occupied(p: Vector3) -> bool:
+	if pneu == null:
+		return false
+	for dx in [-0.6, 0.6]:
+		for dz in [-0.6, 0.6]:
+			if pneu.parts.has(ProtoPneumatics.cell_at(pneu_origin, p + Vector3(dx, 0, dz))):
+				return true
+	return false
+
+## Рельеф поправлен (бур, насыпь, сохранение): сетки и флора в области box.
+func terrain_changed(box: AABB) -> void:
+	for n in ["ground", "ground_cave"]:
+		var ch := get_node_or_null(n) as ProtoTerrainChunks
+		if ch != null:
+			ch.rebuild(box)
+	if climate != null and climate.flora != null:
+		climate.flora.terrain_changed(box.get_center(), box.size.x * 0.5)
 
 # ---------------------------------------------------------------- пещера
 
@@ -1227,6 +1405,34 @@ func _robot_and_camera() -> void:
 			var f2 := (Vector3(tg.x, rp2.y, tg.z) - rp2).normalized()
 			cam.position = rp2 - f2 * 5.0 + f2.cross(Vector3.UP).normalized() * 1.5 + Vector3(0, 3.5, 0)
 			cam.look_at(rp2 + f2 * 20.0 + Vector3(0, -3.0, 0))
+		"dig":
+			# Самое ровное место в кольце вокруг площадки: робот смотрит вдоль будущей
+			# траншеи, камера сбоку.
+			var best := INF
+			var dp := pc
+			var yaw := 0.0
+			for k in 24:
+				var ang := TAU * k / 24.0
+				for r: float in [13.0, 16.0, 19.0]:
+					var q0 := pc + Vector3(sin(ang), 0, cos(ang)) * r
+					var f0 := Vector3(cos(ang), 0, -sin(ang))
+					var h0 := terrain.surface_h(q0.x, q0.z)
+					var cost := 0.0
+					for i in range(-2, 7):
+						var q := q0 + f0 * i
+						cost += absf(terrain.surface_h(q.x, q.z) - h0)
+						var sd := q + Vector3(f0.z, 0, -f0.x) * 3.0
+						cost += absf(terrain.surface_h(sd.x, sd.z) - h0) * 0.5
+					if cost < best and terrain.can_edit(Vector3(q0.x, h0 - 0.5, q0.z)):
+						best = cost
+						dp = Vector3(q0.x, h0, q0.z)
+						yaw = atan2(f0.x, f0.z)
+			robot.position = dp
+			robot.rotation.y = yaw
+			var fw := Vector3(sin(yaw), 0, cos(yaw))
+			var sd2 := Vector3(fw.z, 0, -fw.x)
+			cam.position = dp + fw * 0.5 - sd2 * 6.5 + Vector3(0, 4.0, 0)
+			cam.look_at(dp + fw * 2.0 + Vector3(0, 0.2, 0))
 		"volcano", "flood":
 			# Живые жидкости сверху наискосок: склон вулкана с лавой или озеро в паводок.
 			robot.position = Vector3(pc.x, top, pc.z)
@@ -1643,6 +1849,8 @@ func _process(dt: float) -> void:
 		_hurt_demo(dt)
 	if run != null:
 		_run_visuals(dt)
+	if digger != null and mining != null:
+		digger.speed_mult = mining.speed_mult
 	if lab_panel != null:
 		# Подпись планеты — под карточкой материала; пока та открыта, прячем.
 		var cap := get_node_or_null("caption") as CanvasLayer
@@ -1831,6 +2039,16 @@ func _run() -> void:
 	if play:
 		run_ui.on_main_menu = _main_menu
 	run_ui.pause_game = shot_path == ""          # для кадра сцена не должна вставать
+	climate = ProtoClimateView.new()
+	climate.name = "climate"
+	add_child(climate)
+	climate.setup(self, run.terra)
+	if terra_demo != "" or dig_demo:
+		run.briefing_seen = true
+	if terra_demo != "":
+		_terra_demo()
+	if dig_demo:
+		_dig_demo()
 	if play:
 		run_ui.on_quit = _quit
 	add_child(run_ui)

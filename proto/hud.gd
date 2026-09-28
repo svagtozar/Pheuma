@@ -65,6 +65,7 @@ var robot: Node3D
 var factory: Object              # ProtoPneumatics или null
 var builder: Object              # ProtoBuilder или null
 var pad := false                 # подсказки для геймпада
+var soil := 0                    # вёдер грунта у робота (ProtoDigger) — подсказка «Насыпать»
 var knowledge: Object = null     # ProtoLabDesk: в грузе видно, что известно о веществе
 var extra_hints: Array = []      # [[подпись, клавиша, кнопка]] — вне InputMap (сборка для проверки)
 var map: ProtoMapData = null     # есть — в углу радар (ProtoRadar)
@@ -194,7 +195,12 @@ func refresh() -> void:
 			kn += knowledge.short_label(r.sub)
 	var busy: bool = robot != null and bool(robot.get_meta("ui_busy", false))
 	var hs := health_summary(_health())
-	var key := str([cg, fs, part, note, pad, building, kn, busy, hs])
+	fs.climate = climate_line(get_parent().get("run") if get_parent() != null else null)
+	var dg = get_parent().get("digger") if get_parent() != null else null
+	soil = int(dg.soil) if dg != null else 0
+	if dg != null and dg.status != "" and note == "":
+		note = dg.status
+	var key := str([cg, fs, part, note, pad, building, kn, busy, hs, soil])
 	if key == _key:
 		return
 	_key = key
@@ -207,6 +213,18 @@ func refresh() -> void:
 	_fill_hints(building, cg.kg > 0.0, hs.get("repair", false))
 	_toast.text = note
 	_toast.offset_bottom = -PAD - (_build_panel.size.y + 12.0 if building else 12.0)
+
+## Климат планеты для панели завода: "" — рана нет. Со сдвигом от терраформирования.
+static func climate_line(run: Object) -> String:
+	if run == null or run.get("terra") == null:
+		return ""
+	var t = run.terra
+	var s: String = t.summary()
+	var dp: float = t.pressure() - t.base_p
+	var dt: float = t.temp() - t.base_t
+	if absf(dp) >= 0.01 or absf(dt) >= 0.5:
+		s += "\nсдвиг %+.2f атм, %+.0f °C" % [dp, dt]
+	return s
 
 func _health() -> Object:
 	return robot.get_meta("health", null) if robot != null else null
@@ -388,6 +406,10 @@ func hint_rows(building: bool, has_cargo: bool, can_repair := false, max_rows :=
 		var g := glyph([UNLOAD], pad)
 		if g != "":
 			rows.append(["Выгрузить в приёмник", g])
+	if soil > 0 and not building:
+		var g := glyph([&"tool_fill"], pad)
+		if g != "":
+			rows.append(["Насыпать грунт (%d)" % soil, g])
 	if can_repair and not building:
 		var g := glyph([REPAIR], pad)
 		if g != "":
@@ -483,6 +505,9 @@ func _fill_factory(fs: Dictionary) -> void:
 	if fs.stored > 0.0:
 		info += " · в баках %.0f кг" % fs.stored
 	_factory_box.add_child(_label(info, FONT_SMALL, DIM))
+	if fs.get("climate", "") != "":
+		_factory_box.add_child(_label("ПЛАНЕТА", FONT_SMALL, DIM))
+		_factory_box.add_child(_label(fs.climate, FONT_SMALL, TEXT))
 
 ## Полоса давления: заливка — доля предела, риска — порог опасности.
 func _gauge(v: float, tone: Color) -> Control:

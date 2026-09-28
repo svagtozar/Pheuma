@@ -14,7 +14,7 @@ extends RefCounted
 ## Высота корпуса — meta "h" (над ней вид ставит порцию и подписи).
 
 const OUT_KINDS_NONE := ["pipe", "catch_net", "fabricator", "launch_silo", "macro", "sensor",
-	"gate_and", "gate_or", "gate_not", "dome", "beacon"]
+	"gate_and", "gate_or", "gate_not", "dome", "beacon", "vent"]
 ## Без основания-салазок: мелочь, которая стоит прямо на земле.
 const NO_BASE := ["pipe", "sensor", "gate_and", "gate_or", "gate_not"]
 
@@ -60,6 +60,7 @@ static func build(kind: String, body: Material) -> Node3D:
 		"launch_silo": h = _silo(n, pnt)
 		"dome": h = _dome(n, pnt)
 		"beacon": h = _beacon(n, pnt)
+		"vent": h = _vent(n, pnt)
 		_:
 			_box(n, Vector3(1.6, 1.0, 1.6), pnt, Vector3(0, 0.5, 0))
 			h = 1.0
@@ -506,6 +507,45 @@ static func _dome(n: Node3D, body: Material) -> float:
 	_box(n, Vector3(0.4, 0.5, 0.3), body, Vector3(0, 0.45, 0.85))
 	_fill(n, 0.45, 0.6, 0.25)
 	return 1.15
+
+## Газоотвод: труба-стояк с раструбом и вентилятором, над ним — шлейф газа
+## (узел "plume", вид включает его, пока газ уходит в небо).
+static func _vent(n: Node3D, body: Material) -> float:
+	_cyl(n, 0.55, 0.35, body, Vector3(0, 0.18, 0), 0.5)
+	_cyl(n, 0.22, 2.2, body, Vector3(0, 1.45, 0))
+	for y in [0.8, 1.5, 2.2]:
+		_ring(n, 0.25, 0.04, body, Vector3(0, y, 0))
+	_cyl(n, 0.5, 0.5, body, Vector3(0, 2.75, 0), 0.24)
+	var s := _spin(n, Vector3(0, 2.6, 0))
+	for i in 3:
+		var b := _box(s, Vector3(0.75, 0.03, 0.12), body, Vector3.ZERO)
+		b.rotation = Vector3(0.35, i * TAU / 3.0, 0)
+	var p := CPUParticles3D.new()
+	p.name = "plume"
+	p.position = Vector3(0, 3.05, 0)
+	p.amount = 40
+	p.lifetime = 3.0
+	p.emitting = false
+	p.direction = Vector3(0, 1, 0)
+	p.spread = 12.0
+	p.initial_velocity_min = 1.2
+	p.initial_velocity_max = 2.0
+	p.gravity = Vector3(0.4, 0.3, 0.1)
+	p.scale_amount_min = 0.5
+	p.scale_amount_max = 1.4
+	var q := SphereMesh.new()
+	q.radius = 0.25
+	q.height = 0.5
+	q.radial_segments = 6
+	q.rings = 3
+	p.mesh = q
+	var m := StandardMaterial3D.new()
+	m.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	m.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	m.albedo_color = Color(0.85, 0.9, 0.95, 0.35)
+	p.material_override = m
+	n.add_child(p)
+	return 3.0
 
 static func _beacon(n: Node3D, body: Material) -> float:
 	_cyl(n, 0.6, 0.3, body, Vector3(0, 0.15, 0), 0.5)
