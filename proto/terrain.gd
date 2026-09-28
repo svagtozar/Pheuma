@@ -200,6 +200,11 @@ var flat_frame := true        # шар не повёрнут: планета = �
 const BLEND := 30.0           # ширина перехода от участка к остальному шару, м
 var _far := FastNoiseLite.new()
 var _far_big := FastNoiseLite.new()
+var _basin := FastNoiseLite.new()
+## Моря вдали от участка: глубина котловин (0 — сухая планета) и уровень моря
+## над radius (−INF — морей нет). Задаёт ProtoPlanetFill до постройки шара.
+var basin_depth := 0.0
+var sea_level := -INF
 
 ## Включить шар радиуса r: центр под серединой участка.
 func make_sphere(r: float) -> void:
@@ -220,6 +225,9 @@ func _init_far() -> void:
 	_far_big.frequency = 0.0022
 	_far_big.fractal_octaves = 5
 	_far_big.fractal_type = FastNoiseLite.FRACTAL_RIDGED
+	_basin.seed = noise.seed + 177
+	_basin.frequency = 0.0028
+	_basin.fractal_octaves = 3
 
 ## Насколько точка за краем участка по горизонтали (0 — внутри).
 func out_dist(x: float, z: float) -> float:
@@ -256,7 +264,21 @@ func far_h(d: Vector3, out: float) -> float:
 		var f: float = h / st - floor(h / st)
 		h = lerpf(h, (floor(h / st) + smoothstep(0.7, 1.0, f)) * st, 0.85)
 	h += _far_big.get_noise_3dv(q) * 30.0 * smoothstep(40.0, 420.0, out) - 4.0 * smoothstep(20.0, 120.0, out)
+	if basin_depth > 0.0:
+		# Котловины морей: не ближе ~100 м к участку, чтобы море его не залило.
+		var b := _basin.get_noise_3dv(q)
+		h -= smoothstep(-0.05, 0.35, b) * basin_depth * smoothstep(90.0, 260.0, out)
+		return maxf(h, 3.0 - basin_depth)
 	return maxf(h, 3.0)
+
+## Точка «на плоскости» для шума цвета, поросли и плодородия вдали от участка:
+## та же, что берёт шар для цвета вершин (без швов, у участка ≈ x, z).
+static func far_key(p: Vector3) -> Vector2:
+	return Vector2(p.x + p.y * 0.37, p.z - p.y * 0.61)
+
+## Направление d (система планеты) → расстояние по дуге от середины участка, м.
+func arc_from_site(d: Vector3) -> float:
+	return acos(clampf(d.y, -1.0, 1.0)) * radius
 
 ## Плотность в системе планеты: у участка — его объёмный рельеф (пещера и
 ## прочее), дальше — шар; глубже 1,5 м над radius — сплошная порода.

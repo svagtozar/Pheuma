@@ -64,6 +64,9 @@ var seed_value := 14
 var view := "third"
 var planet_on := true         # вся планета вокруг участка (ProtoPlanetStream); --no-planet — только участок
 var planet_stream: ProtoPlanetStream
+var planet_fill: ProtoPlanetFill   # флора, залежи и моря на шаре вне участка
+var _sea_sub: Substance            # жидкость морей шара (из _liquids)
+var wild_far := -1.0               # --far=м: для --view=wild/shore — так далеко от завода по дуге
 const PLANET_R := 800.0       # радиус планеты-шара, м
 var shot_path := ""
 var planet: Planet
@@ -183,6 +186,7 @@ func _ready() -> void:
 		elif a.begins_with("--bench="): bench_out = a.substr(8)
 		elif a == "--deck": ProtoDeck.active = true
 		elif a.begins_with("--time="): day_time = float(a.substr(7))
+		elif a.begins_with("--far="): wild_far = float(a.substr(6))
 		elif a == "--tutorial": tutorial_mode = "0"
 		elif a.begins_with("--tutorial="): tutorial_mode = a.substr(11)
 		elif a == "--no-tutorial": tutorial_mode = "off"
@@ -247,7 +251,19 @@ func _ready() -> void:
 			if c is Node3D and not (c is Light3D or c is Camera3D or c is CPUParticles3D or c is GPUParticles3D) \
 					and c != robot and c != planet_stream:
 				planet_stream.site_nodes.append(c)
+		planet_stream.daynight = daynight
+		planet_fill = ProtoPlanetFill.create(planet_stream, flora, planet, seed_value)
+		planet_fill.mining = mining
+		planet_fill.setup_seas(_sea_sub, planet.ambient_temp)   # котловины — до постройки шара
+		planet_stream.add_child(planet_fill)
+		if view in ["wild", "shore"]:
+			_wild_shot(view == "shore")
 		planet_stream.build_now()
+		planet_fill.build_sea()
+		if not play and auto == "":
+			planet_fill.build_now()     # кадр: сразу всё; в игре — в потоках за первые секунды
+		if planet_fill.sea_sub != null:
+			liquid_zones.append(planet_fill.sea_zone(planet.ambient_temp))
 		_lap("planet_around")
 	_caption()
 	_map_data()
@@ -342,6 +358,11 @@ func _ready() -> void:
 		deck = ProtoDeck.apply(self, terrain, cam, sun, [get_node("ground"), get_node("ground_cave"), robot])
 		print("Графика Steam Deck: слой пещеры — %d сеток" % deck.hidden)
 
+## Уход со сцены (новая планета, выход): дождаться потоков глобуса.
+func _exit_tree() -> void:
+	if map_data != null and map_data.globe != null:
+		map_data.globe.finish()
+
 ## Время этапа загрузки с прошлого вызова, мс.
 func _lap(what: String) -> void:
 	var now := Time.get_ticks_usec()
@@ -394,6 +415,7 @@ func _liquids() -> void:
 		print("Жидких материалов нет — русла сухие")
 		return
 	var river_mat: Substance = liq[0] if not liq.is_empty() else hazard
+	_sea_sub = river_mat
 	var lake_mat: Substance = hazard if hazard != null else (liq[1] if liq.size() > 1 else liq[0])
 	var cave_mat: Substance = liq[-1] if not liq.is_empty() else hazard
 	var rv := MeshInstance3D.new()
@@ -798,6 +820,73 @@ func _flora() -> void:
 	var meshes := flora.build(self, terrain, keep, ProtoDeck.active)
 	print("Флора: %s; %d растений, %d вершин, %d сеток" % [flora.summary(), flora.plants, flora.verts(), meshes])
 
+## --view=wild / shore: робот далеко от завода — у россыпи залежей (wild) или на
+## берегу моря (shore); камера из-за плеча. Всё в системе планеты: при первом
+## кадре шар повернётся под робота вместе с камерой.
+func _wild_shot(shore: bool) -> void:
+	var t := terrain
+	var rng := RandomNumberGenerator.new()
+	rng.seed = seed_value + 5
+	var rp := Vector3.INF
+	var tg := Vector3.INF
+	var best := INF
+	for i in 3000:
+		var ang := (rng.randf_range(260.0, 600.0) if wild_far < 0.0 else wild_far * rng.randf_range(0.93, 1.0)) / t.radius
+		var th := rng.randf() * TAU
+		var d := Vector3(sin(ang) * cos(th), cos(ang), sin(ang) * sin(th))
+		if shore:
+			if t.sea_level == -INF:
+				break
+			var h := t.sphere_h(d)
+			if h < t.sea_level + 0.4 or h > t.sea_level + 1.6:
+				continue
+			# К морю: соседняя точка ниже уровня.
+			var e1 := d.cross(Vector3.UP).normalized()
+			var e2 := d.cross(e1)
+			for k in 8:
+				var a := k * TAU / 8.0
+				var dd := (d + (e1 * cos(a) + e2 * sin(a)) * (14.0 / t.radius)).normalized()
+				var back := (d - (dd - d) * 0.6).normalized()
+				if t.sphere_h(dd) < t.sea_level - 1.0 and t.sphere_h(back) < h + 1.5:
+					rp = t.center + d * (t.radius + h)
+					tg = t.center + dd * (t.radius + t.sea_level)
+					break
+			if rp != Vector3.INF:
+				break
+		else:
+			var k := planet_fill.key_of(d)
+			var out := planet_fill._arrays(k)
+			if out.deps.is_empty():
+				continue
+			var e: Array = out.deps[0]
+			var fr: Transform3D = out.frame
+			tg = fr * (e[0] as Vector3)
+			var up := (tg - t.center).normalized()
+			var side := up.cross(Vector3.FORWARD).normalized()
+			var dd := (tg - t.center + side * 2.6).normalized()
+			rp = t.center + dd * (t.radius + t.sphere_h(dd))
+			break
+	if rp == Vector3.INF:
+		print("Вид %s: подходящего места не нашлось" % view)
+		return
+	var fr := planet_stream.frame_for(rp)
+	var rw := fr * rp
+	var tw := fr * tg
+	var dw := Vector3(tw.x - rw.x, 0, tw.z - rw.z).normalized()
+	robot.position = rp
+	robot.rotation.y = atan2(dw.x, dw.z)
+	var side := dw.cross(Vector3.UP)
+	var cw := rw - dw * (4.0 if not shore else 7.0) + Vector3.UP * (2.2 if not shore else 4.5) + side * 1.8
+	# Камера не ниже 2,5 м над землёй (за гребнем кадр слепой).
+	var cp := fr.affine_inverse() * cw
+	var cd := (cp - t.center).normalized()
+	var cmin := t.radius + t.sphere_h(cd) + 2.5
+	if (cp - t.center).length() < cmin:
+		cw = fr * (t.center + cd * cmin)
+	var ct := Transform3D(Basis(), cw).looking_at(tw.lerp(rw, 0.45) + Vector3.UP * 0.3, Vector3.UP)
+	cam.far = 4000.0
+	cam.global_transform = fr.affine_inverse() * ct
+
 ## --view=flora: робот у самых густых зарослей, камера из-за плеча на них.
 func _flora_shot() -> void:
 	var tg := flora.best
@@ -958,7 +1047,7 @@ func _robot_and_camera() -> void:
 	var drill = _mat_with("metallic")
 	if robot_design != "old":
 		# Идёт по планете; в пещере — стоит и светит глазом.
-		RobotAnim.default_mode = "idle" if view == "cave" else "walk"
+		RobotAnim.default_mode = "idle" if view in ["cave", "wild", "shore"] else "walk"
 		robot = RobotDesigns.build(robot_design, drill.color if drill != null else Color(0, 0, 0, 0))
 		# Сотни мелких деталей — по сетке на шарнир и материал (ProtoBatch).
 		ProtoBatch.merge_children(robot)
@@ -1453,7 +1542,7 @@ func _process(dt: float) -> void:
 		var cap := get_node_or_null("caption") as CanvasLayer
 		if cap:
 			cap.visible = not lab_panel.open and run == null   # в ране слева сверху — цель
-	if shot_path != "" and _t > 1.5:
+	if shot_path != "" and _t > 1.5 and not _shot_wait:
 		var img := get_viewport().get_texture().get_image()
 		img.save_png(shot_path)
 		print("Кадров в секунду: ", Engine.get_frames_per_second(), " — скриншот: ", shot_path)
@@ -1510,13 +1599,19 @@ func _map_data() -> void:
 	map_data.add_marker("hall", terrain.cave_c, "", true)
 	if mining != null:
 		for d in mining.druses:
-			if d.crystals.is_empty():
+			if d.crystals.is_empty() or d.node.has_meta("far_id"):
 				continue
 			var p := Vector3.ZERO
 			for c in d.crystals:
 				p += c.global_position / d.crystals.size()
 			var m := map_data.add_marker("druse", p, "", p.y < terrain.surface_h(p.x, p.z) - 2.0)
 			m.druse = d
+	if planet_stream != null:
+		# Весь шар: разведанное, радар вне участка, глобус на карте.
+		map_data.globe = ProtoGlobe.new(planet_stream, planet_fill)
+		map_data.globe.factory = pneu_view.origin if pneu_view != null else terrain.plateau()
+		if play or map_demo != "":
+			map_data.globe.prepare()
 	print("Карта: %d мс, меток %d" % [Time.get_ticks_msec() - t0, map_data.markers.size()])
 
 ## Выбуренные друзы — серым.
@@ -1546,6 +1641,9 @@ func _map_view() -> void:
 
 ## Кадр карты: разведан путь от робота к заводу, ко входу в пещеру и в зал.
 func _map_demo() -> void:
+	if map_demo == "globe" and map_data.globe != null:
+		_globe_demo()
+		return
 	if map_demo == "all":
 		map_data.reveal_all()
 	else:
@@ -1565,6 +1663,37 @@ func _map_demo() -> void:
 			map_data.reveal(hall + Vector3(cos(an), 0, sin(an)) * terrain.cave_r * 0.6, true)
 	map_data.flush()
 	map_view.show_map()
+
+## --map=globe: робот прошёл по шару ~2 км петлёй от завода, по пути нашёл
+## россыпи; карта открыта глобусом.
+var _shot_wait := false           # кадр ждёт (глобус строится в потоке)
+
+func _globe_demo() -> void:
+	_shot_wait = true
+	var g: ProtoGlobe = map_data.globe
+	var t := terrain
+	var pts: Array = []
+	for k in 400:
+		var a := (20.0 + k * 5.0) / t.radius
+		var th := 0.4 + sin(k * 0.018) * 0.9
+		var d := Vector3(sin(a) * cos(th), cos(a), sin(a) * sin(th)).normalized()
+		pts.append(d)
+		g.reveal(t.center + d * (t.radius + t.sphere_h(d)))
+		if k % 25 == 12 and planet_fill != null:
+			var key := planet_fill.key_of(d)
+			planet_fill.record_find(key, planet_fill._arrays(key), true)
+	g.flush()
+	map_view.show_map()
+	while not g.ready():
+		await get_tree().process_frame
+	var last: Vector3 = pts[-1]
+	planet_stream.set_process(false)       # кадр: робот «там», шар не трогаем
+	robot.set_meta("planet_pos", t.center + last * (t.radius + t.sphere_h(last)))
+	map_view.set_globe(true)
+	map_view._gdist = 175.0
+	map_view._gpitch += 0.25
+	await get_tree().create_timer(0.5).timeout
+	_shot_wait = false
 
 # ---------------------------------------------------------------- ран
 

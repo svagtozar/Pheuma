@@ -97,11 +97,24 @@ static func to_screen(d: Vector2, up: Vector2, radius: float, reach := SPAN) -> 
 	var rt := Vector2(-up.y, up.x)
 	return Vector2(d.dot(rt), -d.dot(up)) / reach * radius
 
+## Робот ушёл с участка по шару (ProtoGlobe): рельеф вокруг — запечённый
+## кусок шара, метки — завод и найденные россыпи; всё в мировой системе у робота.
+var far := false
+var _white: ImageTexture
+
 func _process(dt: float) -> void:
 	if data == null or robot == null or not is_visible_in_tree():
 		return
 	_t += dt
 	var p: Vector3 = robot.get_meta("planet_pos", robot.global_position)
+	var g: ProtoGlobe = data.globe
+	far = g != null and g.away(p)
+	if g != null:
+		g.reveal(p)
+		g.flush()
+	if far:
+		_process_far(g, p)
+		return
 	underground = p.y < data.height_at(p.x, p.z) - 2.5
 	data.reveal(p, underground)
 	data.flush()
@@ -117,8 +130,65 @@ func _process(dt: float) -> void:
 	_mat.set_shader_parameter("t", _t)
 	_icons.queue_redraw()
 
+func _process_far(g: ProtoGlobe, p: Vector3) -> void:
+	underground = false
+	var pt := g.patch_for(p)
+	if _white == null:
+		var im := Image.create(4, 4, false, Image.FORMAT_L8)
+		im.fill(Color.WHITE)
+		_white = ImageTexture.create_from_image(im)
+	var c := cam if cam != null else get_viewport().get_camera_3d()
+	var f := -c.global_basis.z if c != null else Vector3.FORWARD
+	if robot.has_meta("planet_turn"):
+		f = (robot.get_meta("planet_turn") as Basis).inverse() * f
+	var up := Vector2(f.dot(pt.e1), f.dot(pt.e3))
+	up = up.normalized() if up.length() > 0.01 else Vector2(0, -1)
+	_mat.set_shader_parameter("relief", pt.tex)
+	_mat.set_shader_parameter("fog", _white)
+	_mat.set_shader_parameter("caves", _white)
+	_mat.set_shader_parameter("fog_under", _white)
+	_mat.set_shader_parameter("center", g.patch_uv(p))
+	_mat.set_shader_parameter("fwd", up)
+	_mat.set_shader_parameter("span", Vector2(span, span) / (ProtoGlobe.PATCH * 2.0))
+	_mat.set_shader_parameter("under", 0.0)
+	_mat.set_shader_parameter("t", _t)
+	_icons.queue_redraw()
+
+## Метки вдали от участка: в мировой системе у робота (шар под ним повёрнут).
+func _draw_far(g: ProtoGlobe) -> void:
+	var c := size * 0.5
+	var rad := size.x * 0.5
+	var cm := cam if cam != null else get_viewport().get_camera_3d()
+	var f := -cm.global_basis.z if cm != null else Vector3.FORWARD
+	var up := Vector2(f.x, f.z)
+	up = up.normalized() if up.length() > 0.01 else Vector2(0, -1)
+	var fr: Transform3D = robot.get_meta("planet_frame", Transform3D.IDENTITY)
+	var rp := robot.global_position
+	var marks: Array = [{"kind": "factory", "pos": g.factory, "color": ProtoMapData.KINDS.factory[1]}]
+	if g.fill != null:
+		for id in g.fill.finds:
+			if g.fill.finds[id].found:
+				marks.append(g.fill.finds[id])
+	for m in marks:
+		var w: Vector3 = fr * (m.pos as Vector3)
+		var s := to_screen(Vector2(w.x - rp.x, w.z - rp.z), up, rad, span)
+		var edge := s.length() > rad - 12.0
+		if edge:
+			if not m.kind in EDGE_KINDS:
+				continue
+			s = s.normalized() * (rad - 12.0)
+			_edge_arrow(c + s, s.normalized(), m.color)
+		else:
+			draw_marker(_icons, m.kind, c + s, m.color, icon_k)
+	var rf := robot.global_basis.z
+	var a := to_screen(Vector2(rf.x, rf.z), up, 1.0)
+	_arrow(_icons, c, a.normalized() if a.length() > 0.001 else Vector2(0, -1), 11.0, Color(1, 1, 1))
+
 func _draw_icons() -> void:
 	if data == null or robot == null:
+		return
+	if far:
+		_draw_far(data.globe)
 		return
 	var c := size * 0.5
 	var rad := size.x * 0.5
