@@ -21,6 +21,8 @@ extends Node3D
 ##   --auto=bump --screenshot=путь.png — упереться в дробилку и перешагнуть трубу
 ##   (проверка столкновений), кадры путь_1..2.png
 ##   --auto=jump --screenshot=путь.png — разбег и прыжок, кадры путь_1..4.png
+##   --auto=hook --screenshot=путь.png — кисть-крюк втягивает робота на уступ
+##     (ProtoHookDemo), кадры путь_1..4.png
 ##   --auto=hurt --screenshot=путь.png — прочность корпуса (ProtoHealth): падение с
 ##   высоты, шаг в лаву или кислоту, поломка, сборка на базе; кадры путь_1..4.png.
 ##   В --play: H / D-pad → (держать) — починить корпус материалом из груза, у завода
@@ -349,6 +351,12 @@ func _ready() -> void:
 			if climate != null and climate.flora != null:
 				climate.flora.terrain_changed(c, r)
 		pl.digger = digger
+		if auto == "hook":
+			var hd := ProtoHookDemo.new()
+			hd.name = "hook_demo"
+			hd.setup(pl, shot_path.get_basename() if shot_path != "" else "user://hook")
+			add_child(hd)
+			shot_path = ""
 		if auto == "swim":
 			var sd := ProtoSwimDemo.new()
 			sd.name = "swim_demo"

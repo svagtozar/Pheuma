@@ -8,9 +8,11 @@ extends Node
 ##   кнопкой, ещё Q/E), колесо — дистанция. F или правый курок (действие
 ##   tool_work, держать) — работать инструментом: бур выдвигается из правого
 ##   предплечья, отпустить — уходит. У друзы бур выбуривает кристаллы (ProtoMining).
-##   G — выстрелить кистью туда, куда смотрит камера, и подтянуться (G ещё
-##   раз — отпустить).
-##   Геймпад: левый стик — ходьба, правый — камера, L3 — бег, A — прыжок, RT — бур,
+##   G — выстрелить кистью в центр экрана (до HOOK_RANGE м): кисть вцепляется в
+##   породу, трос втягивает робота к ней, и вверх тоже; под кромкой уступа —
+##   подсаживает наверх (G ещё раз — отпустить, Пробел — отпустить с подскоком).
+##   Застрял так, что не шагнуть никуда (яма после бура, засыпало) — сам выбирается.
+##   Геймпад: левый стик — ходьба, правый — камера, L3 — бег (щелчок, до остановки), A — прыжок, RT — бур,
 ##   LT — кисть, D-pad вверх/вниз — дистанция (раскладка — ProtoControls).
 ## Скорость хода, высота уступа и прыжка зависят от гравитации планеты.
 ## Высота под ногами — по видимой сетке рельефа и верху деталей завода
@@ -47,8 +49,23 @@ var swim_hold := 0.0         # скриптовый гребок (проверк
 var capture := false         # --play: захватывать курсор для камеры мышью
 var _captured_once := false
 var _resume_capture := false
+var sprint_latch := false    # геймпад: L3 щелчком включает бег до остановки
+var hook_at := Vector3.INF   # куда вцепилась кисть (мир); INF — не вцепилась
+var hook_t := 0.0            # сколько тянет трос
+var mantle := Vector3.INF   # подсадка на уступ после троса: точка наверху; INF — нет
+# Камера: сглаженная точка у робота и длина штанги (коротится сразу, растёт плавно).
+var cam_pivot := Vector3.INF
+var boom := -1.0
+var boom_v := 0.0
+var stuck_t := 0.0           # сколько игрок жмёт ход, а робот стоит на месте
+var fov_base := -1.0
 
-const SPRINT_MULT := 2.3     # бег — во столько раз быстрее шага
+const SPRINT_MULT := 3.2     # бег — во столько раз быстрее шага
+const SPRINT_ACC := 2.2      # и разгоняется во столько раз резвее
+const SPRINT_FOV := 7.0      # на бегу угол камеры шире — скорость видна
+const HOOK_RANGE := 20.0     # кисть-крюк достаёт до стены на столько м от робота
+const HOOK_SPEED := 8.0      # м/с — трос тянет робота к кисти
+const HOOK_TIME := 4.0       # дольше не тянет: застрял — отпускает
 const G := 14.0              # м/с² при 1 g (чуть «игровее» настоящих 9.8)
 const JUMP_V := 5.5          # м/с при отрыве: ≈1.1 м на 1 g (выше трубы), на лёгкой планете выше
 const JUMP_MAX_H := 2.4      # потолок высоты прыжка на совсем лёгкой планете
@@ -84,6 +101,7 @@ var jump_auto := false
 var jump_t := 0.0
 var jump_prefix := ""
 var jump_shots := 0
+var jump_side := 0.0         # с какой стороны разбега камера (−1.35 или 1.35)
 var _was_air := false
 # Проверка столкновений (--auto=bump): упереться в дробилку, перешагнуть трубу.
 var bump_view: ProtoPneumaticsView
@@ -158,7 +176,7 @@ func _finale(dt: float) -> void:
 	if anim:
 		anim.work = move_toward(anim.work, 1.0 if finale > 0.5 and finale < 4.5 else 0.0, dt * 5.0)
 	if fist and finale > 5.5 and fist.state == "dock" and finale < 6.0:
-		var hit := _aim_point()
+		var hit := aim_point()
 		fist.fire(robot.to_local(hit) if hit != Vector3.INF else Vector3(0.9, 1.5, 3.2), false)
 	if finale > 9.0:
 		get_tree().quit(0)
@@ -186,6 +204,8 @@ func _unhandled_input(e: InputEvent) -> void:
 		var d := ProtoControls.mouse_look(e.relative)
 		cam_yaw += d.x
 		cam_pitch = clampf(cam_pitch + d.y, PITCH_MIN, PITCH_MAX)
+	elif e is InputEventJoypadButton and e.is_action_pressed(ProtoControls.SPRINT):
+		sprint_latch = not sprint_latch
 	elif e is InputEventMouseButton and e.pressed:
 		if e.button_index == MOUSE_BUTTON_LEFT and capture and not captured:
 			Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
@@ -214,6 +234,7 @@ func _process(dt: float) -> void:
 		_captured_once = true
 		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 	var want := Vector3.ZERO
+	var sprint := false
 	_liquid_state()
 	swim_in = swim_hold
 	# Тяжёлая планета — шаг медленнее, лёгкая — быстрее (ProtoWorldStyle).
@@ -233,17 +254,27 @@ func _process(dt: float) -> void:
 		if swim:
 			# Плывя: Прыжок — грести вверх, Бег — нырнуть.
 			swim_in = clampf(swim_hold + Input.get_action_strength(ProtoControls.JUMP) - Input.get_action_strength(ProtoControls.SPRINT), -1.0, 1.0)
-		elif Input.is_action_pressed(ProtoControls.SPRINT):
-			top_speed *= SPRINT_MULT
-		if Input.is_action_just_pressed(ProtoControls.JUMP) and _can_jump():
-			jump()
+		else:
+			# Стик отпущен — щелчок L3 больше не держит бег.
+			if inp.length() < 0.2:
+				sprint_latch = false
+			if sprint_latch or Input.is_action_pressed(ProtoControls.SPRINT):
+				sprint = true
+				top_speed *= SPRINT_MULT
+		if Input.is_action_just_pressed(ProtoControls.JUMP):
+			if hook_at != Vector3.INF and fist and fist.state == "pull":
+				_hook_end(true)     # прыжок с троса — отпустить с подскоком
+			elif _can_jump():
+				jump()
 		if bump_view != null:
 			inp = Vector2(0, 1)
 			if bump_t > 4.0:
+				sprint = true
 				top_speed *= SPRINT_MULT
 			_auto_bump(dt)
 		if jump_auto:
 			inp = Vector2(0, 1)
+			sprint = true
 			top_speed *= SPRINT_MULT
 			_auto_jump(dt)
 		if drill_auto:
@@ -255,11 +286,9 @@ func _process(dt: float) -> void:
 			anim.work = move_toward(anim.work, use, dt * 5.0)
 		if Input.is_action_just_pressed(ProtoControls.FIST) and fist:
 			if fist.state == "dock":
-				var hit := _aim_point()
-				if hit != Vector3.INF:
-					fist.fire(robot.to_local(hit), true)
+				hook_fire()
 			else:
-				fist.release()
+				_hook_end(false)
 		if inp != Vector2.ZERO:
 			# Вперёд — от камеры: камера смотрит вдоль (sin yaw, cos yaw).
 			want = move_dir(cam_yaw, inp)
@@ -273,22 +302,27 @@ func _process(dt: float) -> void:
 	# В жидкости вязнет: чем глубже и гуще, тем медленнее.
 	if wet_f > 0.0:
 		top_speed *= ProtoSwim.speed_mult(visc, wet_f)
-	# Подтягивание: трос тянет робота к кисти.
-	if fist and fist.state == "pull":
-		var tw := robot.to_global(fist.target)
-		var to := tw - robot.position
-		if Vector2(to.x, to.z).length() > 1.0:
-			want = Vector3(to.x, 0, to.z).normalized()
-			top_speed = 2.6
-		else:
-			fist.release()
 	# В воздухе разгон слабее: направление прыжка почти не поменять.
-	var acc := 1.2 if air else 3.0 * terrain.style.walk_mult()
+	var acc := 1.2 if air else 3.0 * terrain.style.walk_mult() * (SPRINT_ACC if sprint else 1.0)
 	if swim:
 		acc = 2.0 / (1.0 + visc * 0.3)
 	vel = vel.move_toward(want * top_speed, dt * acc)
+	# Кисть-крюк: держит точку в мире, трос тянет робота к ней (и вверх).
+	_hook(dt)
+	if mantle != Vector3.INF:
+		var mf := Vector3(mantle.x - robot.position.x, 0, mantle.z - robot.position.z)
+		if not air or mf.length() < 0.2:
+			mantle = Vector3.INF
+			vel *= 0.3          # встал на уступ — не скользить дальше
+		elif robot.position.y > mantle.y - 0.1:
+			vel = mf.normalized() * 3.5     # над кромкой — шагнуть на уступ
+		else:
+			vel = Vector3.ZERO              # ещё под кромкой — вверх вдоль стены
+	var was := robot.position
 	_move((vel + _drift()) * dt)
 	_vertical(dt)
+	if route.is_empty() and not busy and not drill_auto and not jump_auto and bump_view == null:
+		_unstick(dt, want, was)
 	if vel.length() > 0.05:
 		robot.rotation.y = lerp_angle(robot.rotation.y, atan2(vel.x, vel.z), minf(1.0, dt * 6.0))
 		if not route.is_empty():
@@ -300,7 +334,7 @@ func _process(dt: float) -> void:
 		anim.vy = vy
 	_mine(dt)
 	_underground(dt)
-	_camera()
+	_camera(dt, sprint and vel.length() > top_speed * 0.6 / SPRINT_MULT)
 	_route_shots()
 
 ## Добыча: цель бура, рука к ней, робот доворачивается к кристаллу.
@@ -634,11 +668,75 @@ func _move(d: Vector3) -> void:
 		return
 	_settle()
 
+## Застрял: игрок держит ход больше UNSTICK_T с, робот не сдвинулся и не может
+## шагнуть ни в одну сторону (яма глубже прыжка после бура, насыпь вокруг, щель
+## под сводом, зажат машиной) — выбраться на ближайшее место, где можно стоять,
+## лучше в сторону хода. Просто упёрся в стену — не помогает: отойти можно.
+const UNSTICK_T := 1.2
+
+func _unstick(dt: float, want: Vector3, was: Vector3) -> void:
+	var moved := Vector2(robot.position.x - was.x, robot.position.z - was.z).length()
+	if want.length() < 0.1 or air or swim or moved > 0.25 * dt:
+		stuck_t = 0.0
+		return
+	stuck_t += dt
+	if stuck_t < UNSTICK_T:
+		return
+	stuck_t = 0.0
+	if not trapped():
+		return
+	var spot := free_spot(robot.position, want)
+	if spot == Vector3.INF:
+		return
+	robot.position = spot
+	vel = Vector3.ZERO
+	# Небольшой подскок — видно, что выбрался, а не телепортировался молча.
+	air = true
+	vy = 2.0
+	if ground:
+		ground.snap(spot.y)
+
+## Ни в одну из 8 сторон не шагнуть (и прыжком — яма глубже прыжка).
+func trapped() -> bool:
+	var p := robot.position
+	var gg := G * terrain.style.gravity
+	var jump_h := minf(JUMP_V, sqrt(2.0 * gg * JUMP_MAX_H))
+	jump_h = jump_h * jump_h / (2.0 * gg)
+	var step := terrain.style.step_height()
+	for k in 8:
+		var a := TAU * k / 8.0
+		var np := p + Vector3(sin(a), 0, cos(a)) * 0.3
+		var g := ground_at(np + Vector3(0, 0.7, 0))
+		var body := maxf(g, p.y)
+		if not _blocked(np, g, body, maxf(step, jump_h * 0.9)):
+			return false
+	return true
+
+## Ближайшее к p место, где робот может стоять: пол не выше 2.6 м, корпус не в
+## породе и не в машине. Сначала — в сторону dir. INF — ничего в 3.5 м.
+func free_spot(p: Vector3, dir: Vector3) -> Vector3:
+	var f := Vector3(dir.x, 0, dir.z)
+	f = f.normalized() if f.length() > 0.01 else Vector3(0, 0, 1)
+	for r: float in [0.6, 1.0, 1.5, 2.0, 2.6, 3.5]:
+		for a: float in [0.0, 0.5, -0.5, 1.0, -1.0, 1.6, -1.6, 2.3, -2.3, PI]:
+			var q := p + f.rotated(Vector3.UP, a) * r
+			var g := ground_at(Vector3(q.x, p.y + 3.0, q.z))
+			if g - p.y > 2.6 or g < p.y - 4.0:
+				continue
+			var ok := true
+			for h: float in [0.3, 0.9, 1.5]:
+				if terrain.solid(q.x, g + h, q.z):
+					ok = false
+					break
+			if ok and not _hits_machine(Vector3(q.x, g, q.z)):
+				return Vector3(q.x, g, q.z)
+	return Vector3.INF
+
 ## Шаг в np не пройти: уступ выше step, порода на уровне груди (в прыжке — и ног)
 ## или машина.
 func _blocked(np: Vector3, g: float, body: float, step: float) -> bool:
 	return (g - robot.position.y) > step or terrain.solid(np.x, body + 1.2, np.z) \
-			or (air and terrain.solid(np.x, robot.position.y + 0.3, np.z)) \
+			or (air and (terrain.solid(np.x, robot.position.y + 0.3, np.z) or terrain.solid(np.x, robot.position.y + 0.9, np.z))) \
 			or (_hits_machine(Vector3(np.x, body, np.z)) and not _hits_machine(robot.position))
 
 ## Высота и наклон — по видимой сетке рельефа (RobotGround); поле плотности —
@@ -695,9 +793,15 @@ func auto_jump(prefix: String) -> void:
 
 func _auto_jump(dt: float) -> void:
 	jump_t += dt
-	# Камера сбоку, идёт вдоль разбега.
-	cam_yaw = robot.rotation.y - 1.35
+	# Камера сбоку, идёт вдоль разбега — с той стороны, где склон не заслоняет.
 	cam_focus = robot.position + Vector3(0, 1.1, 0)
+	if jump_side == 0.0:
+		var room := func(sd: float) -> float:
+			var y := robot.rotation.y + sd
+			var d := Basis(Vector3.UP, y) * Basis(Vector3.RIGHT, cam_pitch) * Vector3(0, 0, -cam_dist)
+			return boom_hard(cam_focus, d)
+		jump_side = -1.35 if room.call(-1.35) >= room.call(1.35) else 1.35
+	cam_yaw = robot.rotation.y + jump_side
 	if jump_t > 2.4 and jump_t < 2.5 and _can_jump():
 		jump()
 	var shot := ""
@@ -909,35 +1013,203 @@ func _underground(dt: float) -> void:
 	env.fog_light_color = fog_out.lerp(Color(0.04, 0.045, 0.055), under)
 	env.fog_density = lerpf(fog_out_d, 0.06, under)
 
-## Точка прицела: луч из камеры до породы (не дальше 14 м).
-func _aim_point() -> Vector3:
+## Точка прицела (центр экрана): луч из камеры до породы, не дальше HOOK_RANGE
+## от робота. Порода между камерой и роботом не в счёт.
+func aim_point() -> Vector3:
 	var from := cam.global_position
-	var dir := -cam.global_transform.basis.z
-	var t := 1.0
-	while t < 14.0:
+	var dir := _aim_dir()
+	var eye := robot.position + Vector3(0, 1.5, 0)
+	# Начать с точки луча, ближайшей к роботу — не цепляться за камеру.
+	var t := maxf(0.5, (eye - from).dot(dir))
+	var far := t + HOOK_RANGE
+	var last := from + dir * t
+	while t < far:
 		var q := from + dir * t
 		if terrain.solid(q.x, q.y, q.z):
-			return q - dir * 0.15
-		t += 0.2
+			# Уточнить поверхность делением отрезка.
+			var a := last
+			var b := q
+			for k in 5:
+				var m := (a + b) * 0.5
+				if terrain.solid(m.x, m.y, m.z): b = m
+				else: a = m
+			return a - dir * 0.1 if a.distance_to(eye) <= HOOK_RANGE else Vector3.INF
+		last = q
+		t += 0.25
 	return Vector3.INF
 
-## Камера на пружинной штанге: не заходит в породу.
-func _camera() -> void:
-	var pivot := robot.position + Vector3(0, 1.6, 0) if cam_focus == Vector3.INF else cam_focus
+## Камера на пружинной штанге: не заходит в породу. Точка у робота сглажена
+## (стопы на неровном полу пещеры качают корпус), штанга при упоре в свод
+## укорачивается сразу, а отрастает плавно — не щёлкает туда-сюда у стены.
+func _camera(dt := 1.0 / 60.0, running := false) -> void:
+	var raw := robot.position + Vector3(0, 1.6, 0) if cam_focus == Vector3.INF else cam_focus
+	if cam_pivot == Vector3.INF or cam_pivot.distance_to(raw) > 4.0 or cam_focus != Vector3.INF:
+		cam_pivot = raw
+	else:
+		# По горизонтали — почти вплотную, по высоте — мягче (шаги, уступы).
+		var kx := 1.0 - exp(-dt * 25.0)
+		var ky := 1.0 - exp(-dt * 9.0)
+		cam_pivot = Vector3(lerpf(cam_pivot.x, raw.x, kx), lerpf(cam_pivot.y, raw.y, ky), lerpf(cam_pivot.z, raw.z, kx))
+	var pivot := cam_pivot
 	var dir := Basis(Vector3.UP, cam_yaw) * Basis(Vector3.RIGHT, cam_pitch) * Vector3(0, 0, -1)
 	var dist := cam_dist * lerpf(1.0, 0.8, under)
-	var want := pivot + dir * dist + Basis(Vector3.UP, cam_yaw) * Vector3(-0.7, 0, 0)
-	var d := want - pivot
-	var steps := int(d.length() / 0.15) + 1
-	var last := pivot
-	for i in range(1, steps + 1):
-		var q := pivot + d * (float(i) / steps)
-		if terrain.solid(q.x, q.y, q.z) or terrain.solid(q.x, q.y + 0.3, q.z):
-			last -= d.normalized() * 0.15
-			break
-		last = q
-	cam.position = cam.position.lerp(last, 0.35) if cam.position.distance_to(last) < 3.0 else last
+	var d := dir * dist + Basis(Vector3.UP, cam_yaw) * Vector3(-0.7, 0, 0)
+	var hard := boom_hard(pivot, d)
+	var free := minf(boom_free(pivot, d), hard)
+	if boom < 0.0:
+		boom = free
+		boom_v = 0.0
+	else:
+		# Пружина с критическим затуханием: к стене — за ~0.15 с, от стены — за ~0.6 с.
+		# Без рывка: выступ свода, вдруг вставший между камерой и роботом, «наезжает»;
+		# пару кадров камера может быть в породе — изнутри её грани не рисуются.
+		boom = _smooth(boom, free, 0.15 if free < boom else 0.6, dt)
+	# Жёсткий упор: видимая сетка рельефа и машины прямо на штанге — камера не
+	# уходит за них (изнутри порода чёрная), тут без сглаживания.
+	boom = minf(boom, hard)
+	cam.position = pivot + d.normalized() * boom
 	cam.look_at(pivot + Basis(Vector3.UP, cam_yaw) * Vector3(0, -0.2, 1.5) if cam_focus == Vector3.INF else pivot)
+	# Бег — угол чуть шире.
+	if fov_base < 0.0:
+		fov_base = cam.fov
+	cam.fov = lerpf(cam.fov, fov_base + (SPRINT_FOV if running else 0.0), 1.0 - exp(-dt * 4.0))
+
+## Плавное приближение cur к to за время ~smooth (скорость — в boom_v).
+func _smooth(cur: float, to: float, smooth: float, dt: float) -> float:
+	var w := 2.0 / smooth
+	var x := w * dt
+	var e := 1.0 / (1.0 + x + 0.48 * x * x + 0.235 * x * x * x)
+	var ch := cur - to
+	var tmp := (boom_v + w * ch) * dt
+	boom_v = (boom_v - w * tmp) * e
+	return to + (ch + tmp) * e
+
+## До чего штанга упирается по-настоящему: шар 0.2 м по сетке рельефа и телам
+## машин (то, что видно), и центр штанги по полю плотности.
+func boom_hard(pivot: Vector3, d: Vector3) -> float:
+	var len := d.length()
+	var n := d / maxf(len, 0.001)
+	var hard := len
+	var w := robot.get_world_3d() if robot != null and robot.is_inside_tree() else null
+	if w != null:
+		var sp := SphereShape3D.new()
+		sp.radius = 0.2
+		var q := PhysicsShapeQueryParameters3D.new()
+		q.shape = sp
+		q.transform = Transform3D(Basis(), pivot)
+		q.motion = d
+		q.collision_mask = ProtoMachines.LAYER_GROUND | ProtoMachines.LAYER_MACHINES
+		var r := w.direct_space_state.cast_motion(q)
+		if r.size() == 2 and r[0] < 1.0:
+			hard = r[0] * len
+	var t := 0.2
+	while t < hard:
+		var p := pivot + n * t
+		if terrain.solid(p.x, p.y, p.z):
+			hard = t - 0.1
+			break
+		t += 0.1
+	return maxf(0.3, hard)
+
+## Сколько штанги от pivot вдоль d свободно от породы: проба «толстая» —
+## центр и четыре точки вокруг (0.3 м), с запасом 0.35 м до стены.
+func boom_free(pivot: Vector3, d: Vector3) -> float:
+	var n := d.normalized()
+	var side := n.cross(Vector3.UP)
+	if side.length() < 0.1:
+		side = Vector3.RIGHT
+	side = side.normalized()
+	var up := side.cross(n).normalized()
+	var offs := [Vector3.ZERO, side * 0.3, -side * 0.3, up * 0.3, -up * 0.3]
+	var len := d.length()
+	var t := 0.3
+	while t < len:
+		var q := pivot + n * t
+		for o: Vector3 in offs:
+			var p: Vector3 = q + o * clampf(t / 1.2, 0.0, 1.0)
+			if terrain.solid(p.x, p.y, p.z):
+				return maxf(0.4, t - 0.35)
+		t += 0.12
+	return len
+
+## Выстрел кистью: вцепиться в породу, куда смотрит камера (центр экрана),
+## не дальше HOOK_RANGE от робота. Мимо — кисть долетает и возвращается.
+func hook_fire() -> void:
+	if fist == null or fist.state != "dock":
+		return
+	var hit := aim_point()
+	if hit != Vector3.INF:
+		hook_to(hit)
+	else:
+		hook_at = Vector3.INF
+		var from := robot.position + Vector3(0, 1.5, 0)
+		fist.fire(robot.to_local(from + _aim_dir() * 6.0), false)
+
+## Вцепиться кистью в точку мира и подтянуться к ней.
+func hook_to(at: Vector3) -> void:
+	hook_at = at
+	hook_t = 0.0
+	fist.fire(robot.to_local(at), true)
+
+## Трос: кисть держит точку в мире (цель пересчитывается в пространство робота,
+## иначе она «едет» вместе с ним); натянут — тянет робота по прямой к ней, и
+## вверх тоже; у стены под уступом — подсаживает наверх.
+func _hook(dt: float) -> void:
+	if fist == null:
+		return
+	if hook_at == Vector3.INF:
+		return
+	if fist.state == "dock" or fist.state == "back":
+		hook_at = Vector3.INF
+		return
+	fist.target = robot.to_local(hook_at)
+	if fist.state != "pull":
+		return
+	hook_t += dt
+	# Ноги — на 1.2 м ниже кисти и чуть перед стеной: робот повисает, держась за неё.
+	var flat := Vector3(hook_at.x - robot.position.x, 0, hook_at.z - robot.position.z)
+	var back := flat.normalized() * 0.45 if flat.length() > 0.45 else flat
+	var to := hook_at - back - Vector3(0, 1.2, 0) - robot.position
+	if to.length() < 0.7 or hook_t > HOOK_TIME:
+		_hook_end(false)
+		return
+	var v := to.normalized() * minf(HOOK_SPEED, 2.0 + hook_t * 16.0)
+	v *= clampf(to.length() / 1.2, 0.4, 1.0)
+	vel = Vector3(v.x, 0, v.z)
+	if v.y > 0.3 or air:
+		air = true
+		vy = v.y
+	# Упёрся в стену и почти не движется — долез: отпустить (с подсадкой).
+	if hook_t > 0.4 and Vector2(to.x, to.z).length() < 1.1 and absf(to.y) < 0.9:
+		_hook_end(false)
+
+## Отпустить трос. Над кистью уступ, на который можно встать, — подскочить на
+## него; hop — отпустили Прыжком: подскок и вперёд.
+func _hook_end(hop: bool) -> void:
+	var at := hook_at
+	hook_at = Vector3.INF
+	if fist:
+		fist.release()
+	if at == Vector3.INF:
+		return
+	var gg := G * terrain.style.gravity
+	var flat := Vector3(at.x - robot.position.x, 0, at.z - robot.position.z)
+	var fwd := flat.normalized() if flat.length() > 0.05 else Basis(Vector3.UP, robot.rotation.y) * Vector3(0, 0, 1)
+	# Верх уступа — и по сетке, и по полю плотности (сетка сглаживает кромку).
+	var q := at + fwd * 0.6 + Vector3(0, 2.5, 0)
+	var top := maxf(ground_at(q), terrain.floor_at(q))
+	var rise := top - robot.position.y
+	if rise > 0.2 and rise < 3.2 and not terrain.solid(q.x, top + 1.2, q.z):
+		air = true
+		vy = sqrt(2.0 * gg * (rise + 0.4))
+		vel = Vector3.ZERO
+		mantle = Vector3(q.x, top, q.z)
+	elif hop:
+		air = true
+		vy = maxf(vy, minf(JUMP_V, sqrt(2.0 * gg * JUMP_MAX_H)))
+
+func _aim_dir() -> Vector3:
+	return -cam.global_transform.basis.z
 
 func _route_shots() -> void:
 	if shot_prefix == "" or shot_n >= shots.size():
