@@ -331,6 +331,8 @@ func auto_drill(prefix: String) -> void:
 	cam_pitch = 0.42   # штанга вверх: камера над друзой
 	var cands := []
 	for d in mining.druses:
+		if d.node.has_meta("far_id"):
+			continue          # россыпи на шаре вдали от участка — не для скриптовой добычи
 		var nrm: Vector3 = d.node.get_meta("normal")
 		var c: MeshInstance3D = d.crystals[0]
 		var base: Vector3 = c.global_position

@@ -29,6 +29,7 @@ var cliff := Color(0.3, 0.27, 0.25)
 var vein := Color(0.5, 0.8, 1.0)
 var outcrops: Array = []        # цвета материалов, выходящих на поверхность пятнами
 var bio := Callable()           # (x, z) → цвет поросли, a — доля (ProtoFlora.carpet)
+var ground_model: ProtoGround   # толща: почва, осыпь, пласты (цвет стен и обрывов); null — прежний вид
 var patch_noise := FastNoiseLite.new()
 
 var style: ProtoWorldStyle
@@ -200,6 +201,11 @@ var flat_frame := true        # шар не повёрнут: планета = �
 const BLEND := 30.0           # ширина перехода от участка к остальному шару, м
 var _far := FastNoiseLite.new()
 var _far_big := FastNoiseLite.new()
+var _basin := FastNoiseLite.new()
+## Моря вдали от участка: глубина котловин (0 — сухая планета) и уровень моря
+## над radius (−INF — морей нет). Задаёт ProtoPlanetFill до постройки шара.
+var basin_depth := 0.0
+var sea_level := -INF
 
 ## Включить шар радиуса r: центр под серединой участка.
 func make_sphere(r: float) -> void:
@@ -220,6 +226,9 @@ func _init_far() -> void:
 	_far_big.frequency = 0.0022
 	_far_big.fractal_octaves = 5
 	_far_big.fractal_type = FastNoiseLite.FRACTAL_RIDGED
+	_basin.seed = noise.seed + 177
+	_basin.frequency = 0.0028
+	_basin.fractal_octaves = 3
 
 ## Насколько точка за краем участка по горизонтали (0 — внутри).
 func out_dist(x: float, z: float) -> float:
@@ -256,7 +265,21 @@ func far_h(d: Vector3, out: float) -> float:
 		var f: float = h / st - floor(h / st)
 		h = lerpf(h, (floor(h / st) + smoothstep(0.7, 1.0, f)) * st, 0.85)
 	h += _far_big.get_noise_3dv(q) * 30.0 * smoothstep(40.0, 420.0, out) - 4.0 * smoothstep(20.0, 120.0, out)
+	if basin_depth > 0.0:
+		# Котловины морей: не ближе ~100 м к участку, чтобы море его не залило.
+		var b := _basin.get_noise_3dv(q)
+		h -= smoothstep(-0.05, 0.35, b) * basin_depth * smoothstep(90.0, 260.0, out)
+		return maxf(h, 3.0 - basin_depth)
 	return maxf(h, 3.0)
+
+## Точка «на плоскости» для шума цвета, поросли и плодородия вдали от участка:
+## та же, что берёт шар для цвета вершин (без швов, у участка ≈ x, z).
+static func far_key(p: Vector3) -> Vector2:
+	return Vector2(p.x + p.y * 0.37, p.z - p.y * 0.61)
+
+## Направление d (система планеты) → расстояние по дуге от середины участка, м.
+func arc_from_site(d: Vector3) -> float:
+	return acos(clampf(d.y, -1.0, 1.0)) * radius
 
 ## Плотность в системе планеты: у участка — его объёмный рельеф (пещера и
 ## прочее), дальше — шар; глубже 1,5 м над radius — сплошная порода.
@@ -682,7 +705,15 @@ func _color_h(p: Vector3, n: Vector3, vein_m: float, h: float) -> Color:
 	var c := ground
 	var strata := 0.5 + 0.5 * sin(p.y * 1.7 + noise.get_noise_2d(p.x * 3.0, p.z * 3.0) * 2.0)
 	if under > 1.5 or (under > 0.6 and n.y < -0.2):
-		if n.y > 0.55:
+		if ground_model != null:
+			# Стены пещер и ходов — слои толщи: пласты полосами, мерзлота, осыпь у верха.
+			c = ground_model.color_at(p, under)
+			if n.y > 0.55:
+				c = c.lerp(Color(0.62, 0.55, 0.45), 0.2).lightened(0.08)
+				c = c * (0.9 + 0.2 * patch_noise.get_noise_2d(p.x * 2.0, p.z * 2.0))
+			elif n.y < -0.35:
+				c = c.darkened(0.3)
+		elif n.y > 0.55:
 			c = ground.lerp(Color(0.62, 0.55, 0.45), 0.35).lightened(0.12)
 			c = c * (0.9 + 0.2 * patch_noise.get_noise_2d(p.x * 2.0, p.z * 2.0))
 		elif n.y < -0.35:
@@ -694,7 +725,11 @@ func _color_h(p: Vector3, n: Vector3, vein_m: float, h: float) -> Color:
 		c = c * _crevice(p, n)
 	else:
 		var steep: float = clamp((0.8 - n.y) * 2.0, 0.0, 1.0)
-		c = c.lerp(cliff * (0.85 + 0.3 * strata), steep)
+		if ground_model != null:
+			# На крутом почва не держится: обрыв показывает осыпь и пласты.
+			c = c.lerp(ground_model.color_at(p, under + steep * 6.0), steep)
+		else:
+			c = c.lerp(cliff * (0.85 + 0.3 * strata), steep)
 		var depth: float = clamp((under - 1.5) / 6.0, 0.0, 1.0)
 		c = c.darkened(depth * 0.45)
 		# Выходы материалов на ровных местах — пятнами, у каждого пятна свой материал.
