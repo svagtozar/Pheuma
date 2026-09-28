@@ -7,13 +7,15 @@ extends RefCounted
 ## верха (ProtoSurfaceState).
 ## Почва и осыпь — по глубине (повторяют рельеф); пласты пород — по высоте,
 ## с наклоном и изгибом (на обрывах и в стенах пещер видны полосы); мерзлота —
-## линзами под почвой холодных планет.
+## линзами под почвой холодных планет; жилы других пород секут пласты
+## наискось тонкими листами, конкреции — вкраплениями в своём пласте.
 ## Цвет толщи — для рельефа (ProtoTerrain._color_h), материал — что даёт бур.
 
 const SOIL := 0
 const SUBSOIL := 1
 const ICE := 2
 const ROCK := 3                # и дальше: пласты по порядку
+const VEIN := 4                # вид слоя «жила» / «конкреции» (номер слоя — после пластов)
 
 ## Слой: {"name", "sub" (Substance или null), "color", "kind"}.
 var layers: Array = []
@@ -26,6 +28,11 @@ var dip := Vector2(0.08, -0.05)       # наклон пластов (м по в�
 var warp := FastNoiseLite.new()
 var grain := FastNoiseLite.new()
 var lens := FastNoiseLite.new()
+## Жилы: {"layer", "noise", "w"} — лист там, где |шум| < w (тонкие изогнутые
+## стенки через все пласты). Конкреции: {"layer", "noise", "band", "thr"} —
+## округлые включения только в пласте band.
+var veins: Array = []
+var nodules: Array = []
 
 static func for_planet(planet: Planet, ground: Color, cliff: Color, lush := false) -> ProtoGround:
 	var g := ProtoGround.new()
@@ -61,13 +68,58 @@ static func for_planet(planet: Planet, ground: Color, cliff: Color, lush := fals
 	g.band_sum = 0.0
 	for b in g.band_h:
 		g.band_sum += b
+	# Жилы и конкреции — из других твёрдых материалов (если их нет — из тех же).
+	var all_solids: Array = ProtoSky.solid_mats(planet)
+	var other: Array = all_solids.slice(3) if all_solids.size() > 3 else all_solids.duplicate()
+	if other.is_empty():
+		other = [null]
+	for i in r.range_i(1, 2):
+		var s = other[i % other.size()]
+		var n := FastNoiseLite.new()
+		n.seed = planet.seed_value + 101 + i * 17
+		n.frequency = r.range_f(0.025, 0.045)
+		n.fractal_type = FastNoiseLite.FRACTAL_NONE     # гладкий лист, а не крошка
+		n.domain_warp_fractal_type = FastNoiseLite.DOMAIN_WARP_FRACTAL_NONE
+		n.domain_warp_enabled = true
+		n.domain_warp_amplitude = 12.0
+		n.domain_warp_frequency = 0.02
+		var vc: Color = Color(0.8, 0.8, 0.75) if s == null else cliff.lerp(s.color, 0.85).lightened(0.08)
+		vc.a = 1.0
+		g.veins.append({"layer": g.layers.size(), "noise": n, "w": r.range_f(0.02, 0.035)})
+		g.layers.append({"name": (s.name if s != null else "кварц") + " (жила)", "sub": s, "color": vc, "kind": VEIN})
+	var ns = other[other.size() - 1]
+	var cn := FastNoiseLite.new()
+	cn.seed = planet.seed_value + 303
+	cn.noise_type = FastNoiseLite.TYPE_CELLULAR
+	cn.cellular_return_type = FastNoiseLite.RETURN_DISTANCE
+	cn.frequency = 0.35
+	cn.fractal_type = FastNoiseLite.FRACTAL_NONE
+	var nc: Color = Color(0.5, 0.45, 0.4) if ns == null else cliff.lerp(ns.color, 0.8).darkened(0.05)
+	nc.a = 1.0
+	g.nodules.append({"layer": g.layers.size(), "noise": cn, "band": r.range_i(0, g.band_h.size() - 1),
+		"thr": r.range_f(-0.8, -0.72)})
+	g.layers.append({"name": (ns.name if ns != null else "кремень") + " (конкреции)", "sub": ns, "color": nc, "kind": VEIN})
 	return g
+
+## Жила или конкреция в точке (номер слоя) или −1. band — пласт точки.
+func _vein(p: Vector3, band: int) -> int:
+	for v: Dictionary in veins:
+		if absf(v.noise.get_noise_3dv(p)) < v.w:
+			return v.layer
+	for c: Dictionary in nodules:
+		if band == c.band and c.noise.get_noise_3dv(p) < c.thr:
+			return c.layer
+	return -1
 
 ## Номер слоя в точке p (система участка), under — глубина под природной
 ## поверхностью (surface_h − y).
 func layer_at(p: Vector3, under: float) -> int:
 	var k := _upper(p, under)
-	return k if k >= 0 else ROCK + _band(_band_y(p))
+	if k >= 0:
+		return k
+	var b := _band(_band_y(p))
+	var v := _vein(p, b)
+	return v if v >= 0 else ROCK + b
 
 ## Почва, мерзлота или осыпь; −1 — ниже, в пластах.
 func _upper(p: Vector3, under: float) -> int:
@@ -98,12 +150,18 @@ func color_at(p: Vector3, under: float) -> Color:
 	var c: Color
 	if k < 0:
 		var y := _band_y(p)
-		c = layers[ROCK + _band(y)].color
+		var b := _band(y)
+		var v := _vein(p, b)
+		if v >= 0:
+			c = layers[v].color * (0.9 + 0.2 * gr)
+			c.a = 1.0
+			return c
+		c = layers[ROCK + b].color
 		var t := fposmod(y, band_sum)
 		var acc := 0.0
 		var dmin := 99.0
-		for b in band_h:
-			acc += b
+		for bh in band_h:
+			acc += bh
 			dmin = minf(dmin, absf(t - acc))
 		dmin = minf(dmin, t)
 		c = c * (0.93 + 0.1 * gr) * (0.78 + 0.22 * smoothstep(0.0, 0.35, dmin))
@@ -117,12 +175,16 @@ func color_at(p: Vector3, under: float) -> Color:
 ## Что даёт бур или лопата в точке: {"name", "sub", "kind"}.
 func dig_yield(p: Vector3, under: float) -> Dictionary:
 	var l: Dictionary = layers[layer_at(p, under)]
-	return {"name": l.name, "sub": l.sub, "kind": mini(int(l.kind), ROCK)}
+	return {"name": l.name, "sub": l.sub, "kind": int(l.kind)}
 
 func summary() -> String:
 	var names: Array = []
 	for i in range(ROCK, layers.size()):
-		if not names.has(layers[i].name):
+		if layers[i].kind == ROCK and not names.has(layers[i].name):
 			names.append(layers[i].name)
+	var extra: Array = []
+	for i in range(ROCK, layers.size()):
+		if layers[i].kind == VEIN:
+			extra.append(layers[i].name)
 	return "толща: %s %.1f м, осыпь до %.1f м%s; пласты: %s" % [layers[SOIL].name, soil_d, sub_d,
-		", мерзлота" if ice_on else "", ", ".join(PackedStringArray(names))]
+		", мерзлота" if ice_on else "", ", ".join(PackedStringArray(names))] + "; в них: " + ", ".join(PackedStringArray(extra))
