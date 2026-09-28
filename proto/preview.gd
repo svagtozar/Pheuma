@@ -49,6 +49,9 @@ extends Node3D
 ##   Обучение первых минут (ProtoTutorial) — в --play, пока не пройдено; --tutorial —
 ##   заново, --tutorial=N — с шага N (для кадра), --no-tutorial — без него
 ##   Смена дня и ночи и небо — ProtoDayNight (по тегам и сиду планеты);
+##   --surface=frost|thaw|grow[:шагов] — состояние поверхности планеты (ProtoSurfaceState):
+##   иней по всему шару; он же тает у завода и следом ползёт поросль; поросль,
+##   влага и взрыхлённый грунт у завода расползаются (для кадра до/после)
 ##   --time=0..1 — время суток для кадра (0 — полночь, 0,25 — рассвет, 0,5 — полдень)
 ##   --flow=с — прокрутить живые жидкости вперёд (паводок, извержение, корка); с --view=volcano|flood
 ##   --robot=clean (по умолчанию; другой вариант из RobotDesigns или old — прежний
@@ -66,6 +69,8 @@ var seed_value := 14
 var view := "third"
 var planet_on := true         # вся планета вокруг участка (ProtoPlanetStream); --no-planet — только участок
 var planet_stream: ProtoPlanetStream
+var surface: ProtoSurfaceState   # поросль, влага, лёд, грунт по всему шару (терраформинг)
+var surface_demo := ""
 var planet_fill: ProtoPlanetFill   # флора, залежи и моря на шаре вне участка
 var _sea_sub: Substance            # жидкость морей шара (из _liquids)
 var wild_far := -1.0               # --far=м: для --view=wild/shore — так далеко от завода по дуге
@@ -168,7 +173,10 @@ func _ready() -> void:
 		start_fresh = false
 	for a in OS.get_cmdline_user_args():
 		if a.begins_with("--seed="): seed_value = int(a.substr(7))
-		elif a.begins_with("--view="): view = a.substr(7)
+		elif a.begins_with("--view="):
+			view = a.substr(7)
+			if view == "section":
+				planet_on = false       # разрез у края участка: шар заслонил бы его
 		elif a.begins_with("--goal-style="): ProtoPneumaticsView.goal_style = a.substr(13)
 		elif a.begins_with("--screenshot="): shot_path = a.substr(13)
 		elif a.begins_with("--robot="): robot_design = a.substr(8)
@@ -179,6 +187,7 @@ func _ready() -> void:
 		elif a.begins_with("--record="): record = a.substr(9)
 		elif a == "--mute": mute = true
 		elif a == "--no-planet": planet_on = false
+		elif a.begins_with("--surface="): surface_demo = a.substr(10)
 		elif a == "--hud": show_hud = true
 		elif a == "--pad": hud_pad = true
 		elif a == "--cargo": demo_cargo = true
@@ -223,6 +232,7 @@ func _ready() -> void:
 	terrain = ProtoTerrain.new(seed_value, style)
 	print("Облик планеты: ", style.summary())
 	_palette()
+	if terrain.ground_model: print("Толща: ", terrain.ground_model.summary())
 	flora = ProtoFlora.for_planet(planet, style, seed_value)
 	flora.attach(terrain)
 	_lap("planet")
@@ -284,6 +294,7 @@ func _ready() -> void:
 		if planet_fill.sea_sub != null:
 			liquid_zones.append(planet_fill.sea_zone(planet.ambient_temp))
 		_lap("planet_around")
+		_surface(tm)
 	_caption()
 	_map_data()
 	_lap("robot")
@@ -992,6 +1003,92 @@ func _surface_features() -> void:
 			made += 1
 
 ## Инопланетная органика по тегам (ProtoFlora): мох, заросли, пещерные трутовики.
+## Плита-разрез по z = zc: цвет толщи под природной поверхностью (для кадра).
+func _section_slab(zc: float) -> MeshInstance3D:
+	var g := terrain.ground_model
+	var st := 0.25
+	var nx := int(terrain.sx / st)
+	var ny := int(terrain.sy / st)
+	var verts := PackedVector3Array()
+	var cols := PackedColorArray()
+	for x in nx:
+		var px := x * st
+		var h := terrain.surface_h(px + st * 0.5, zc)
+		var sl := (terrain.surface_h(px + st * 0.5 + 1.0, zc) - terrain.surface_h(px + st * 0.5 - 1.0, zc)) * 0.5
+		var up := 1.0 / sqrt(1.0 + sl * sl)
+		for y in ny:
+			var py := y * st
+			if py + st > h:
+				break
+			var q := Vector3(px + st * 0.5, py + st * 0.5, zc)
+			var c: Color = g.color_at(q, h - q.y, up) if g != null else terrain.cliff
+			for v in [Vector3(px, py, zc), Vector3(px + st, py, zc), Vector3(px + st, py + st, zc),
+					Vector3(px, py, zc), Vector3(px + st, py + st, zc), Vector3(px, py + st, zc)]:
+				verts.append(v)
+				cols.append(c)
+	var arr := []
+	arr.resize(Mesh.ARRAY_MAX)
+	arr[Mesh.ARRAY_VERTEX] = verts
+	arr[Mesh.ARRAY_COLOR] = cols
+	var m := ArrayMesh.new()
+	m.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arr)
+	var mat := StandardMaterial3D.new()
+	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	mat.vertex_color_use_as_albedo = true
+	mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+	var mi := MeshInstance3D.new()
+	mi.name = "section"
+	mi.mesh = m
+	mi.material_override = mat
+	return mi
+
+## Состояние поверхности шара: подключить к материалам рельефа (участок, куски,
+## грубый шар); --surface=… — пример для кадра.
+func _surface(tm: ShaderMaterial) -> void:
+	surface = ProtoSurfaceState.new(terrain.center, terrain.radius)
+	surface.name = "surface"
+	add_child(surface)
+	var v1 := Color.from_hsv(0.33, 0.5, 0.42)
+	var v2 := Color.from_hsv(0.22, 0.55, 0.5)
+	if flora.life > 0:
+		v1 = Color.from_hsv(flora.hue, flora.sat * 0.9, flora.val * 0.85)
+		v2 = Color.from_hsv(flora.hue2, flora.sat, flora.val)
+	surface.bind(tm, v1, v2)
+	surface.bind(planet_stream.coarse_mat, v1, v2)
+	if surface_demo != "":
+		_surface_demo()
+	surface.upload()
+
+func _surface_demo() -> void:
+	var parts := surface_demo.split(":")
+	var mode := parts[0]
+	var n := int(parts[1]) if parts.size() > 1 else 40
+	var pc := terrain.plateau()
+	var site := Vector3(pc.x, pc.y, pc.z)
+	var t0 := Time.get_ticks_usec()
+	if mode == "frost" or mode == "thaw":
+		var fn := FastNoiseLite.new()
+		fn.seed = seed_value
+		fn.frequency = 0.012
+		surface.fill(ProtoSurfaceState.ICE, func(d: Vector3) -> float:
+			return clampf(0.62 + fn.get_noise_3dv(d * terrain.radius) * 0.7, 0.0, 1.0))
+	if mode == "thaw":
+		# Тёплый пузырь у завода растёт; талая вода мочит грунт; у завода — семя поросли.
+		surface.paint(site, 18.0, ProtoSurfaceState.VEG, 1.0)
+		for i in n:
+			var r := 40.0 + i * 2.5
+			surface.paint(site, r, ProtoSurfaceState.ICE, 0.0)
+			surface.paint(site, r * 0.85, ProtoSurfaceState.WET, 0.015, true)
+			surface.step_now()
+	elif mode == "grow":
+		surface.paint(site, 16.0, ProtoSurfaceState.VEG, 1.0)
+		surface.paint(Vector3(terrain.lake_c.x, 0.0, terrain.lake_c.y), 30.0, ProtoSurfaceState.WET, 0.9)
+		surface.paint(Vector3(terrain.lake_c.x, 0.0, terrain.lake_c.y), 8.0, ProtoSurfaceState.VEG, 1.0)
+		surface.paint(site + Vector3(-22.0, 0.0, 14.0), 9.0, ProtoSurfaceState.SOIL, 1.0)
+		surface.step_now(n)
+	print("Поверхность: %s, шагов %d, %d мс; текстура %.1f МБ" % [mode, surface.steps,
+		(Time.get_ticks_usec() - t0) / 1000, ProtoSurfaceState.bytes() / 1048576.0])
+
 func _flora() -> void:
 	var keep := func(p: Vector3) -> bool:
 		return not terrain.cave_box.has_point(p) or _clear_of_view(p)
@@ -1272,6 +1369,15 @@ func _robot_and_camera() -> void:
 			cam.far = 4000.0
 			cam.position = robot.position + Vector3(7.0, 4.5, 3.0)
 			cam.look_at(robot.position + Vector3(-30.0, 0.0, 0.0))
+		"section":
+			# Разрез толщи (ProtoGround) у края участка: почва, осыпь, пласты, мерзлота.
+			var zc := 1.0
+			add_child(_section_slab(zc))
+			robot.position = Vector3(pc.x, top, pc.z)
+			cam.far = 400.0
+			cam.fov = 55.0
+			cam.position = Vector3(terrain.sx * 0.5, terrain.sy * 0.55, zc - 58.0)
+			cam.look_at(Vector3(terrain.sx * 0.5, terrain.sy * 0.35, zc))
 		"orbit":
 			# Вся планета с высоты: место посадки сверху.
 			robot.position = Vector3(pc.x, top, pc.z)

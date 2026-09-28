@@ -179,6 +179,9 @@ static func to_dict(r: Node3D) -> Dictionary:
 	var dn = r.get("daynight")
 	if dn != null:
 		d.day_time = dn.time
+	var surf = r.get("surface")
+	if surf != null:
+		d.surface = surf.save_dict()
 	return d
 
 static func apply(r: Node3D, d: Dictionary) -> void:
@@ -245,6 +248,10 @@ static func apply(r: Node3D, d: Dictionary) -> void:
 	if dn != null and d.has("day_time") and dn.running:
 		dn.time = float(d.day_time)
 		dn.update_now()
+	var surf = r.get("surface")
+	if surf != null and d.has("surface"):
+		surf.load_dict(d.surface)
+		surf.upload()
 
 # ---------------------------------------------------------------- пневмозавод
 

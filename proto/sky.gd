@@ -11,6 +11,8 @@ static func palette(planet: Planet, terrain: ProtoTerrain) -> void:
 	terrain.outcrops = solid_mats(planet).slice(0, 5).map(func(m): return m.color)
 	var vein = mat_with(planet, "crystalline")
 	terrain.vein = vein.color if vein != null else Color(0.5, 0.8, 1.0)
+	var lush := planet.tags.any(func(t): return "biosphere" in String(t))
+	terrain.ground_model = ProtoGround.for_planet(planet, c, terrain.cliff, lush)
 
 ## Цвет грунта по тегам (рельеф, диск планеты в меню).
 static func ground_color(planet: Planet) -> Color:
