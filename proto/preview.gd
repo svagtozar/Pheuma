@@ -1,6 +1,6 @@
 extends Node3D
 ## Предпросмотр объёмного 3D-визуала (к игре не подключён).
-##   godot --path . res://proto/preview.tscn -- --seed=14 --view=third|plan|cave|overview --screenshot=путь.png
+##   godot --path . res://proto/preview.tscn -- --seed=14 --view=third|plan|cave|overview|sky --screenshot=путь.png
 ##   --play — ходить самому (WASD, Shift — бег, Пробел — прыжок, камера мышью —
 ##   курсор захвачен, клик захватывает; Esc / Start — пауза, в ней Настройки →
 ##   Управление: переназначение, чувствительность, инверсия
@@ -43,6 +43,8 @@ extends Node3D
 ##   сразу (для кадра; разведан путь от завода к пещере), --map=all — всё разведано
 ##   Обучение первых минут (ProtoTutorial) — в --play, пока не пройдено; --tutorial —
 ##   заново, --tutorial=N — с шага N (для кадра), --no-tutorial — без него
+##   Смена дня и ночи и небо — ProtoDayNight (по тегам и сиду планеты);
+##   --time=0..1 — время суток для кадра (0 — полночь, 0,25 — рассвет, 0,5 — полдень)
 ##   --robot=clean (по умолчанию; другой вариант из RobotDesigns или old — прежний
 ##   каркас; корпус — металл планеты)
 ## Сборка для проверки (фича play3d в export_presets.cfg) стартует с главного
@@ -107,6 +109,9 @@ var bench_out := ""          # --bench=путь.json: куда записать 
 var load_ms := {}            # время загрузки по этапам (для --auto=bench и лога)
 var _lap_t := 0
 var sun: DirectionalLight3D
+var daynight: ProtoDayNight   # смена дня и ночи, небо (ProtoSky)
+var day_time := -1.0          # --time=0..1: время суток (0,5 — полдень, 0 — полночь)
+var yard_light: OmniLight3D   # прожектор над заводом — горит ночью
 var deck: ProtoDeck           # облегчённая графика (Steam Deck или --deck)
 var health: ProtoHealth      # прочность корпуса робота: урон, починка, поломка
 var liquid_zones: Array = [] # жидкости для урона: {sub, temp, level, area}
@@ -166,6 +171,7 @@ func _ready() -> void:
 		elif a.begins_with("--map="): map_demo = a.substr(6)
 		elif a.begins_with("--bench="): bench_out = a.substr(8)
 		elif a == "--deck": ProtoDeck.active = true
+		elif a.begins_with("--time="): day_time = float(a.substr(7))
 		elif a == "--tutorial": tutorial_mode = "0"
 		elif a.begins_with("--tutorial="): tutorial_mode = a.substr(11)
 		elif a == "--no-tutorial": tutorial_mode = "off"
@@ -321,6 +327,12 @@ func _environment() -> void:
 	var sky := ProtoSky.build(planet, self, view == "cave")
 	env = sky.env
 	sun = sky.sun
+	daynight = sky.cycle
+	if day_time >= 0.0:
+		# Кадр в заданное время суток: и у захваченных планет (там солнце стоит).
+		daynight.time = day_time
+		daynight.running = play and auto == ""
+		daynight.update_now()
 	# Плотность дымки и ветер — по тегам (ProtoWorldStyle); под землёй не трогаем.
 	if view != "cave":
 		env.fog_density *= style.fog_mult
@@ -812,6 +824,14 @@ func _factory() -> void:
 	pneu_origin = Vector3(pc.x, top, pc.z - 1.0)
 	pneu_view.setup(pneu, pneu_origin)
 	pneu_view.warm(9.0)
+	yard_light = OmniLight3D.new()
+	yard_light.name = "yard_light"
+	yard_light.light_color = Color(1.0, 0.88, 0.7)
+	yard_light.omni_range = 18.0
+	yard_light.omni_attenuation = 1.2
+	yard_light.light_energy = 0.0
+	yard_light.position = pneu_origin + Vector3(0, 7.0, 3.0)
+	add_child(yard_light)
 	# Знания лаборатория пишет с начала игры (разогрев кадра их не трогает).
 	pneu.knowledge = lab_desk.world
 	lab_desk.net = pneu
@@ -898,6 +918,18 @@ func _robot_and_camera() -> void:
 			var f3 := (tg3 - rp3).normalized()
 			cam.position = _spring(rp3 + Vector3(0, 1.6, 0), sp[2])
 			cam.look_at(rp3 + f3 * 3.5 + Vector3(0, 0.3, 0))
+		"sky":
+			# Небо: робот у завода, камера низко за ним смотрит вверх в сторону
+			# полуденного солнца — видно путь солнца, луны, кольца, звёзды.
+			var rs := Vector3(pc.x + 5.0, 0, pc.z + 4.0)
+			rs.y = terrain.surface_h(rs.x, rs.z)
+			robot.position = rs
+			var nd := daynight.noon_dir if daynight != null else Vector3(0, 0.7, 0.7)
+			var fl := Vector3(nd.x, 0, nd.z).normalized()
+			robot.look_at(rs + fl * 10.0, Vector3.UP, true)
+			cam.fov = 72.0
+			cam.position = rs - fl * 3.2 + fl.cross(Vector3.UP) * 1.2 + Vector3(0, 1.4, 0)
+			cam.look_at(cam.position + fl * 10.0 + Vector3(0, 4.2, 0))
 		_:
 			# Кадр без игрока — прежняя точка и ракурс через весь завод; играя —
 			# свободное место (камеру ставит пружинная штанга ProtoPlayer).
@@ -1241,6 +1273,7 @@ func _controls_menu() -> void:
 
 func _process(dt: float) -> void:
 	_t += dt
+	_night_lights()
 	_map_t -= dt
 	if map_data != null and _map_t <= 0.0:
 		_map_t = 0.5
@@ -1260,6 +1293,22 @@ func _process(dt: float) -> void:
 		print("Кадров в секунду: ", Engine.get_frames_per_second(), " — скриншот: ", shot_path)
 		shot_path = ""
 		get_tree().quit(0)
+
+## Ночью: прожектор над заводом; в кадре без игрока — и фара робота
+## (играя, её включает ProtoPlayer).
+func _night_lights() -> void:
+	if daynight == null:
+		return
+	if yard_light != null:
+		yard_light.light_energy = 2.2 * daynight.night
+	if not (play or auto != "") and view != "cave" and robot != null:
+		var lamp := robot.find_child("head_lamp", true, false) as SpotLight3D
+		if lamp:
+			lamp.light_energy = 3.2 * daynight.night
+		var eye := robot.find_child("eye_light", true, false) as OmniLight3D
+		if eye:
+			eye.light_energy = 0.8 * daynight.night
+			eye.omni_range = 5.0
 
 # ---------------------------------------------------------------- карта
 
@@ -1418,11 +1467,11 @@ func _open_for_shot() -> void:
 		"menu", "settings":
 			run_ui.open.call_deferred(open_win)
 
-## «Новая планета» — выбор в главном меню (сид по умолчанию — следующий).
+## «Новая планета» — выбор в главном меню (сид по умолчанию — новый случайный).
 func _next_planet() -> void:
 	if saves != null:
 		saves.save_now(true)
-	ProtoMainMenu.goto_picker(get_tree(), seed_value + 1)
+	ProtoMainMenu.goto_picker(get_tree(), ProtoMainMenu.new_seed())
 
 func _main_menu() -> void:
 	if saves != null:

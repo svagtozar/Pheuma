@@ -25,6 +25,11 @@ var fissures := 0
 var dunes := 0.0              # высота ряби дюн, м
 var floaters := 0             # парящих глыб
 var lake_r := 9.0
+# Русло: z = river_mid + river_amp·sin(x·river_freq + river_phase)
+var river_mid := 58.0
+var river_amp := 7.0
+var river_freq := 0.09
+var river_phase := 0.0
 
 # Пещера: эллипсоид с полуосями вдоль оси, поперёк и вверх.
 var cave := "dome"            # dome, tube, ice, geode, fissure, grotto
@@ -133,6 +138,7 @@ static func for_planet(p: Planet) -> ProtoWorldStyle:
 		s.crystal_tint = Color(0.75, 0.45, 1.0, 0.35)
 		s.crystal_glow += 0.4
 	_cave_shape(s)
+	ProtoWorldVariety.apply(s, p)
 	return s
 
 static func _cave_shape(s: ProtoWorldStyle) -> void:
@@ -149,6 +155,9 @@ static func _cave_shape(s: ProtoWorldStyle) -> void:
 			s.cave_len = 11.0; s.cave_wid = 3.6; s.cave_h = 7.0; s.cave_axis = diag
 		"grotto":   # грибной грот: широкий и низкий
 			s.cave_len = 9.0; s.cave_wid = 8.5; s.cave_h = 3.6
+
+func river_z(x: float) -> float:
+	return river_mid + sin(x * river_freq + river_phase) * river_amp
 
 ## Скорость хода робота: при сильной тяжести медленнее.
 func walk_mult() -> float:
