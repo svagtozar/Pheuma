@@ -289,7 +289,9 @@ func _planet(seed_v: int, full: bool) -> void:
 	# Идём прочь от завода: камера (а с ней «вперёд») — от его середины.
 	var off: Vector3 = robot().global_position - game.pneu_view.origin
 	pl().cam_yaw = atan2(off.x, off.z)
-	await hold(ProtoControls.MOVE_FORWARD, 20.0, func(): return tut.step >= 2)
+	# До 40 с: под программной отрисовкой CI (2–3 кадра/с) шаг урезан, а
+	# ожидание кончается сразу, как шаг засчитан.
+	await hold(ProtoControls.MOVE_FORWARD, 40.0, func(): return tut.step >= 2)
 	await secs(1.6)
 	check(tut.step >= 2, "обучение: осмотрелся и прошёлся (шаг %d)" % tut.step)
 	await shot("tutorial_walk")

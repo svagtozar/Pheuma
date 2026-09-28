@@ -190,14 +190,14 @@ static func safe_height(gravity: float) -> float:
 
 # ---------------------------------------------------------------- игра
 
-## Жидкость под роботом: {sub, temp, depth} или пусто.
+## Жидкость под роботом: {sub, temp, depth, level, zone} или пусто.
 func liquid_at(p: Vector3) -> Dictionary:
 	for z: Dictionary in zones:
 		if not z.area.call(p.x, p.z):
 			continue
 		var lv: float = z.level.call(p.x, p.z)
 		if lv > p.y + 0.05 and not _rock_between(p, lv):
-			return {"sub": z.sub, "temp": z.temp, "depth": lv - p.y}
+			return {"sub": z.sub, "temp": z.temp, "depth": lv - p.y, "level": lv, "zone": z}
 	return {}
 
 ## Между роботом и зеркалом жидкости — порода: робот в пещере под руслом,

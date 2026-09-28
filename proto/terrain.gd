@@ -64,6 +64,7 @@ func _init(seed_value: int, st: ProtoWorldStyle = null) -> void:
 	patch_noise.frequency = 0.07
 	lake_c.y = river_z(lake_c.x)
 	_features(seed_value)
+	_init_far()
 	# Дно русла: минимум по всему верховью — река не течёт в гору и всегда врезана.
 	bed.resize(sx + 2)
 	var m := INF
@@ -175,16 +176,113 @@ func _raw_h(x: float, z: float) -> float:
 func pad_h() -> float:
 	return floor(_raw_h(PAD_C.x, PAD_C.y)) + 0.5
 
+## Высота поверхности под мировой точкой (x, z). Без шара — рельеф участка.
+## С шаром (sphere) участок — площадка на «макушке» планеты-шара, вокруг —
+## остальной шар; to_local переводит мир в систему планеты (шар поворачивается
+## под роботом, см. ProtoPlanetStream).
 func surface_h(x: float, z: float) -> float:
+	if not sphere or (flat_frame and x >= 0.0 and z >= 0.0 and x <= sx and z <= sz):
+		return _site_h(x, z)
+	var y := 16.0
+	for i in 2:
+		var q := to_local * Vector3(x, y, z)
+		var d := (q - center).normalized()
+		y = (to_world * (center + d * (radius + sphere_h(d)))).y
+	return y
+
+# --- Планета-шар вокруг участка ---
+var sphere := false
+var radius := 800.0           # радиус шара по «нулю» высот участка, м
+var center := Vector3.ZERO    # центр шара в системе планеты (под серединой участка)
+var to_local := Transform3D.IDENTITY   # мир → планета
+var to_world := Transform3D.IDENTITY   # планета → мир
+var flat_frame := true        # шар не повёрнут: планета = мир
+const BLEND := 30.0           # ширина перехода от участка к остальному шару, м
+var _far := FastNoiseLite.new()
+var _far_big := FastNoiseLite.new()
+
+## Включить шар радиуса r: центр под серединой участка.
+func make_sphere(r: float) -> void:
+	sphere = true
+	radius = r
+	center = Vector3(sx * 0.5, -r, sz * 0.5)
+
+func set_frame(f: Transform3D) -> void:
+	to_world = f
+	to_local = f.affine_inverse()
+	flat_frame = f.is_equal_approx(Transform3D.IDENTITY)
+
+func _init_far() -> void:
+	_far.seed = noise.seed
+	_far.frequency = style.relief_freq
+	_far.fractal_octaves = style.octaves
+	_far_big.seed = noise.seed + 91
+	_far_big.frequency = 0.0022
+	_far_big.fractal_octaves = 5
+	_far_big.fractal_type = FastNoiseLite.FRACTAL_RIDGED
+
+## Насколько точка за краем участка по горизонтали (0 — внутри).
+func out_dist(x: float, z: float) -> float:
+	return Vector2(maxf(maxf(-x, x - sx), 0.0), maxf(maxf(-z, z - sz), 0.0)).length()
+
+## Высота поверхности шара над radius по направлению d от центра (система
+## планеты). У участка шар проходит ровно через его рельеф: точка на луче, где
+## высота равна рельефу участка; дальше — плавно к рельефу остального шара.
+func sphere_h(d: Vector3) -> float:
+	var out := 1.0e9
+	if d.y > 0.3:
+		var t := (radius + 16.0) / d.y
+		var p := center + d * t
+		out = out_dist(p.x, p.z)
+		if out < BLEND:
+			for i in 3:
+				p = center + d * ((radius + _site_h(p.x, p.z)) / d.y)
+			var hs := (p - center).length() - radius
+			if out <= 0.0:
+				return hs
+			return lerpf(hs, far_h(d, out), smoothstep(0.0, BLEND, out))
+	return far_h(d, out)
+
+## Рельеф остального шара: шум по точке на сфере (без швов); вдали от участка —
+## крупные хребты.
+func far_h(d: Vector3, out: float) -> float:
+	var q := d * radius
+	var n := _far.get_noise_3dv(q)
+	if style.ridged > 0.0:
+		n = lerpf(n, 0.75 - 2.2 * absf(n), style.ridged)
+	var h := 16.0 + n * style.relief_amp
+	if style.terrace > 0.0:
+		var st := style.terrace
+		var f: float = h / st - floor(h / st)
+		h = lerpf(h, (floor(h / st) + smoothstep(0.7, 1.0, f)) * st, 0.85)
+	h += _far_big.get_noise_3dv(q) * 30.0 * smoothstep(40.0, 420.0, out) - 4.0 * smoothstep(20.0, 120.0, out)
+	return maxf(h, 3.0)
+
+## Плотность в системе планеты: у участка — его объёмный рельеф (пещера и
+## прочее), дальше — шар; глубже 1,5 м над radius — сплошная порода.
+func sphere_density(q: Vector3) -> float:
+	if q.x >= 0.0 and q.z >= 0.0 and q.x <= sx and q.z <= sz and q.y > -10.0 and q.y < sy + 10.0:
+		return _site_density(q.x, q.y, q.z)
+	var v := q - center
+	var r := v.length()
+	var hgt := r - radius
+	var dd := sphere_h(v / r) - hgt
+	if hgt < 1.5:
+		dd = maxf(dd, 1.0)
+	return dd
+
+func _site_h(x: float, z: float) -> float:
 	var h := _raw_h(x, z)
 	# Русло: берега откосом к дну, дно понижается к озеру.
 	var dr: float = abs(z - river_z(x))
 	var b := bed_at(x)
 	if x > lake_c.x - 2.0:
 		h = min(h, b + max(0.0, dr - 1.6) * 0.8)
-	# Котловина озера — ниже воды у устья.
+	# Котловина озера — ниже воды у устья; к середине глубже (≈4 м): там робот
+	# уходит под воду с головой (ProtoSwim).
 	var dl := Vector2(x, z).distance_to(lake_c)
-	h = min(h, lake_level_base() - 1.6 + max(0.0, dl - lake_r * 0.55) * 0.55)
+	var bowl := 2.6 * (1.0 - smoothstep(0.0, lake_r * 0.6, dl))
+	h = min(h, lake_level_base() - 1.6 - bowl + max(0.0, dl - lake_r * 0.55) * 0.55)
 	# Площадка выровнена: внутри прямоугольника ровно, к краям — плавный откос.
 	var q := (Vector2(x, z) - PAD_C).abs() - PAD_HALF
 	var out: float = Vector2(max(q.x, 0.0), max(q.y, 0.0)).length()
@@ -197,8 +295,14 @@ func river_z(x: float) -> float:
 ## Плотность в точке: плюс — порода.
 ## h — высота поверхности над точкой, если уже известна (считается по столбцу).
 func density(x: float, y: float, z: float, h := NAN) -> float:
+	if not sphere or (flat_frame and x >= 0.0 and z >= 0.0 and x <= sx and z <= sz):
+		return _site_density(x, y, z, h)
+	return sphere_density(to_local * Vector3(x, y, z))
+
+## Плотность рельефа участка (система планеты).
+func _site_density(x: float, y: float, z: float, h := NAN) -> float:
 	if is_nan(h):
-		h = surface_h(x, z)
+		h = _site_h(x, z)
 	var d := h - y
 	# Скальные иглы: конусы из породы, с неровными боками.
 	for s in spires:
@@ -613,9 +717,17 @@ const SHADER := """
 shader_type spatial;
 render_mode cull_disabled;
 uniform vec3 vein_glow : source_color = vec3(0.5, 0.8, 1.0);
+uniform float sink = 0.0;      // грубая сетка шара: опустить у робота под подробные куски
+uniform vec3 eye;
+uniform vec3 sink_center;
 varying float sky;
 void vertex() {
 	sky = COLOR.a;
+	if (sink > 0.0) {
+		vec3 wp = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
+		float k = 1.0 - smoothstep(130.0, 160.0, length(wp - eye));
+		VERTEX -= normalize(VERTEX - sink_center) * sink * k;
+	}
 }
 void fragment() {
 	ALBEDO = COLOR.rgb;
