@@ -37,7 +37,7 @@ static func mat_with(planet: Planet, tag: String):
 
 ## Небо, солнце, дымка и частицы в parent. cave — тёмный плотный воздух подземелья.
 ## Возвращает {"env": Environment, "world_env": WorldEnvironment, "sun": DirectionalLight3D,
-## "particles": CPUParticles3D или null}.
+## "particles": CPUParticles3D или null, "cycle": ProtoDayNight}.
 static func build(planet: Planet, parent: Node, cave := false) -> Dictionary:
 	var sky_top := Color(0.25, 0.42, 0.7)
 	var horizon := Color(0.7, 0.72, 0.75)
@@ -54,25 +54,12 @@ static func build(planet: Planet, parent: Node, cave := false) -> Dictionary:
 	if planet.has_tag("tidally_locked"):
 		sun_pitch = -8.0; sun_col = sun_col.lerp(Color(1.0, 0.55, 0.35), 0.5)
 	var env := Environment.new()
-	var sky := Sky.new()
-	var sm := ProceduralSkyMaterial.new()
-	sm.sky_top_color = sky_top
-	sm.sky_horizon_color = horizon
-	sm.ground_horizon_color = horizon.darkened(0.3)
-	sm.ground_bottom_color = horizon.darkened(0.7)
-	sm.sun_angle_max = 20.0
-	sky.sky_material = sm
-	env.background_mode = Environment.BG_SKY
-	env.sky = sky
-	env.ambient_light_source = Environment.AMBIENT_SOURCE_SKY
 	env.ambient_light_energy = 0.45
-	env.ambient_light_sky_contribution = 0.5
-	env.ambient_light_color = Color(0.55, 0.55, 0.58)
 	env.tonemap_mode = Environment.TONE_MAPPER_FILMIC
 	env.fog_enabled = true
 	env.fog_light_color = horizon.lerp(Color(0.6, 0.6, 0.62), 0.4)
 	env.fog_density = 0.0015 + 0.0035 * clampf(planet.atm_pressure, 0.0, 3.0) + (0.006 if planet.has_tag("toxic_atmosphere") else 0.0)
-	env.fog_sky_affect = 0.3
+	env.fog_sky_affect = 0.3 if not planet.has_tag("thin_atmosphere") else 0.05
 	if cave:
 		# Под землёй: тёмный плотный воздух — дальние стены уходят в темноту.
 		env.fog_light_color = Color(0.04, 0.045, 0.055)
@@ -86,10 +73,18 @@ static func build(planet: Planet, parent: Node, cave := false) -> Dictionary:
 	sun.shadow_enabled = true
 	sun.rotation_degrees = Vector3(sun_pitch, -35.0, 0)
 	parent.add_child(sun)
+	# Небо (шейдер), движение солнца, луны и ночь — ProtoDayNight.
+	var cycle := ProtoDayNight.new()
+	cycle.name = "daynight"
+	cycle.env = env
+	cycle.sun = sun
+	cycle.cave = cave
+	parent.add_child(cycle)
+	cycle.setup(planet, sky_top, horizon, sun_col, sun_pitch, sun.rotation_degrees.y)
 	var p := _particles(planet)
 	if p != null:
 		parent.add_child(p)
-	return {"env": env, "world_env": we, "sun": sun, "particles": p}
+	return {"env": env, "world_env": we, "sun": sun, "particles": p, "cycle": cycle}
 
 ## Частицы в воздухе: пепел, снег, споры или пыль — по тегам.
 static func _particles(planet: Planet) -> CPUParticles3D:
