@@ -55,6 +55,8 @@ var route_len := 0.0
 var route_done := 0.0
 var fist: RobotFist
 var mining: ProtoMining
+var digger: ProtoDigger        # бур без кристалла копает грунт, H / D-pad влево — насыпь
+var fill_auto := false         # проверки: насыпать без кнопки
 var health: ProtoHealth       # прочность корпуса: удар при приземлении, вязкость жидкости
 
 # Скриптовая добыча (--auto=drill).
@@ -287,6 +289,22 @@ func _mine(dt: float) -> void:
 	var tip_n := robot.find_child("drill_tip", true, false) as Node3D
 	var tip := tip_n.global_position if tip_n and anim.drill_out > 0.5 else Vector3.INF
 	mining.step(dt, robot, anim.work, anim.drill_out, tip)
+	if digger != null:
+		var building := false
+		var b := get_parent().get_node_or_null("builder") if get_parent() else null
+		if b != null:
+			building = bool(b.get("active"))
+		var busy: bool = robot.get_meta("ui_busy", false) or get_tree().paused
+		var digging := mining.target == null and anim.work > 0.6 and anim.drill_out > 0.95
+		var fill := fill_auto or (not busy and not building and Input.is_action_pressed(ProtoDigger.FILL))
+		digger.step(dt, digging, fill)
+		if mining.target == null and anim.work > 0.05:
+			anim.work_target = robot.to_local(digger.dig_point())
+			if digging:
+				mining.sparks.global_position = digger.dig_point()
+				mining.crumbs.global_position = digger.dig_point()
+				mining.crumbs.emitting = true
+			return
 	if mining.target and anim.work > 0.05:
 		anim.work_target = robot.to_local(mining.contact)
 		# Доворот — по основанию кристалла (точка касания сама зависит от позы).

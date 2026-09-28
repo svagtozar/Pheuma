@@ -163,6 +163,12 @@ static func to_dict(r: Node3D) -> Dictionary:
 	var map = r.get("map_data")
 	if map != null:
 		d.map = map.save_dict()
+	var terrain = r.get("terrain")
+	if terrain != null and not terrain.edits.is_empty():
+		d.terrain_edits = terrain.edits_to_array()
+	var dg = r.get("digger")
+	if dg != null:
+		d.soil = dg.soil
 	return d
 
 static func apply(r: Node3D, d: Dictionary) -> void:
@@ -206,6 +212,15 @@ static func apply(r: Node3D, d: Dictionary) -> void:
 	var map = r.get("map_data")
 	if map != null and d.has("map"):
 		map.load_dict(d.map)
+	# Выкопанное и насыпанное роботом — поверх природного рельефа.
+	var terrain = r.get("terrain")
+	if terrain != null and d.has("terrain_edits") and terrain.edits.is_empty():
+		var box: AABB = terrain.edits_from_array(d.terrain_edits)
+		if r.has_method("terrain_changed"):
+			r.terrain_changed(box)
+	var dg = r.get("digger")
+	if dg != null:
+		dg.soil = int(d.get("soil", 0))
 
 # ---------------------------------------------------------------- пневмозавод
 

@@ -358,6 +358,9 @@ func _update_live() -> void:
 				var spin := model.find_child("spin", true, false) as Node3D
 				if spin and on:
 					spin.rotation.y += 0.15
+				var plume := model.find_child("plume", true, false) as CPUParticles3D
+				if plume:
+					plume.emitting = on
 
 ## Уровень груза в баке: узел "fill" модели (MachineModels._fill) — масштаб
 ## по Y до доли груза, цвет — материал.
