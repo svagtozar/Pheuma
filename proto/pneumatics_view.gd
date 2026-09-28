@@ -32,6 +32,7 @@ var _labels := {}         # id → Label3D
 var _ghost: Node3D
 var _ghost_key := ""
 var _t := 0.0
+var _dt := 0.0
 var _flights: Array = []  # MeshInstance3D капсул пушек в полёте (пул)
 
 func setup(n: ProtoPneumatics, o: Vector3) -> void:
@@ -53,6 +54,7 @@ func warm(secs: float) -> void:
 
 func _process(dt: float) -> void:
 	_t += dt
+	_dt = dt
 	if running:
 		net.step(minf(dt, 0.1))
 	sync()
@@ -65,7 +67,7 @@ func sync() -> void:
 	if sig != _sig:
 		_sig = sig
 		_rebuild()
-	_update_live()
+	_update_live(_dt)
 	_update_label_focus()
 	_update_caps()
 	_update_flights()
@@ -194,10 +196,11 @@ static func build_part(kind: String, sub: Substance, dir: int, links: Array, hol
 		if kind == "furnace" and not holo:
 			var light := OmniLight3D.new()
 			light.light_color = Color(1.0, 0.5, 0.2)
-			light.light_energy = 1.2
+			light.light_energy = 1.5
 			light.omni_range = 3.0
 			light.position = Vector3(0, 0.9, 1.3)
 			core.add_child(light)
+			MachineKit.anim(light, "flicker", {"energy": 1.8})
 	# Машины смотрят выходом по dir: модель строится выходом на +Z.
 	if kind != "pipe":
 		core.rotation.y = _yaw(dir)
@@ -285,7 +288,7 @@ static func _holo_all(n: Node, mat: Material) -> void:
 
 # ---------------------------------------------------------------- живое
 
-func _update_live() -> void:
+func _update_live(dt: float) -> void:
 	for c in net.parts:
 		var part: Dictionary = net.parts[c]
 		var n: Node3D = _nodes.get(part.id)
@@ -302,21 +305,14 @@ func _update_live() -> void:
 			gm.emission = col
 		if _labels.has(part.id):
 			_labels[part.id].text = "%s · %.1f атм\n%s" % [ProtoPneumatics.KINDS[part.kind].n, p, part.status]
+		# Движения за работой (MachineKit.anim): валы, поршень, маховик, дым, пламя.
+		var model := n.get_node_or_null("model") as Node3D
+		if model != null:
+			MachineKit.animate(model, _working(part), _t, dt)
 		match part.kind:
 			"crusher":
-				var on: bool = part.busy != null
-				for r in n.find_children("roller", "", true, false):
-					if on:
-						r.rotation.x += 0.12 * (1.0 if r.position.x < 0 else -1.0)
 				var lamp := n.find_child("lamp", true, false) as MeshInstance3D
-				lamp.material_override = MachineModels.mat("lamp_work" if on else "lamp_idle")
-			"pump":
-				var piston := n.find_child("piston", true, false) as MeshInstance3D
-				if piston:
-					piston.position.y = MachineKit.PISTON_Y + (sin(_t * 9.0) * 0.12 if part.hot else 0.0)
-			"furnace":
-				for l in n.find_children("*", "OmniLight3D", true, false):
-					l.light_energy = (1.8 + sin(_t * 13.0) * 0.3) if part.hot else 0.4
+				lamp.material_override = MachineModels.mat("lamp_work" if part.busy != null else "lamp_idle")
 			"intake":
 				var heap := n.find_child("heap", true, false) as MeshInstance3D
 				var m := net.mass_in(c)
@@ -330,9 +326,6 @@ func _update_live() -> void:
 				_tank_fill(n, part)
 			"lab":
 				var busy: bool = part.busy != null
-				var car := n.find_child("carousel", true, false) as Node3D
-				if car and busy:
-					car.rotation.y += 0.05
 				var smp := n.find_child("sample", true, false) as MeshInstance3D
 				if smp:
 					smp.visible = busy
@@ -348,19 +341,23 @@ func _update_live() -> void:
 					board.material_override.emission_energy_multiplier = 3.0 if flash > 0.0 else (1.5 if busy else 0.2)
 					n.set_meta("flash", maxf(0.0, flash - 0.03))
 			_:
-				var model := n.get_node_or_null("model")
 				if model == null:
 					continue
 				var on: bool = part.get("work", false)
 				var lamp := model.get_node_or_null("lamp") as MeshInstance3D
 				if lamp:
 					lamp.material_override = MachineModels.mat("lamp_work" if on else ("lamp_starved" if part.items.is_empty() and part.kind != "cannon" else "lamp_idle"))
-				var spin := model.find_child("spin", true, false) as Node3D
-				if spin and on:
-					spin.rotation.y += 0.15
 				var plume := model.find_child("plume", true, false) as CPUParticles3D
 				if plume:
 					plume.emitting = on
+
+## Деталь сейчас работает (для движений MachineKit.animate).
+func _working(part: Dictionary) -> bool:
+	match part.kind:
+		"pump", "furnace": return part.hot
+		"crusher", "lab": return part.busy != null
+		"intake": return not part.items.is_empty()
+	return part.get("work", false)
 
 ## Уровень груза в баке: узел "fill" модели (MachineModels._fill) — масштаб
 ## по Y до доли груза, цвет — материал.

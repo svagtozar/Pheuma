@@ -149,8 +149,8 @@ func test_terra_save_roundtrip():
 	assert_eq(fresh.terra.zones.get(Vector2i(2, 3)), 4.5)
 
 func test_flora_share_needs_habitability_and_seeding():
-	assert_eq(ProtoFlora.global_share(0.2), 0.0)
-	assert_gt(ProtoFlora.global_share(1.0), 0.5)
+	assert_eq(ProtoTerraFlora.global_share(0.2), 0.0)
+	assert_gt(ProtoTerraFlora.global_share(1.0), 0.5)
 	var t := ProtoTerraform.new()
 	assert_eq(t.seeded(), 0.0, "жизни ещё нет")
 	t.vented = ProtoTerraform.SEED_GAS

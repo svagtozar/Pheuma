@@ -294,7 +294,9 @@ func _planet(seed_v: int, full: bool) -> void:
 	# Идём прочь от завода: камера (а с ней «вперёд») — от его середины.
 	var off: Vector3 = robot().global_position - game.pneu_view.origin
 	pl().cam_yaw = atan2(off.x, off.z)
-	await hold(ProtoControls.MOVE_FORWARD, 20.0, func(): return tut.step >= 2)
+	# До 40 с: под программной отрисовкой CI (2–3 кадра/с) шаг урезан, а
+	# ожидание кончается сразу, как шаг засчитан.
+	await hold(ProtoControls.MOVE_FORWARD, 40.0, func(): return tut.step >= 2)
 	await secs(1.6)
 	check(tut.step >= 2, "обучение: осмотрелся и прошёлся (шаг %d)" % tut.step)
 	await shot("tutorial_walk")
@@ -420,7 +422,8 @@ func _planet(seed_v: int, full: bool) -> void:
 	check(menu != null and menu.page == "picker", "«Новая планета» → выбор планеты")
 	if menu == null:
 		return
-	check(menu.seed_value == seed_v + 1, "в выборе — следующая планета (%d)" % menu.seed_value)
+	check(menu.seed_value != seed_v and ProtoSave.read(menu.seed_value).is_empty(),
+		"в выборе — новая, ещё не посещённая планета (%d)" % menu.seed_value)
 	await shot("picker2")
 	var next: int = menu.seed_value
 	await accept()

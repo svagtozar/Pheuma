@@ -111,7 +111,13 @@ func test_liquid_zone_lookup():
 func test_cave_under_river_is_dry():
 	var h := _health()
 	var planet := PlanetGen.generate(14)
-	var tr := ProtoTerrain.new(14, ProtoWorldStyle.for_planet(planet))
+	var st := ProtoWorldStyle.for_planet(planet)
+	# Русло — прежнее, прямо над залом (по сиду оно петляет иначе).
+	var classic := ProtoWorldStyle.new()
+	st.river_mid = classic.river_mid; st.river_amp = classic.river_amp
+	st.river_freq = classic.river_freq; st.river_phase = classic.river_phase
+	st.relief_amp = classic.relief_amp; st.relief_freq = classic.relief_freq
+	var tr := ProtoTerrain.new(14, st)
 	tr.build_field()
 	h.terrain = tr
 	var water := _sub("вода")

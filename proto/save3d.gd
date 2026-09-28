@@ -137,7 +137,8 @@ static func to_dict(r: Node3D) -> Dictionary:
 	var planet: Planet = r.planet
 	var robot: Node3D = r.robot
 	var d := {"version": VERSION, "seed": int(r.seed_value), "time": Time.get_datetime_string_from_system(false, true)}
-	d.robot = {"pos": _v3(robot.position), "yaw": robot.rotation.y}
+	# На планете-шаре — место на планете (шар под роботом повёрнут), см. ProtoPlanetStream.
+	d.robot = {"pos": _v3(robot.get_meta("planet_pos", robot.position)), "yaw": robot.rotation.y}
 	var h = robot.get_meta("health", null)
 	if h != null:
 		d.robot.hp = h.hp
@@ -169,6 +170,9 @@ static func to_dict(r: Node3D) -> Dictionary:
 	var dg = r.get("digger")
 	if dg != null:
 		d.soil = dg.soil
+	var dn = r.get("daynight")
+	if dn != null:
+		d.day_time = dn.time
 	return d
 
 static func apply(r: Node3D, d: Dictionary) -> void:
@@ -221,6 +225,10 @@ static func apply(r: Node3D, d: Dictionary) -> void:
 	var dg = r.get("digger")
 	if dg != null:
 		dg.soil = int(d.get("soil", 0))
+	var dn = r.get("daynight")
+	if dn != null and d.has("day_time") and dn.running:
+		dn.time = float(d.day_time)
+		dn.update_now()
 
 # ---------------------------------------------------------------- пневмозавод
 

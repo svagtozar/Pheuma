@@ -17,6 +17,9 @@ extends Node
 ## (RobotGround: стопы по склону, корпус с лёгким наклоном), в породу, в машины
 ## и на слишком крутые уступы не заходит. Камера на пружинной штанге. Под сводом сама
 ## включает фару и сгущает тёмный туман.
+## В жидкости (ProtoSwim): всплывает или тонет по отношению плотностей жидкости и
+## робота, вязкость тормозит шаг и качку, река сносит по течению. Плывя, Прыжок
+## (держать) — грести вверх, Бег — нырнуть; у берега выбирается сам.
 
 var robot: Node3D
 var anim: RobotAnim
@@ -34,6 +37,13 @@ var vel := Vector3.ZERO
 var under := 0.0             # 0 — под небом, 1 — под сводом (сглажено)
 var vy := 0.0                # вертикальная скорость в прыжке/падении
 var air := false             # в воздухе: высоту задаёт vy, а не пол
+var swim := false            # в жидкости и не на дне (плывёт; высоту задаёт vy)
+var wet := {}                # жидкость под роботом (ProtoHealth.liquid_at): sub, depth, zone
+var wet_f := 0.0             # доля робота под поверхностью, 0..1
+var buoy := 0.0              # плотность жидкости / плотность робота: > 1 — всплывает
+var visc := 0.0              # вязкость жидкости (ProtoSwim.viscosity)
+var swim_in := 0.0           # гребок: +1 вверх (Прыжок), −1 вниз (Бег)
+var swim_hold := 0.0         # скриптовый гребок (проверки)
 var capture := false         # --play: захватывать курсор для камеры мышью
 var _captured_once := false
 var _resume_capture := false
@@ -202,6 +212,8 @@ func _process(dt: float) -> void:
 		_captured_once = true
 		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 	var want := Vector3.ZERO
+	_liquid_state()
+	swim_in = swim_hold
 	# Тяжёлая планета — шаг медленнее, лёгкая — быстрее (ProtoWorldStyle).
 	var top_speed := RobotAnim.WALK_SPEED * terrain.style.walk_mult()
 	# Открыта карточка материала (ProtoLabPanel): стик и D-pad заняты ею.
@@ -216,7 +228,11 @@ func _process(dt: float) -> void:
 		cam_pitch = clampf(cam_pitch - look.y * dt * 1.6, PITCH_MIN, PITCH_MAX)
 		if Input.is_action_pressed(ProtoControls.CAM_ZOOM_IN): cam_dist = maxf(2.0, cam_dist - dt * 4.0)
 		if Input.is_action_pressed(ProtoControls.CAM_ZOOM_OUT): cam_dist = minf(12.0, cam_dist + dt * 4.0)
-		if Input.is_action_pressed(ProtoControls.SPRINT): top_speed *= SPRINT_MULT
+		if swim:
+			# Плывя: Прыжок — грести вверх, Бег — нырнуть.
+			swim_in = clampf(swim_hold + Input.get_action_strength(ProtoControls.JUMP) - Input.get_action_strength(ProtoControls.SPRINT), -1.0, 1.0)
+		elif Input.is_action_pressed(ProtoControls.SPRINT):
+			top_speed *= SPRINT_MULT
 		if Input.is_action_just_pressed(ProtoControls.JUMP) and _can_jump():
 			jump()
 		if bump_view != null:
@@ -252,9 +268,9 @@ func _process(dt: float) -> void:
 		top_speed *= 1.7
 		if finale >= 0.0 and route_i >= route.size():
 			_finale(dt)
-	# В жидкости вязнет: чем глубже, тем медленнее.
-	if health != null and health.depth > 0.0:
-		top_speed *= lerpf(1.0, 0.5, clampf(health.depth / 0.9, 0.0, 1.0))
+	# В жидкости вязнет: чем глубже и гуще, тем медленнее.
+	if wet_f > 0.0:
+		top_speed *= ProtoSwim.speed_mult(visc, wet_f)
 	# Подтягивание: трос тянет робота к кисти.
 	if fist and fist.state == "pull":
 		var tw := robot.to_global(fist.target)
@@ -265,8 +281,11 @@ func _process(dt: float) -> void:
 		else:
 			fist.release()
 	# В воздухе разгон слабее: направление прыжка почти не поменять.
-	vel = vel.move_toward(want * top_speed, dt * (1.2 if air else 3.0 * terrain.style.walk_mult()))
-	_move(vel * dt)
+	var acc := 1.2 if air else 3.0 * terrain.style.walk_mult()
+	if swim:
+		acc = 2.0 / (1.0 + visc * 0.3)
+	vel = vel.move_toward(want * top_speed, dt * acc)
+	_move((vel + _drift()) * dt)
 	_vertical(dt)
 	if vel.length() > 0.05:
 		robot.rotation.y = lerp_angle(robot.rotation.y, atan2(vel.x, vel.z), minf(1.0, dt * 6.0))
@@ -275,7 +294,7 @@ func _process(dt: float) -> void:
 	if anim:
 		anim.speed = Vector2(vel.x, vel.z).length()
 		anim.speed_ref = terrain.style.walk_mult()
-		anim.airborne = air
+		anim.airborne = air and wet_f < 0.25    # плывёт — не поза прыжка
 		anim.vy = vy
 	_mine(dt)
 	_underground(dt)
@@ -461,12 +480,22 @@ func _move(d: Vector3) -> void:
 	# Уступ выше колена за шаг, порода на уровне груди или машина — не пройти
 	# (в прыжке — порода на уровне ног или груди там, где робот сейчас).
 	var body := maxf(g, robot.position.y)
-	if (g - robot.position.y) > maxf(terrain.style.step_height(), d.length() * 1.6) or terrain.solid(np.x, body + 1.2, np.z) \
+	# Плывя — выбирается на берег до пояса.
+	var step := 1.1 if swim else maxf(terrain.style.step_height(), d.length() * 1.6)
+	if (g - robot.position.y) > step or terrain.solid(np.x, body + 1.2, np.z) \
 			or (air and terrain.solid(np.x, robot.position.y + 0.3, np.z)) or (_hits_machine(Vector3(np.x, body, np.z)) and not _hits_machine(robot.position)):
+		# Скриптовый маршрут упёрся в уступ (не в породу и не в машину) — перескочить,
+		# как сделал бы игрок: иначе проверка (--auto=cave, bench) стоит вечно.
+		if not route.is_empty() and not air and g - robot.position.y < JUMP_MAX_H \
+				and not terrain.solid(np.x, body + 1.2, np.z) and not _hits_machine(Vector3(np.x, body, np.z)):
+			jump()
 		vel *= 0.3
 		return
 	robot.position.x = np.x
 	robot.position.z = np.z
+	if swim and g > robot.position.y - 0.02 and vy <= 0.5:
+		_land(g, 0.0)
+		return
 	_settle()
 
 ## Высота и наклон — по видимой сетке рельефа (RobotGround); поле плотности —
@@ -647,26 +676,64 @@ func jump() -> void:
 	air = true
 	robot.position.y += 0.02
 
-## Полёт: тяжесть, удар головой о свод, приземление на пол.
+## Полёт и плавание: тяжесть, выталкивание и вязкость жидкости (ProtoSwim),
+## гребок, удар головой о свод, приземление на пол (или на дно).
 func _vertical(dt: float) -> void:
 	if not air:
 		return
-	vy -= G * terrain.style.gravity * dt
+	var g0 := G * terrain.style.gravity
+	if wet_f > 0.0:
+		var a := ProtoSwim.accel(g0, buoy, wet_f, 0.0, 0.0)
+		if swim_in != 0.0:
+			a += g0 * (ProtoSwim.SWIM_UP if swim_in > 0.0 else ProtoSwim.SWIM_DOWN) * swim_in * clampf(wet_f * 2.0, 0.0, 1.0)
+		# Вязкость — неявно: устойчиво и при густой лаве и большом шаге.
+		vy = (vy + a * dt) / (1.0 + visc * wet_f * dt)
+	else:
+		vy -= g0 * dt
 	var p := robot.position
 	if vy > 0.0 and terrain.solid(p.x, p.y + 2.0 + vy * dt, p.z):
 		vy = 0.0
 	robot.position.y += vy * dt
 	var g := ground_at(robot.position + Vector3(0, 0.6, 0))
 	if vy <= 0.0 and robot.position.y <= g:
-		robot.position.y = g
-		air = false
-		if ground:
-			ground.snap(g)
-		if anim:
-			anim.land = clampf(-vy / 6.0, 0.25, 1.0)
-		if health != null:
-			health.landed(-vy)
+		_land(g, -vy)
+
+## Встал на пол (или на дно, или выбрался на берег): v — скорость удара вниз.
+func _land(g: float, v: float) -> void:
+	robot.position.y = g
+	air = false
+	swim = false
+	if ground:
+		ground.snap(g)
+	if anim:
+		anim.land = clampf(v / 6.0, 0.25, 1.0)
+	if health != null:
+		health.landed(v)
+	vy = 0.0
+
+## Жидкость под роботом: погружение, плотность, вязкость. На дне в жидкости
+## плотнее робота — отрывается и всплывает.
+func _liquid_state() -> void:
+	wet = health.liquid_at(robot.position) if health != null else {}
+	var s: Substance = wet.get("sub")
+	wet_f = ProtoSwim.submerged(wet.get("depth", 0.0))
+	visc = ProtoSwim.viscosity(s)
+	buoy = ProtoSwim.ratio(s, ProtoSwim.robot_density(health.hull if health != null else null, _cargo_mass())) if s != null else 0.0
+	if not air and wet_f > 0.0 and buoy * wet_f > 1.0:
+		air = true
 		vy = 0.0
+	swim = air and wet_f > 0.05
+	robot.set_meta("swim", swim)
+
+## Снос течением (зона жидкости с flow — река): на плаву сильнее, на дне слабее.
+func _drift() -> Vector3:
+	if wet_f <= 0.0 or not wet.has("zone"):
+		return Vector3.ZERO
+	var fl = wet.zone.get("flow")
+	if not (fl is Callable):
+		return Vector3.ZERO
+	var d: Vector3 = fl.call(robot.position.x, robot.position.z)
+	return d * ProtoSwim.flow_speed(visc) * wet_f * (1.0 if swim else 0.35)
 
 func _follow_route() -> Vector3:
 	if route_i >= route.size():
@@ -679,17 +746,22 @@ func _follow_route() -> Vector3:
 		return _follow_route()
 	return to.normalized()
 
-## Под сводом: фара, тёмный плотный туман; под небом — как было.
+## Под сводом: фара, тёмный плотный туман; под небом — как было (ночью — с фарой).
 func _underground(dt: float) -> void:
 	var p := robot.position + Vector3(0, 1.5, 0)
 	var u := 1.0 - terrain.sky_vis(p)
 	under = move_toward(under, u, dt * 1.5)
+	# Ночью фара горит и под открытым небом (ProtoDayNight).
+	var dn := ProtoDayNight.of(robot)
+	var dark := maxf(under, dn.night * 0.8 if dn != null else 0.0)
+	if dn != null:
+		fog_out = dn.fog_color
 	var lamp := robot.find_child("head_lamp", true, false) as SpotLight3D
 	if lamp:
-		lamp.light_energy = 4.0 * under
+		lamp.light_energy = 4.0 * dark
 	var eye := robot.find_child("eye_light", true, false) as OmniLight3D
 	if eye:
-		eye.light_energy = 1.0 * under
+		eye.light_energy = 1.0 * dark
 		eye.omni_range = 5.0
 	env.fog_light_color = fog_out.lerp(Color(0.04, 0.045, 0.055), under)
 	env.fog_density = lerpf(fog_out_d, 0.06, under)

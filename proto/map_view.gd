@@ -381,7 +381,7 @@ func _set_meta(on: bool) -> void:
 
 func center_on_robot() -> void:
 	if robot != null:
-		var p := robot.global_position
+		var p: Vector3 = robot.get_meta("planet_pos", robot.global_position)
 		_target = Vector3(p.x, maxf(p.y, data.height_at(p.x, p.z)), p.z)
 
 func _place_cam() -> void:
@@ -479,8 +479,10 @@ func _process(dt: float) -> void:
 		if e[0].kind in ["druse", "deposit", "mined"]:
 			e[2].rotation.y += dt * 1.2
 	if robot != null:
-		_robot_mark.position = robot.global_position + Vector3(0, 0.6, 0)
+		_robot_mark.position = (robot.get_meta("planet_pos", robot.global_position) as Vector3) + Vector3(0, 0.6, 0)
 		var f := robot.global_basis.z
+		if robot.has_meta("planet_turn"):
+			f = (robot.get_meta("planet_turn") as Basis).inverse() * f
 		(_robot_mark.get_node("arrow") as Node3D).rotation.y = atan2(f.x, f.z)
 		(_robot_mark.get_node("arrow") as Node3D).scale = Vector3.ONE * k
 		var pulse := fmod(_t * 0.8, 1.0)

@@ -4,7 +4,7 @@ extends Node
 ##   небо синеет и дымка густеет, когда атмосфера плотнее и пригоднее;
 ##   жидкости пересобираются, когда материал тает или замерзает (лёд в руслах
 ##   становится рекой, река — льдом);
-##   флора (ProtoFlora) — по пригодности и зелёным зонам куполов.
+##   флора (ProtoTerraFlora) — по пригодности и зелёным зонам куполов.
 
 const LIVE_TOP := Color(0.26, 0.47, 0.82)
 const LIVE_HORIZON := Color(0.72, 0.82, 0.92)
@@ -12,8 +12,9 @@ const EVERY := 0.5
 
 var game: Node3D                 # сцена прототипа (preview.gd)
 var terra: ProtoTerraform
-var flora: ProtoFlora
+var flora: ProtoTerraFlora
 var sky: ProceduralSkyMaterial
+var cycle: ProtoDayNight         # небо со сменой дня и ночи (ProtoSky) — его дневные цвета
 var base_top := Color()
 var base_horizon := Color()
 var base_fog := -1.0
@@ -25,14 +26,18 @@ var _liq_key := ""
 func setup(g: Node3D, t: ProtoTerraform) -> void:
 	game = g
 	terra = t
-	if g.env != null and g.env.sky != null:
+	cycle = g.get("daynight")
+	if cycle != null and cycle.mat != null:
+		base_top = cycle.day_top
+		base_horizon = cycle.day_hor
+	elif g.env != null and g.env.sky != null:
 		sky = g.env.sky.sky_material as ProceduralSkyMaterial
-	if sky != null:
-		base_top = sky.sky_top_color
-		base_horizon = sky.sky_horizon_color
+		if sky != null:
+			base_top = sky.sky_top_color
+			base_horizon = sky.sky_horizon_color
 	_liq_key = liquid_key(g.planet)
-	flora = ProtoFlora.new()
-	flora.name = "flora"
+	flora = ProtoTerraFlora.new()
+	flora.name = "terra_flora"
 	g.add_child(flora)
 	flora.occupied = g.flora_occupied
 	flora.setup(g.terrain, g.planet, g.flora_blocked)
@@ -57,7 +62,13 @@ func refresh() -> void:
 	var gain := clampf(hab - terra.base_habitability(), 0.0, 1.0)
 	var dp := clampf((terra.pressure() - terra.base_p) / 1.5, 0.0, 1.0)
 	sky_k = maxf(gain, dp * 0.5)
-	if sky != null:
+	if cycle != null and cycle.mat != null:
+		cycle.day_top = base_top.lerp(LIVE_TOP, sky_k)
+		cycle.day_hor = base_horizon.lerp(LIVE_HORIZON, sky_k)
+		cycle.mat.set_shader_parameter("day_top", cycle.day_top)
+		cycle.mat.set_shader_parameter("day_hor", cycle.day_hor)
+		cycle.mat.set_shader_parameter("ground_col", cycle.day_hor.darkened(0.5))
+	elif sky != null:
 		sky.sky_top_color = base_top.lerp(LIVE_TOP, sky_k)
 		sky.sky_horizon_color = base_horizon.lerp(LIVE_HORIZON, sky_k)
 		sky.ground_horizon_color = sky.sky_horizon_color.darkened(0.3)

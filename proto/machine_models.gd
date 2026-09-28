@@ -8,7 +8,7 @@ extends RefCounted
 ## на земле, выход машины смотрит в +Z.
 ##
 ## Живые части модель отдаёт по именам детей, их двигает вид:
-##   "spin"  — Node3D, крутится вокруг своей оси Y, пока машина работает;
+##   движения за работой — узлы с MachineKit.anim (вид зовёт MachineKit.animate);
 ##   "lamp"  — MeshInstance3D, лампа состояния (цвет задаёт вид);
 ##   "fill"  — MeshInstance3D, груз внутри (масштаб по Y — доля заполнения).
 ## Высота корпуса — meta "h" (над ней вид ставит порцию и подписи).
@@ -159,12 +159,16 @@ static func _ring(parent: Node3D, r: float, w: float, m: Material, pos: Vector3,
 	t.ring_segments = 8
 	return _add(parent, t, m, pos, rot)
 
-static func _spin(parent: Node3D, pos: Vector3) -> Node3D:
+## Узел, который крутится вокруг своей оси Y, пока машина работает.
+static func _spin(parent: Node3D, pos: Vector3, speed := 2.5) -> Node3D:
 	var s := Node3D.new()
-	s.name = "spin"
 	s.position = pos
 	parent.add_child(s)
+	MachineKit.anim(s, "spin", {"speed": speed})
 	return s
+
+static func _anim(node: Node, type: String, params := {}) -> Node:
+	return MachineKit.anim(node, type, params)
 
 static func _fill(parent: Node3D, r: float, h: float, y0: float) -> MeshInstance3D:
 	# Цилиндр высотой 1 с низом в y0: вид масштабирует его по Y до доли груза.
@@ -186,7 +190,8 @@ static func _drill(n: Node3D, body: Material) -> float:
 			_box(n, Vector3(0.12, 1.8, 0.12), body, Vector3(dx, 0.9, dz), Vector3(-dz * 0.06, 0, dx * 0.06))
 	_box(n, Vector3(1.7, 0.14, 1.7), body, Vector3(0, 1.8, 0))
 	_box(n, Vector3(0.7, 0.55, 0.7), body, Vector3(0, 2.15, 0))
-	var s := _spin(n, Vector3(0, 0, 0))
+	var s := _spin(n, Vector3(0, 0, 0), 10.0)
+	MachineKit.puff(n, Vector3(0, 0.15, 0.3), MachineKit.DUST, 0.45, 0.6)
 	_cyl(s, 0.08, 1.8, mat("dark"), Vector3(0, 1.0, 0))
 	_cyl(s, 0.26, 0.6, body, Vector3(0, 0.3, 0), 0.02, Vector3.ZERO, 8)
 	_ring(s, 0.2, 0.04, body, Vector3(0, 0.7, 0))
@@ -218,7 +223,10 @@ static func _fabricator(n: Node3D, body: Material) -> float:
 	for x in [-0.8, 0.8]:
 		_box(n, Vector3(0.14, 1.5, 0.14), body, Vector3(x, 1.25, -0.6))
 	_box(n, Vector3(1.8, 0.16, 0.2), body, Vector3(0, 2.0, -0.6))
-	var s := _spin(n, Vector3(0, 2.0, -0.6))
+	var s := Node3D.new()
+	s.position = Vector3(0, 2.0, -0.6)
+	n.add_child(s)
+	_anim(s, "swing", {"axis": Vector3.UP, "amp": 0.9, "freq": 1.6})
 	_box(s, Vector3(0.12, 0.12, 0.9), body, Vector3(0.3, -0.1, 0.45))
 	_cyl(s, 0.05, 0.8, mat("dark"), Vector3(0.3, -0.5, 0.85))
 	_sph(s, 0.07, mat("cyan"), Vector3(0.3, -0.92, 0.85))
@@ -236,7 +244,7 @@ static func _valve(n: Node3D, body: Material) -> float:
 	_cyl(n, 0.16, 1.9, body, Vector3(0, 0.4, 0), -1.0, Vector3(PI / 2.0, 0, 0))
 	_cyl(n, 0.28, 0.5, body, Vector3(0, 0.4, 0), 0.24)
 	_cyl(n, 0.05, 0.55, mat("dark"), Vector3(0, 0.9, 0))
-	var s := _spin(n, Vector3(0, 1.18, 0))
+	var s := _spin(n, Vector3(0, 1.18, 0), 1.5)
 	_ring(s, 0.3, 0.04, mat("magnet"), Vector3.ZERO)
 	for i in 3:
 		_box(s, Vector3(0.58, 0.04, 0.04), mat("magnet"), Vector3.ZERO, Vector3(0, i * PI / 3.0, 0))
@@ -261,6 +269,7 @@ static func _filter(n: Node3D, body: Material) -> float:
 		_ring(n, 0.52, 0.03, mat("dark"), Vector3(0, y, 0))
 	_cyl(n, 0.12, 0.4, body, Vector3(0, 1.95, 0), 0.55)
 	_cyl(n, 0.5, 0.04, mat("net"), Vector3(0, 2.14, 0))
+	MachineKit.puff(n, Vector3(0, 2.2, 0), MachineKit.DUST, 0.35, 0.6, 6)
 	return 2.15
 
 static func _condenser(n: Node3D, body: Material) -> float:
@@ -268,9 +277,10 @@ static func _condenser(n: Node3D, body: Material) -> float:
 	for i in 7:
 		_box(n, Vector3(0.04, 0.9, 1.3), mat("cold"), Vector3(-0.6 + i * 0.2, 0.55, 0))
 	_cyl(n, 0.6, 0.15, body, Vector3(0, 1.1, 0))
-	var s := _spin(n, Vector3(0, 1.2, 0))
+	var s := _spin(n, Vector3(0, 1.2, 0), 12.0)
 	for i in 4:
 		_box(s, Vector3(1.0, 0.03, 0.18), mat("dark"), Vector3.ZERO, Vector3(0.3, i * PI / 4.0, 0))
+	MachineKit.puff(n, Vector3(0, 1.35, 0), MachineKit.STEAM, 0.45, 1.2)
 	return 1.25
 
 static func _treater(n: Node3D, body: Material) -> float:
@@ -279,7 +289,8 @@ static func _treater(n: Node3D, body: Material) -> float:
 	_box(n, Vector3(1.6, 0.1, 0.12), body, Vector3(0, 1.4, 0))
 	for x in [-0.78, 0.78]:
 		_box(n, Vector3(0.1, 1.4, 0.1), body, Vector3(x, 0.7, 0))
-	var s := _spin(n, Vector3(0, 1.35, 0))
+	var s := _spin(n, Vector3(0, 1.35, 0), 3.0)
+	MachineKit.puff(n, Vector3(0.3, 1.0, 0.2), Color(0.6, 1.0, 0.45), 0.18, 0.4, 6)
 	_cyl(s, 0.04, 0.8, mat("dark"), Vector3(0, -0.4, 0))
 	_box(s, Vector3(0.7, 0.2, 0.04), mat("dark"), Vector3(0, -0.75, 0))
 	return 1.45
@@ -296,14 +307,22 @@ static func _compressor(n: Node3D, body: Material, de: bool) -> float:
 		_cyl(n, 0.18, 0.5, body, Vector3(0, 0.75, -0.9), 0.35, Vector3(PI / 2.0, 0, 0))
 	_cyl(n, 0.13, 0.06, mat("yellow"), Vector3(0.35, 1.2, 0.1))
 	_cyl(n, 0.03, 0.25, mat("dark"), Vector3(0.35, 1.07, 0.1))
-	var s := _spin(n, Vector3(-0.55, 0.75, -0.05))
+	var s := Node3D.new()
+	s.position = Vector3(-0.55, 0.75, -0.05)
+	n.add_child(s)
+	_anim(s, "spin", {"axis": Vector3.RIGHT, "speed": 10.0})
 	_ring(s, 0.25, 0.05, body, Vector3.ZERO, Vector3(0, 0, PI / 2.0))
+	for i in 2:
+		_box(s, Vector3(0.04, 0.46, 0.05), mat("dark"), Vector3.ZERO, Vector3(i * PI / 2.0, 0, 0))
+	if de:
+		MachineKit.puff(n, Vector3(0, 0.75, 1.0), MachineKit.FROST, 0.3, 0.5)
 	return 1.25
 
 static func _distiller(n: Node3D, body: Material) -> float:
 	_box(n, Vector3(1.4, 0.3, 1.4), body, Vector3(0, 0.15, 0))
 	_sph(n, 0.5, body, Vector3(-0.2, 0.75, 0))
-	_box(n, Vector3(0.4, 0.2, 0.05), mat("hot"), Vector3(-0.2, 0.55, 0.46))
+	_anim(_box(n, Vector3(0.4, 0.2, 0.05), MachineKit.own_glow(Color(1.0, 0.45, 0.1), 4.0), Vector3(-0.2, 0.55, 0.46)), "glow", {"energy": 4.0, "freq": 7.0})
+	MachineKit.puff(n, Vector3(-0.2, 2.9, 0), MachineKit.STEAM, 0.3, 0.8, 6)
 	_cyl(n, 0.16, 1.7, body, Vector3(-0.2, 2.0, 0))
 	for y in [1.4, 1.9, 2.4]:
 		_ring(n, 0.18, 0.03, mat("dark"), Vector3(-0.2, y, 0))
@@ -320,7 +339,10 @@ static func _magnet(n: Node3D, body: Material) -> float:
 	_ring(n, 0.55, 0.13, mat("magnet"), Vector3(0, 0.95, 0), Vector3(PI / 2.0, 0, 0))
 	for x in [-0.55, 0.55]:
 		_box(n, Vector3(0.28, 0.18, 0.3), body, Vector3(x, 0.5, 0))
-	var s := _spin(n, Vector3(0.85, 0.3, 0))
+	var s := Node3D.new()
+	s.position = Vector3(0.85, 0.3, 0)
+	n.add_child(s)
+	_anim(s, "spin", {"axis": Vector3.BACK, "speed": 6.0})
 	_cyl(s, 0.15, 0.7, mat("dark"), Vector3.ZERO, -1.0, Vector3(PI / 2.0, 0, 0), 8)
 	_box(n, Vector3(0.9, 0.5, 0.5), body, Vector3(0, 0.25, -0.65))
 	return 1.6
@@ -328,7 +350,8 @@ static func _magnet(n: Node3D, body: Material) -> float:
 static func _electrolyzer(n: Node3D, body: Material) -> float:
 	_box(n, Vector3(1.6, 0.3, 1.2), body, Vector3(0, 0.15, 0))
 	_box(n, Vector3(1.4, 0.7, 1.0), mat("glass"), Vector3(0, 0.65, 0))
-	_box(n, Vector3(1.3, 0.45, 0.9), mat("blue"), Vector3(0, 0.55, 0))
+	_anim(_box(n, Vector3(1.3, 0.45, 0.9), MachineKit.own_glow(Color(0.3, 0.6, 1.0), 2.0), Vector3(0, 0.55, 0)), "glow", {"energy": 2.0, "freq": 3.0})
+	MachineKit.puff(n, Vector3(0, 0.5, 0), Color(0.75, 0.9, 1.0), 0.12, 0.35, 10)
 	for x in [-0.35, 0.35]:
 		_box(n, Vector3(0.1, 1.0, 0.6), mat("dark"), Vector3(x, 0.8, 0))
 		_cyl(n, 0.05, 0.4, mat("magnet") if x < 0 else mat("dark"), Vector3(x, 1.45, 0))
@@ -337,18 +360,21 @@ static func _electrolyzer(n: Node3D, body: Material) -> float:
 
 static func _sinter(n: Node3D, body: Material) -> float:
 	_box(n, Vector3(1.6, 0.45, 1.4), body, Vector3(0, 0.22, 0))
-	_box(n, Vector3(0.9, 0.08, 0.9), mat("hot"), Vector3(0, 0.49, 0))
+	_anim(_box(n, Vector3(0.9, 0.08, 0.9), MachineKit.own_glow(Color(1.0, 0.45, 0.1), 4.0), Vector3(0, 0.49, 0)), "glow", {"energy": 4.0, "freq": 5.0})
 	for x in [-0.65, 0.65]:
 		_cyl(n, 0.1, 1.7, body, Vector3(x, 1.2, 0))
 	_box(n, Vector3(1.6, 0.3, 0.6), body, Vector3(0, 2.0, 0))
-	var s := _spin(n, Vector3(0, 1.3, 0))
+	var s := Node3D.new()
+	s.position = Vector3(0, 1.3, 0)
+	n.add_child(s)
+	_anim(s, "press", {"amp": 0.55, "freq": 2.4})
 	_box(s, Vector3(1.0, 0.25, 1.0), body, Vector3.ZERO)
 	_cyl(s, 0.14, 0.6, mat("dark"), Vector3(0, 0.4, 0))
 	return 2.15
 
 static func _irradiator(n: Node3D, body: Material) -> float:
 	_box(n, Vector3(1.6, 0.9, 1.6), body, Vector3(0, 0.45, 0))
-	_sph(n, 0.6, mat("green"), Vector3(0, 0.9, 0), true)
+	_anim(_sph(n, 0.6, MachineKit.own_glow(Color(0.5, 1.0, 0.3), 2.2), Vector3(0, 0.9, 0), true), "glow", {"energy": 2.2, "freq": 3.0})
 	_sph(n, 0.66, mat("glass"), Vector3(0, 0.9, 0), true)
 	for i in 3:
 		var a := i * TAU / 3.0
@@ -360,7 +386,8 @@ static func _cryo(n: Node3D, body: Material) -> float:
 	_cyl(n, 0.45, 1.5, body, Vector3(0, 0.8, 0), -1.0, Vector3(0, 0, PI / 2.0))
 	_sph(n, 0.45, body, Vector3(-0.75, 0.8, 0))
 	_sph(n, 0.45, body, Vector3(0.75, 0.8, 0))
-	_box(n, Vector3(0.9, 0.3, 0.05), mat("cold"), Vector3(0, 0.9, 0.44))
+	_anim(_box(n, Vector3(0.9, 0.3, 0.05), MachineKit.own_glow(Color(0.55, 0.85, 1.0), 1.6), Vector3(0, 0.9, 0.44)), "glow", {"energy": 1.6, "freq": 2.0})
+	MachineKit.puff(n, Vector3(0, 1.3, 0), MachineKit.FROST, 0.4, 0.3)
 	for x in [-0.4, 0.0, 0.4]:
 		_ring(n, 0.47, 0.03, mat("cold"), Vector3(x, 0.8, 0), Vector3(0, 0, PI / 2.0))
 	return 1.3
@@ -369,8 +396,8 @@ static func _resonator(n: Node3D, body: Material) -> float:
 	_cyl(n, 0.7, 0.35, body, Vector3(0, 0.17, 0), 0.55)
 	for x in [-0.2, 0.2]:
 		_box(n, Vector3(0.1, 1.6, 0.22), body, Vector3(x, 1.1, 0))
-	_sph(n, 0.16, mat("violet"), Vector3(0, 1.3, 0))
-	var s := _spin(n, Vector3(0, 1.3, 0))
+	_anim(_sph(n, 0.16, MachineKit.own_glow(Color(0.8, 0.4, 1.0), 2.5), Vector3(0, 1.3, 0)), "glow", {"energy": 2.5, "freq": 9.0})
+	var s := _spin(n, Vector3(0, 1.3, 0), 4.0)
 	_ring(s, 0.5, 0.025, mat("violet"), Vector3.ZERO, Vector3(0.5, 0, 0))
 	_ring(s, 0.65, 0.02, mat("violet"), Vector3.ZERO, Vector3(-0.4, 0, 0.3))
 	return 1.9
@@ -384,7 +411,10 @@ static func _loom(n: Node3D, body: Material) -> float:
 		var x := -0.6 + i * 0.11
 		var t := _box(n, Vector3(0.015, 1.05, 0.015), mat("thread"), Vector3(x, 0.88, 0.02))
 		t.rotation.x = -0.75
-	var s := _spin(n, Vector3(0, 0.9, 0.05))
+	var s := Node3D.new()
+	s.position = Vector3(0, 0.9, 0.05)
+	n.add_child(s)
+	_anim(s, "swing", {"axis": Vector3.RIGHT, "amp": 0.35, "freq": 7.0})
 	_box(s, Vector3(1.4, 0.06, 0.1), mat("dark"), Vector3.ZERO)
 	return 1.5
 

@@ -10,7 +10,7 @@ extends RefCounted
 ## Своя модель есть у машин 3D-завода (MODELS); остальные силуэты
 ## MachineModels одеваются в этот набор через dress(). Контракт как у
 ## MachineModels.build: выход на +Z, мета "h", живые части — именованные узлы
-## (lamp, piston, roller, heap, spin, fill, carousel, sample, gauge).
+## (lamp, heap, fill, sample, gauge); движения за работой — anim()/animate().
 ## Материалы и сетки общие на все машины: ProtoBatch склеивает их по материалу.
 
 const MODELS := ["intake", "pump", "crusher", "furnace", "tank", "centrifuge", "lab"]
@@ -353,6 +353,13 @@ static func _intake(n: Node3D, body: Material) -> float:
 		var a := i * PI / 2.0
 		_bx(n, Vector3(1.4, 0.1, 0.1), m("trim"), Vector3(sin(a) * 0.67, fy + 0.4, cos(a) * 0.67), 0.02, Vector3(0, a, 0))
 	gauge(n, Vector3(0.36, y0 + 0.55, 0.3), 0.6)
+	# Ворошитель в горловине и пыль над воронкой, пока в приёмнике груз.
+	var ag := _piv(n, Vector3(0, fy - 0.2, 0))
+	anim(ag, "spin", {"speed": 4.0})
+	_cy(ag, 0.04, 0.5, m("metal"), Vector3.ZERO, -1.0, Vector3.ZERO, 8)
+	for i in 3:
+		_bx(ag, Vector3(0.5, 0.03, 0.08), m("metal"), Vector3(0, 0.1, 0), 0.01, Vector3(0.4, i * TAU / 3.0, 0))
+	puff(n, Vector3(0, fy + 0.45, 0), DUST, 0.35, 0.6, 6)
 	# Внутри воронки — горка груза (цвет задаёт вид).
 	var heap := MeshInstance3D.new()
 	heap.name = "heap"
@@ -371,13 +378,16 @@ static func _pump(n: Node3D, body: Material) -> float:
 	var cat := "pneu"
 	# Цилиндр с поршнем слева, мотор справа, маховик сзади.
 	vessel(n, 0.3, 1.0, Vector3(-0.35, y0 + 0.5, 0), cat, body)
-	# Высоту поршня (PISTON_Y) задаёт вид, пока насос качает.
-	var piston := _cy(n, 0.09, 0.8, m("metal"), Vector3(-0.35, PISTON_Y, 0), -1.0, Vector3.ZERO, 12)
-	piston.name = "piston"
+	var piston := _cy(n, 0.09, 0.8, m("metal"), Vector3(-0.35, y0 + 1.34, 0), -1.0, Vector3.ZERO, 12)
+	anim(piston, "bob", {"amp": 0.13, "freq": 9.0})
 	housing(n, Vector3(0.6, 0.55, 0.7), Vector3(0.4, y0 + 0.3, 0), cat, body)
+	# Маховик со спицами: крутится, пока насос качает.
 	var fw := _piv(n, Vector3(0.4, y0 + 0.75, -0.42), Vector3(PI / 2.0, 0, 0))
-	_cy(fw, 0.32, 0.08, m("frame"), Vector3.ZERO, -1.0, Vector3.ZERO, 24)
-	_cy(fw, 0.2, 0.1, m("trim"), Vector3.ZERO, -1.0, Vector3.ZERO, 24)
+	anim(fw, "spin", {"speed": 9.0})
+	_tor(fw, 0.3, 0.04, m("frame"), Vector3.ZERO)
+	for i in 3:
+		_bx(fw, Vector3(0.56, 0.05, 0.06), m("trim"), Vector3.ZERO, 0.01, Vector3(0, i * PI / 3.0, 0))
+	_cy(fw, 0.08, 0.12, m("metal"), Vector3.ZERO, -1.0, Vector3.ZERO, 12)
 	var d := Vector3(-0.35, y0 + 0.35, 0.6) - Vector3(-0.35, y0 + 1.0, 0.28)
 	var tube := _cy(n, 0.07, d.length(), m("metal"), Vector3(-0.35, y0 + 0.675, 0.44), -1.0, Vector3.ZERO, 12)
 	tube.basis = Basis(Quaternion(Vector3.UP, d.normalized()))
@@ -385,8 +395,6 @@ static func _pump(n: Node3D, body: Material) -> float:
 	outlet(n, Vector3(0.4, y0 + 0.2, 0.72))
 	lamp(n, Vector3(0.62, y0 + 0.62, -0.1))
 	return y0 + 1.5
-
-const PISTON_Y := 1.6
 
 static func _crusher(n: Node3D, body: Material) -> float:
 	var y0 := base(n, body)
@@ -399,15 +407,18 @@ static func _crusher(n: Node3D, body: Material) -> float:
 		_bx(n, Vector3(1.04, 0.08, 0.08), m("trim"), Vector3(sin(a) * 0.5, hy + 0.25, cos(a) * 0.5), 0.02, Vector3(0, a, 0))
 	# Валы с зубьями по бокам — видно, что мелет.
 	for side in [-1.0, 1.0]:
-		var rot := Node3D.new()
-		rot.name = "roller"
-		rot.position = Vector3(side * 0.72, y0 + 0.5, 0)
-		n.add_child(rot)
+		var rot := _piv(n, Vector3(side * 0.72, y0 + 0.5, 0))
+		anim(rot, "spin", {"axis": Vector3.RIGHT, "speed": -7.0 * side})
 		_cy(rot, 0.3, 0.14, m("frame"), Vector3.ZERO, -1.0, Vector3(0, 0, PI / 2.0), 16)
 		for k in 8:
 			var a := k * TAU / 8.0
 			_bx(rot, Vector3(0.16, 0.12, 0.1), m("metal"), Vector3(0, cos(a) * 0.33, sin(a) * 0.33), 0.02, Vector3(-a, 0, 0))
 		_cy(rot, 0.08, 0.2, m("trim"), Vector3(side * 0.05, 0, 0), -1.0, Vector3(0, 0, PI / 2.0), 12)
+	# Бункер трясётся, над ним пыль, пока мелет.
+	var hop := _piv(n, Vector3(0, hy + 0.3, 0))
+	anim(hop, "shake", {"amp": 0.012, "freq": 14.0})
+	_cy(hop, 0.36, 0.06, m("dark"), Vector3.ZERO, 0.66, Vector3(0, PI / 4.0, 0), 4)
+	puff(n, Vector3(0, hy + 0.4, 0), DUST, 0.4, 0.7)
 	outlet(n, Vector3(0, y0 + 0.25, 0.84))
 	lamp(n, Vector3(0.45, y0 + 0.92, 0.42))
 	return hy + 0.3
@@ -419,12 +430,14 @@ static func _furnace(n: Node3D, body: Material) -> float:
 	# Топка: раскалённое окно в раме, решётка.
 	var fz := 0.66
 	_bx(n, Vector3(0.8, 0.55, 0.06), m("frame"), Vector3(0, y0 + 0.62, fz), 0.03)
-	_bx(n, Vector3(0.62, 0.38, 0.04), m("hot"), Vector3(0, y0 + 0.62, fz + 0.02), 0.01)
+	var fire := _bx(n, Vector3(0.62, 0.38, 0.04), own_glow(Color(1.0, 0.45, 0.1), 4.0), Vector3(0, y0 + 0.62, fz + 0.02), 0.01)
+	anim(fire, "glow", {"energy": 4.0, "freq": 7.0})
 	for i in 4:
 		_bx(n, Vector3(0.03, 0.4, 0.03), m("dark"), Vector3(-0.2 + i * 0.133, y0 + 0.62, fz + 0.05), 0.005)
 	_cy(n, 0.2, 1.1, m("frame"), Vector3(0.42, y0 + 1.7, -0.35), -1.0, Vector3.ZERO, 16)
 	_cy(n, 0.23, 0.12, m("trim"), Vector3(0.42, y0 + 2.0, -0.35), -1.0, Vector3.ZERO, 16)
 	_cy(n, 0.25, 0.08, m("frame"), Vector3(0.42, y0 + 2.28, -0.35), -1.0, Vector3.ZERO, 16)
+	puff(n, Vector3(0.42, y0 + 2.35, -0.35), SMOKE, 0.5, 1.0, 10)
 	gauge(n, Vector3(-0.5, y0 + 1.05, 0.66))
 	outlet(n, Vector3(0.52, y0 + 0.25, 0.8))
 	lamp(n, Vector3(-0.55, y0 + 1.28, -0.5))
@@ -463,7 +476,7 @@ static func _centrifuge(n: Node3D, body: Material) -> float:
 	_cy(n, 0.8, 0.08, m("trim"), Vector3(0, y0 + 0.05, 0), -1.0, Vector3(0, PI / 8.0, 0), 8)
 	_cy(n, 0.7, 0.55, m("glass"), Vector3(0, y0 + 0.8, 0), -1.0, Vector3.ZERO, 32)
 	_tor(n, 0.72, 0.04, m("frame"), Vector3(0, y0 + 1.08, 0))
-	var s := MachineModels._spin(n, Vector3(0, y0 + 0.78, 0))
+	var s := MachineModels._spin(n, Vector3(0, y0 + 0.78, 0), 14.0)
 	_cy(s, 0.08, 0.5, m("metal"), Vector3.ZERO, -1.0, Vector3.ZERO, 12)
 	for i in 4:
 		var a := i * TAU / 4.0
@@ -476,8 +489,8 @@ static func _centrifuge(n: Node3D, body: Material) -> float:
 	return y0 + 1.15
 
 ## Лаборатория: светлый стол в раме, пять щупов (по одному на пробу) под
-## стеклянным колпаком, в центре — вращающаяся чашка с образцом ("carousel",
-## "sample"), спереди табло ("lamp": его цвет — состояние, материал свой).
+## стеклянным колпаком, в центре — вращающаяся чашка с образцом ("sample"),
+## спереди табло ("lamp": его цвет — состояние, материал свой).
 static func _lab(n: Node3D, body: Material) -> float:
 	var y0 := base(n, body)
 	var cat := "logic"
@@ -485,10 +498,8 @@ static func _lab(n: Node3D, body: Material) -> float:
 	var top := y0 + 0.64
 	_cy(n, 0.62, 0.06, m("frame"), Vector3(0, top, 0), -1.0, Vector3.ZERO, 32)
 	_sp(n, 0.56, m("glass"), Vector3(0, top, 0), true, 0.75)
-	var cup := Node3D.new()
-	cup.name = "carousel"
-	cup.position = Vector3(0, top + 0.08, 0)
-	n.add_child(cup)
+	var cup := _piv(n, Vector3(0, top + 0.08, 0))
+	anim(cup, "spin", {"speed": 3.0})
 	_cy(cup, 0.22, 0.08, m("metal"), Vector3.ZERO, 0.14, Vector3(PI, 0, 0), 16)
 	var sample := MeshInstance3D.new()
 	sample.name = "sample"
@@ -511,3 +522,154 @@ static func _lab(n: Node3D, body: Material) -> float:
 	var board := _bx(n, Vector3(0.5, 0.2, 0.03), ProtoMachines.glow(Color(0.3, 0.3, 0.3), 0.2), Vector3(0, y0 + 0.36, 0.65), 0.01)
 	board.name = "lamp"
 	return top + 0.45
+
+# ---------------------------------------------------------------- движения за работой
+
+## Живая часть с движением за работой. type и параметры:
+##   "spin"  — axis (локальная ось), speed (рад/с): вращается, пока работает;
+##   "bob"   — axis, amp, freq: ходит туда-обратно (поршень);
+##   "press" — axis, amp, freq: резкий удар вдоль оси и медленный возврат (пресс);
+##   "swing" — axis, amp, freq: качается вокруг оси (рычаг, батан);
+##   "shake" — amp, freq: мелкая дрожь;
+##   "glow"  — energy, freq: свечение своего материала дышит, в простое тускнеет;
+##   "puff"  — CPUParticles3D: дым, пар, пыль, пузыри — только пока работает;
+##   "flicker" — Light3D: свет пламени мерцает, в простое гаснет.
+## Узел получает своё имя — живые части не склеивает ProtoBatch; name — если
+## вид ищет часть по имени (оно должно быть единственным в модели).
+static func anim(node: Node, type: String, params := {}, name := "") -> Node:
+	var d := params.duplicate()
+	d.type = type
+	node.set_meta("anim", d)
+	_anim_n += 1
+	node.name = name if name != "" else "%s_%d" % [type, _anim_n]
+	return node
+
+static var _anim_n := 0
+
+## Двигать живые части модели n; working — машина сейчас работает.
+## Список частей и их исходное положение собираются при первом вызове.
+static func animate(n: Node3D, working: bool, t: float, dt: float) -> void:
+	if not n.has_meta("anims"):
+		_collect(n)
+	var ph: float = n.get_meta("anim_phase", 0.0)
+	for a: Node in n.get_meta("anims"):
+		if not is_instance_valid(a):
+			continue
+		var d: Dictionary = a.get_meta("anim")
+		var tt := t + ph
+		match d.type:
+			"spin":
+				if working:
+					(a as Node3D).rotate_object_local(d.get("axis", Vector3.UP), d.get("speed", 3.0) * dt)
+			"bob", "press", "shake":
+				var base: Vector3 = a.get_meta("anim_pos")
+				var off := Vector3.ZERO
+				if working:
+					var amp: float = d.get("amp", 0.1)
+					var w: float = d.get("freq", 6.0) * tt
+					match d.type:
+						"bob": off = d.get("axis", Vector3.UP) * amp * sin(w)
+						"press": off = -d.get("axis", Vector3.UP) * amp * pow(0.5 + 0.5 * sin(w), 6.0)
+						"shake": off = Vector3(sin(w * 1.7), sin(w * 2.3), sin(w * 3.1)) * amp
+				(a as Node3D).position = base + off
+			"swing":
+				var r: Vector3 = a.get_meta("anim_rot")
+				var k: float = sin(d.get("freq", 4.0) * tt) * d.get("amp", 0.3) if working else 0.0
+				(a as Node3D).rotation = r + d.get("axis", Vector3.RIGHT) * k
+			"glow":
+				var m := (a as GeometryInstance3D).material_override as StandardMaterial3D
+				if m:
+					var e: float = d.get("energy", 2.0)
+					var f: float = d.get("freq", 5.0)
+					m.emission_energy_multiplier = e * (0.8 + 0.2 * sin(f * tt) + 0.12 * sin(f * 2.7 * tt)) if working else e * 0.25
+			"puff":
+				var p := a as CPUParticles3D
+				if p.emitting != working:
+					p.emitting = working
+			"flicker":
+				var l := a as Light3D
+				var e2: float = d.get("energy", 1.5)
+				l.light_energy = e2 * (0.85 + 0.15 * sin(13.0 * tt) + 0.08 * sin(29.0 * tt)) if working else e2 * 0.25
+
+static func _collect(n: Node3D) -> void:
+	var list: Array = []
+	var stack: Array = [n]
+	while not stack.is_empty():
+		var c: Node = stack.pop_back()
+		if c != n and c.has_meta("anim"):
+			list.append(c)
+			if c is Node3D:
+				c.set_meta("anim_pos", (c as Node3D).position)
+				c.set_meta("anim_rot", (c as Node3D).rotation)
+		stack.append_array(c.get_children())
+	n.set_meta("anims", list)
+	# Одинаковые машины рядом не качаются в такт.
+	n.set_meta("anim_phase", float(n.get_instance_id() % 997) * 0.37)
+
+## Свой светящийся материал (его дыхание не трогает другие машины).
+static func own_glow(c: Color, e: float) -> StandardMaterial3D:
+	return ProtoMachines.glow(c, e)
+
+static var _puff_mats := {}
+static var _puff_mesh: QuadMesh
+
+## Дым, пар, пыль или пузыри: несколько мягких пятен вверх из точки pos.
+static func puff(n: Node3D, pos: Vector3, col: Color, size := 0.35, up := 1.0, amount := 8) -> CPUParticles3D:
+	var p := CPUParticles3D.new()
+	p.position = pos
+	p.emitting = false
+	p.amount = amount
+	p.lifetime = 1.6
+	p.local_coords = false
+	p.direction = Vector3.UP
+	p.spread = 12.0
+	p.initial_velocity_min = 0.5 * up
+	p.initial_velocity_max = 0.9 * up
+	p.gravity = Vector3(0, 0.25 * up, 0)
+	p.damping_min = 0.3
+	p.damping_max = 0.6
+	p.scale_amount_min = size * 0.7
+	p.scale_amount_max = size
+	var sc := Curve.new()
+	# Растёт и тает к концу жизни (цвет вершин в Compatibility не доходит —
+	# прозрачность задаёт материал, а исчезает пятно уменьшаясь).
+	sc.add_point(Vector2(0, 0.4))
+	sc.add_point(Vector2(0.6, 1.5))
+	sc.add_point(Vector2(1, 0.0))
+	p.scale_amount_curve = sc
+	if _puff_mesh == null:
+		_puff_mesh = QuadMesh.new()
+		_puff_mesh.size = Vector2(1, 1)
+	p.mesh = _puff_mesh
+	var key := col.to_html()
+	if not _puff_mats.has(key):
+		var m := StandardMaterial3D.new()
+		m.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+		m.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+		m.billboard_mode = BaseMaterial3D.BILLBOARD_PARTICLES
+		m.albedo_color = Color(col, 0.5)
+		m.albedo_texture = _soft_dot()
+		_puff_mats[key] = m
+	p.material_override = _puff_mats[key]
+	p.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	n.add_child(p)
+	anim(p, "puff")
+	return p
+
+static var _dot: ImageTexture
+
+static func _soft_dot() -> ImageTexture:
+	if _dot == null:
+		var img := Image.create(32, 32, false, Image.FORMAT_RGBA8)
+		for y in 32:
+			for x in 32:
+				var r := Vector2(x - 15.5, y - 15.5).length() / 16.0
+				img.set_pixel(x, y, Color(1, 1, 1, clampf(1.0 - r, 0.0, 1.0) ** 1.5))
+		_dot = ImageTexture.create_from_image(img)
+	return _dot
+
+## Цвета дыма и пара.
+const SMOKE := Color(0.35, 0.33, 0.32)
+const STEAM := Color(0.92, 0.94, 0.97)
+const DUST := Color(0.62, 0.55, 0.45)
+const FROST := Color(0.75, 0.9, 1.0)

@@ -20,6 +20,7 @@ var set_name := "key"
 var planet := "volcanic"
 var shot_path := ""
 var _t := 0.0
+var _models: Array = []
 
 func _ready() -> void:
 	for a in OS.get_cmdline_user_args():
@@ -47,6 +48,7 @@ func _ready() -> void:
 		var n := ProtoPneumaticsView.build_part(k, sub, 1, [0, 2] if k == "pipe" else [])
 		var row := i / per_row
 		var in_row := mini(per_row, kinds.size() - row * per_row)
+		_models.append(n.get_node("model") if n.has_node("model") else n)
 		n.position = Vector3((i % per_row - (in_row - 1) / 2.0) * 2.7, 0, (row - (rows - 1) / 2.0) * 4.4)
 		add_child(n)
 		var l := Label3D.new()
@@ -90,7 +92,10 @@ func _ready() -> void:
 
 func _process(dt: float) -> void:
 	_t += dt
-	if shot_path != "" and _t > 0.8:
+	# Все машины в витрине работают: видно движения (MachineKit.animate).
+	for m: Node3D in _models:
+		MachineKit.animate(m, true, _t, dt)
+	if shot_path != "" and _t > 1.2:
 		get_viewport().get_texture().get_image().save_png(shot_path)
 		print("Кадр: ", shot_path)
 		get_tree().quit()

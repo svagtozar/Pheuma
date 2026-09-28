@@ -28,6 +28,7 @@ var _content: Node3D
 var _chunks := {}                # Vector2i → Node3D: кусок рельефа с жидкостями
 var _ground_mat: Material
 var _world_env: WorldEnvironment
+var cycle: ProtoDayNight        # смена дня и ночи (ProtoSky)
 var _liquid_mats := {}
 const CHUNK := 32                # ячеек сетки рельефа в куске (16 м)
 var _machines: Node3D
@@ -75,6 +76,7 @@ func set_world(w: World) -> void:
 	var sky := ProtoSky.build(world.planet, _content)
 	env = sky.env
 	_world_env = sky.world_env
+	cycle = sky.cycle
 	particles = sky.particles
 	_ruins()
 	_build_deposits()
@@ -299,7 +301,7 @@ func _machine_node(m: Machine, body: Material) -> Node3D:
 	if m.outputs() == 2:
 		var d2: Vector2i = Machine.DIRS[(m.facing + 1) % 4]
 		MachineModels.add_outlet(n, n.basis.inverse() * Vector3(d2.x, 0, d2.y))
-	_live[m.id] = {"node": n, "lamp": n.get_node_or_null("lamp"), "spin": n.find_child("spin", true, false),
+	_live[m.id] = {"node": n, "lamp": n.get_node_or_null("lamp"),
 		"fill": n.get_node_or_null("fill"), "h": float(n.get_meta("h", 1.2)), "busy": null, "light": null}
 	if m.stats.get("light", false):
 		var l := OmniLight3D.new()
@@ -356,8 +358,8 @@ func _update_live(dt: float) -> void:
 			elif working:
 				key = "lamp_work"
 			L.lamp.material_override = MachineModels.mat(key)
-		if L.spin != null and working:
-			L.spin.rotation.y += dt * (9.0 if m.kind in ["centrifuge", "drill"] else 2.5)
+		# Движения за работой: валы, поршни, пресс, дым и пар (MachineKit.anim).
+		MachineKit.animate(L.node, working, _t, dt)
 		if L.fill != null and m.capacity() > 0.0:
 			var f: float = clampf(m.total_mass() / m.capacity(), 0.0, 1.0)
 			L.fill.scale.y = maxf(0.001, f * float(L.fill.get_meta("h", 1.0)))
@@ -518,10 +520,23 @@ func _process(dt: float) -> void:
 	_fx3d.update(dt)
 	_follow(dt)
 	_event_zone(dt)
+	_night_lamp()
 	if main != null and cursor != null:
 		var mc: Vector2i = main.mouse_cell()
 		cursor.visible = world.planet.in_bounds(mc)
 		cursor.position = terrain.cell_pos(mc) + Vector3(0, 0.05, 0)
+
+## Ночью фара робота ярче и светит глазок (ProtoDayNight).
+func _night_lamp() -> void:
+	if cycle == null:
+		return
+	var lamp := robot.find_child("head_lamp", true, false) as SpotLight3D
+	if lamp:
+		lamp.light_energy = lerpf(1.5, 4.0, cycle.night)
+	var eye := robot.find_child("eye_light", true, false) as OmniLight3D
+	if eye:
+		eye.light_energy = cycle.night
+		eye.omni_range = 5.0
 
 ## Урон по правилам World: вспышки на падении прочности, поломка — надпись.
 func _hurt(dt: float, moved: Vector2) -> void:
