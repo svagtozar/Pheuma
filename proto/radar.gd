@@ -87,6 +87,8 @@ func heading() -> Vector2:
 	if c == null:
 		return Vector2(0, -1)
 	var f := -c.global_basis.z
+	if robot != null and robot.has_meta("planet_turn"):
+		f = (robot.get_meta("planet_turn") as Basis).inverse() * f    # на шаре — в системе планеты
 	var v := Vector2(f.x, f.z)
 	return v.normalized() if v.length() > 0.01 else Vector2(0, -1)
 
@@ -99,7 +101,7 @@ func _process(dt: float) -> void:
 	if data == null or robot == null or not is_visible_in_tree():
 		return
 	_t += dt
-	var p := robot.global_position
+	var p: Vector3 = robot.get_meta("planet_pos", robot.global_position)
 	underground = p.y < data.height_at(p.x, p.z) - 2.5
 	data.reveal(p, underground)
 	data.flush()
@@ -121,7 +123,7 @@ func _draw_icons() -> void:
 	var c := size * 0.5
 	var rad := size.x * 0.5
 	var up := heading()
-	var p := robot.global_position
+	var p: Vector3 = robot.get_meta("planet_pos", robot.global_position)
 	var font := get_theme_default_font()
 	# Север — буква на ободе.
 	var n := to_screen(Vector2(0, -1), up, rad).normalized() * (rad - 14.0)

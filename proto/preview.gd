@@ -56,7 +56,9 @@ extends Node3D
 
 var seed_value := 14
 var view := "third"
-var horizon := false          # прототип: рельеф планеты до горизонта вокруг участка
+var planet_on := true         # вся планета вокруг участка (ProtoPlanetStream); --no-planet — только участок
+var planet_stream: ProtoPlanetStream
+const PLANET_R := 800.0       # радиус планеты-шара, м
 var shot_path := ""
 var planet: Planet
 var terrain: ProtoTerrain
@@ -152,7 +154,7 @@ func _ready() -> void:
 		elif a.begins_with("--drill-hard="): drill_hard = float(a.substr(13))
 		elif a.begins_with("--record="): record = a.substr(9)
 		elif a == "--mute": mute = true
-		elif a == "--horizon": horizon = true
+		elif a == "--no-planet": planet_on = false
 		elif a == "--hud": show_hud = true
 		elif a == "--pad": hud_pad = true
 		elif a == "--cargo": demo_cargo = true
@@ -206,9 +208,6 @@ func _ready() -> void:
 		ground.material_override = tm
 		add_child(ground)
 		RobotGround.add_collision(ground)
-	if horizon or view.begins_with("horizon"):
-		add_child(ProtoHorizon.build(terrain))
-		_lap("horizon")
 	_environment()
 	_lap("environment")
 	_liquids()
@@ -220,6 +219,16 @@ func _ready() -> void:
 	_factory()
 	_lap("factory")
 	_robot_and_camera()
+	if planet_on:
+		planet_stream = ProtoPlanetStream.create(terrain, tm, robot, cam, PLANET_R)
+		add_child(planet_stream)
+		for c in get_children():
+			# Всё про участок — вместе с шаром; погода (частицы) — у робота.
+			if c is Node3D and not (c is Light3D or c is Camera3D or c is CPUParticles3D or c is GPUParticles3D) \
+					and c != robot and c != planet_stream:
+				planet_stream.site_nodes.append(c)
+		planet_stream.build_now()
+		_lap("planet_around")
 	_caption()
 	_map_data()
 	_lap("robot")
@@ -249,6 +258,9 @@ func _ready() -> void:
 		elif auto == "bench":
 			pl.auto_cave("")
 			pl.shots = []
+		elif auto == "around" and planet_stream:
+			planet_stream.auto_around(shot_path.get_basename() if shot_path != "" else "")
+			shot_path = ""
 		elif auto == "bump":
 			pl.auto_bump(pneu_view, shot_path.get_basename() if shot_path != "" else "user://bump")
 			shot_path = ""
@@ -329,6 +341,8 @@ func _environment() -> void:
 	# Плотность дымки и ветер — по тегам (ProtoWorldStyle); под землёй не трогаем.
 	if view != "cave":
 		env.fog_density *= style.fog_mult
+	if view == "orbit":
+		env.fog_enabled = false
 	if sky.particles != null:
 		sky.particles.position = Vector3(46, 26, 36)
 		var g: Vector3 = sky.particles.gravity
@@ -870,12 +884,29 @@ func _robot_and_camera() -> void:
 			cam.fov = 62.0
 			cam.position = Vector3(pc.x + 6.0, top + 9.0, pc.z - 8.0)
 			cam.look_at(Vector3(pc.x - 30.0, top - 4.0, pc.z + 40.0))
+		"far":
+			# Далеко от завода: вокруг шар, над горизонтом — хребты.
+			var fx := terrain.sx + 260.0
+			var fz := terrain.sz * 0.5 + 20.0
+			robot.position = Vector3(fx, terrain.surface_h(fx, fz), fz)
+			robot.rotation.y = -PI * 0.5
+			cam.far = 4000.0
+			cam.position = robot.position + Vector3(7.0, 4.5, 3.0)
+			cam.look_at(robot.position + Vector3(-30.0, 0.0, 0.0))
+		"orbit":
+			# Вся планета с высоты: место посадки сверху.
+			robot.position = Vector3(pc.x, top, pc.z)
+			cam.far = 20000.0
+			cam.fov = 40.0
+			var r := PLANET_R
+			cam.position = Vector3(pc.x + r * 1.6, r * 1.3, pc.z + r * 2.2)
+			cam.look_at(Vector3(pc.x, -r * 0.9, pc.z))
 		"horizon_high":
 			robot.position = Vector3(pc.x, top, pc.z)
 			cam.far = 5000.0
 			cam.fov = 60.0
 			cam.position = Vector3(terrain.sx * 0.5 + 60.0, 150.0, terrain.sz + 160.0)
-			cam.look_at(Vector3(terrain.sx * 0.5 - 60.0, -40.0, -200.0))
+			cam.look_at(Vector3(terrain.sx * 0.5 - 60.0, -60.0, -200.0))
 		"vista":
 			# Робот на склоне над руслом, вдоль реки к озеру.
 			var vx := 52.0
