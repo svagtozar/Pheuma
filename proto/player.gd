@@ -466,6 +466,11 @@ func _move(d: Vector3) -> void:
 	var step := 1.1 if swim else maxf(terrain.style.step_height(), d.length() * 1.6)
 	if (g - robot.position.y) > step or terrain.solid(np.x, body + 1.2, np.z) \
 			or (air and terrain.solid(np.x, robot.position.y + 0.3, np.z)) or (_hits_machine(Vector3(np.x, body, np.z)) and not _hits_machine(robot.position)):
+		# Скриптовый маршрут упёрся в уступ (не в породу и не в машину) — перескочить,
+		# как сделал бы игрок: иначе проверка (--auto=cave, bench) стоит вечно.
+		if not route.is_empty() and not air and g - robot.position.y < JUMP_MAX_H \
+				and not terrain.solid(np.x, body + 1.2, np.z) and not _hits_machine(Vector3(np.x, body, np.z)):
+			jump()
 		vel *= 0.3
 		return
 	robot.position.x = np.x
