@@ -42,6 +42,7 @@ func _complete_stage() -> void:
 		"p_parts": net.placed += int(st.n)
 		"p_process": net.processed += int(st.n)
 		"p_launch": net.launched_kg += float(st.kg) + 1.0
+		"p_vent": net.vented += float(st.amount) + 1.0
 		"p_pressure", "p_beacon", "p_dome": run.goals.hold = float(st.hold)
 	_tick(1.2)
 	if st.type in ["p_pressure", "p_beacon", "p_dome"] and run.goals.stage == stage:

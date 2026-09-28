@@ -191,13 +191,22 @@ static func safe_height(gravity: float) -> float:
 # ---------------------------------------------------------------- игра
 
 ## Жидкость под роботом: {sub, temp, depth, level, zone} или пусто.
+## Зоны участка — в системе планеты (на шаре она повёрнута под роботом),
+## море шара (зона с "sea", ProtoPlanetFill) — по высоте над центром планеты.
+## level — мировая высота зеркала над роботом.
 func liquid_at(p: Vector3) -> Dictionary:
+	var q := terrain.to_local * p if terrain != null and terrain.sphere else p
 	for z: Dictionary in zones:
-		if not z.area.call(p.x, p.z):
+		if z.has("sea"):
+			var dp: float = z.sea.sea_at(p)
+			if dp > 0.05:
+				return {"sub": z.sub, "temp": z.temp, "depth": dp, "level": p.y + dp, "zone": z}
 			continue
-		var lv: float = z.level.call(p.x, p.z)
-		if lv > p.y + 0.05 and not _rock_between(p, lv):
-			return {"sub": z.sub, "temp": z.temp, "depth": lv - p.y, "level": lv, "zone": z}
+		if not z.area.call(q.x, q.z):
+			continue
+		var lv: float = z.level.call(q.x, q.z)
+		if lv > q.y + 0.05 and not _rock_between(p, p.y + lv - q.y):
+			return {"sub": z.sub, "temp": z.temp, "depth": lv - q.y, "level": p.y + lv - q.y, "zone": z}
 	return {}
 
 ## Между роботом и зеркалом жидкости — порода: робот в пещере под руслом,

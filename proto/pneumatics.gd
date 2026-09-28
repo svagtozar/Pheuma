@@ -45,12 +45,14 @@ const KINDS := {
 	"launch_silo": {"n": "Пусковая шахта", "vol": 3.0, "stat": "launch_silo", "cap": 20.0},
 	"beacon": {"n": "Маяк", "vol": 0.6, "stat": "beacon", "any": ["conductive", "crystalline"]},
 	"dome": {"n": "Купол", "vol": 4.0, "stat": "dome"},
+	# Терраформирование: газ сети уходит в небо и поднимает давление планеты (ProtoTerraform).
+	"vent": {"n": "Газоотвод", "vol": 0.5, "stat": "vent"},
 }
 ## Порядок в меню стройки: пневматика, все 16 машин обработки 2D-игры, бак, лаборатория,
-## сооружения целей (шахта, маяк, купол).
+## сооружения целей (шахта, маяк, купол), газоотвод.
 const ORDER := ["pipe", "pump", "intake", "cannon", "crusher", "furnace", "filter", "condenser", "treater",
 	"compressor", "decompressor", "distiller", "centrifuge", "magnet_sep", "electrolyzer", "sinter",
-	"irradiator", "cryochamber", "resonator", "loom", "tank", "lab", "launch_silo", "beacon", "dome"]
+	"irradiator", "cryochamber", "resonator", "loom", "tank", "lab", "launch_silo", "beacon", "dome", "vent"]
 
 const PUMP_RATE := 1.6          # газа в секунду при 1 атм снаружи
 ## Насос не качает выше этой доли своего предела. Запас — на события: при 0,9
@@ -77,6 +79,7 @@ const DOME_HEAT := 30.0         # °C, на которые печь рядом �
 const AROUND := [Vector2i(1, 0), Vector2i(1, -1), Vector2i(1, 1), Vector2i(0, -1), Vector2i(0, 1),
 	Vector2i(-1, -1), Vector2i(-1, 1), Vector2i(-1, 0)]   # соседи купола, вместе с диагональными
 const DOME_COMFORT := 20.0      # к чему тянет изолирующий купол
+const VENT_RATE := 1.2          # газа в секунду, который газоотвод выпускает в небо
 
 var planet: Planet
 var gas := GasNet.new()
@@ -97,6 +100,8 @@ var launch_p := 3.0             # давление старта шахты (Prot
                                 # слабой шахте хватает 70% её предела — silo_p)
 var launched_kg := 0.0          # сколько улетело на орбиту за всё время
 var launched_subs := {}         # id вещества → кг, улетевших на орбиту
+var vented := 0.0               # газа выпущено в небо газоотводами за всё время
+var launches: Array = []        # [Substance, кг] — старты шахты с прошлого забора (ProtoRun → зеркала)
 var _next_id := 1
 
 func _init(p: Planet) -> void:
@@ -198,6 +203,7 @@ func step(dt: float) -> void:
 			"launch_silo": _silo(part, dt)
 			"beacon": _beacon(part, dt)
 			"dome": _dome(part, dt)
+			"vent": _vent(part, dt)
 			"tank": part.status = "%.1f / %.0f кг" % [mass_in(part.cell), KINDS.tank.cap] + ("\n" + part.items[-1].substance.name if not part.items.is_empty() else "")
 			_:
 				if KINDS[part.kind].has("process"):
@@ -353,6 +359,7 @@ func _silo(part: Dictionary, dt: float) -> void:
 	var top: Substance = part.items[0].substance
 	for it in part.items:
 		launched_subs[it.substance.id] = launched_subs.get(it.substance.id, 0.0) + it.mass
+		launches.append([it.substance, it.mass])
 	launched_kg += m
 	part.items.clear()
 	part.cd = LAUNCH_CD
@@ -393,6 +400,22 @@ func _dome(part: Dictionary, dt: float) -> void:
 	part.temp = float(part.get("temp", planet.ambient_temp))
 	part.temp += (dome_target(part.cell) - part.temp) * minf(1.0, 0.04 * dt)
 	part.status = "%.0f °C · %.1f атм" % [part.temp, gas.pressure(part.id)]
+
+## Газоотвод: всё, что в сети выше давления атмосферы, уходит в небо (не быстрее
+## VENT_RATE). Насос рядом — и газ идёт непрерывно.
+func _vent(part: Dictionary, dt: float) -> void:
+	part.hot = false
+	part.work = false
+	# Излишек над атмосферой (gas_for_pressure < 0 — газа больше, чем при p атмосферы).
+	var over := -gas.gas_for_pressure(part.id, gas.atm_pressure)
+	if over <= 0.02:
+		part.status = "нечего выпускать — поставьте насос рядом"
+		return
+	var d := minf(over, VENT_RATE * dt)
+	gas.take_gas(part.id, d)
+	vented += d
+	part.work = true
+	part.status = "выпускает в небо · всего %.0f" % vented
 
 ## К какой температуре тянется купол в клетке c.
 func dome_target(c: Vector2i) -> float:
@@ -451,7 +474,7 @@ func _accept(part: Dictionary, p: Portion, from: Vector2i) -> bool:
 				return false
 			part.items.append(p)
 			return true
-		"beacon", "dome":
+		"beacon", "dome", "vent":
 			return false
 		"tank":
 			if mass_in(part.cell) + p.mass > KINDS.tank.cap + 0.001:

@@ -302,6 +302,13 @@ func _note_mined(druse: Node) -> void:
 			if is_instance_valid(k) and k.get_parent() == druse and not k.has_meta("broken"):
 				return
 		var root := get_parent()
+		if druse.has_meta("far_id"):
+			# Россыпь на шаре вдали от участка (ProtoPlanetFill): номер — её id.
+			var far: Array = root.get_meta("mined_far", [])
+			if not far.has(druse.get_meta("far_id")):
+				far.append(druse.get_meta("far_id"))
+			root.set_meta("mined_far", far)
+			return
 		var ids: Array = root.get_meta("mined", [])
 		if not ids.has(i):
 			ids.append(i)
@@ -334,7 +341,7 @@ func _falling(dt: float) -> void:
 			n.scale = Vector3.ONE * maxf(0.05, 1.0 - f.pull * 1.6)
 			n.rotate_y(dt * 8.0)
 			if to.length() < 0.25 or f.pull > 0.8:
-				_collect(f.mass, f.sub)
+				collect(f.mass, f.sub)
 				n.queue_free()
 				continue
 		else:
@@ -356,8 +363,11 @@ func _falling(dt: float) -> void:
 		keep.append(f)
 	falling = keep
 
-func _collect(m: float, s: Substance) -> void:
-	mined_total += m
+## В груз робота: порция вещества s массой m и всплывающая «+m кг».
+## count — засчитать в добычу (цели рана); срезанная органика — нет.
+func collect(m: float, s: Substance, count := true) -> void:
+	if count:
+		mined_total += m
 	var p := Portion.new(s, m, temp)
 	var list := cargo_of(robot)
 	for q: Portion in list:

@@ -17,6 +17,9 @@ extends RefCounted
 ##   p_launch   — kg груза улетело на орбиту из пусковой шахты (с начала этапа)
 ##   p_beacon   — маяк светит под давлением p атм hold секунд
 ##   p_dome     — купол держит ≥ p атм и температуру t=[мин,макс] hold секунд
+##   p_vent     — газоотводы выпустили в небо amount газа (с начала этапа)
+## Климат планеты (терраформирование) — ProtoTerraform в поле terra: газ из
+## газоотводов поднимает давление, груз на орбите становится зеркалами.
 ## Источники — завод (ProtoPneumatics), бур (ProtoMining) и груз робота
 ## (Array[Portion] в метаданных "cargo"); любой может отсутствовать.
 
@@ -55,6 +58,7 @@ var stats := {"hits": 0}                 # hits — капсулы, пришед
 var gas := {"vented_total": 0.0}
 var launched := {"mass": 0.0, "tags": {}, "exotic": 0.0, "subs": {}}
 var excavated := 0.0
+var terra: ProtoTerraform                # климат, который меняет игрок
 var orig_goal := {}                      # цель из генератора (2D)
 
 # ---- источники 3D
@@ -96,6 +100,7 @@ func _init(p: Planet, source_mats: Array = []) -> void:
 	rng = Rng.new(p.seed_value)
 	_ev_rng = rng.fork("events3d")
 	orig_goal = p.goal
+	terra = ProtoTerraform.new(p)
 	planet.goal = adapt_goal(p.goal, _pressure_cap())
 	goals = GoalsTracker.new(self)
 	ev_next = _ev_rng.range_f(EVENT_FIRST[0], EVENT_FIRST[1])
@@ -117,7 +122,10 @@ func resync() -> void:
 		"placed": pneu.placed if pneu != null else 0,
 		"delivered": pneu.delivered if pneu != null else 0,
 		"processed": pneu.processed if pneu != null else 0,
-		"launched": pneu.launched_kg if pneu != null else 0.0}
+		"launched": pneu.launched_kg if pneu != null else 0.0,
+		"vented": pneu.vented if pneu != null else 0.0}
+	if pneu != null:
+		pneu.launches.clear()
 
 # ---------------------------------------------------------------- этапы
 
@@ -148,7 +156,7 @@ static func adapt_goal(goal: Dictionary, p_cap: float = 4.0) -> Dictionary:
 	return out
 
 const STAGE_TYPES := ["p_mine", "deliveries", "p_process", "p_store", "p_parts", "p_pressure",
-	"p_launch", "p_beacon", "p_dome"]
+	"p_launch", "p_beacon", "p_dome", "p_vent"]
 
 static func adapt_stage(st: Dictionary, i: int, p_cap: float) -> Dictionary:
 	var t := "p_mine"
@@ -168,7 +176,7 @@ static func adapt_stage(st: Dictionary, i: int, p_cap: float) -> Dictionary:
 		"beacon_hold":
 			t = "p_beacon"
 		"vent_gas":
-			t = "p_pressure"
+			t = "p_vent"
 	var s := make_stage(t, i, p_cap)
 	s.orig = st.get("desc", "")
 	return s
@@ -213,6 +221,10 @@ static func make_stage(t: String, i: int, p_cap: float) -> Dictionary:
 			return {"type": t, "p": 1.0, "t": [5.0, 35.0], "hold": hold,
 				"desc": "Купол для поселенцев: ≥1 атм и 5–35 °C %d секунд" % int(hold),
 				"pitch": "Каждая печь рядом с куполом греет его на 30 °C, конденсатор остужает. Изолирующий материал держит тепло."}
+		"p_vent":
+			var amount: float = [60.0, 120.0, 180.0][k]
+			return {"type": t, "amount": amount, "desc": "Выпустить в небо %.0f единиц газа" % amount,
+				"pitch": "Газоотвод и насос вплотную: газ уходит в атмосферу, давление планеты растёт."}
 	var kg: float = [15.0, 25.0, 35.0][k]
 	return {"type": "p_mine", "kg": kg, "desc": "Добыть буром %.0f кг кристаллов" % kg,
 		"pitch": "Пещера и друзы: чем дальше в глубину, тем крупнее кристаллы."}
@@ -246,6 +258,8 @@ func eval_stage(tr: GoalsTracker, st: Dictionary, dt: float) -> float:
 			return tr._hold(beacon_lit(st.p), st.hold, dt)
 		"p_dome":
 			return tr._hold(dome_ok(st), st.hold, dt)
+		"p_vent":
+			return (terra.vented - float(_bases.get("vented", 0.0))) / st.amount
 	return 0.0
 
 ## Горит ли маяк под давлением не ниже p.
@@ -289,7 +303,8 @@ func _check_stage() -> void:
 	var key := "%d:%s" % [goals.stage, str(goals.choices.get(str(goals.stage), ""))]
 	if key != _base_key:
 		_base_key = key
-		_bases = {"mined": mined, "built": built, "processed": processed, "launched": launched.mass}
+		_bases = {"mined": mined, "built": built, "processed": processed, "launched": launched.mass,
+			"vented": terra.vented}
 
 ## Сколько сделано на текущем этапе: [сейчас, нужно, единица].
 func stage_numbers() -> Array:
@@ -304,6 +319,7 @@ func stage_numbers() -> Array:
 		"p_process": return [float(processed - b.processed), float(st.n), "порций"]
 		"p_pressure", "p_beacon", "p_dome": return [goals.hold, st.hold, "с"]
 		"p_launch": return [launched.mass - float(b.get("launched", 0.0)), st.kg, "кг"]
+		"p_vent": return [terra.vented - float(b.get("vented", 0.0)), st.amount, "ед."]
 	return [0.0, 1.0, ""]
 
 func tank_mass() -> float:
@@ -372,6 +388,7 @@ func tick(dt: float) -> void:
 	_pull_sources()
 	_apply_passives()
 	_events(dt)
+	_climate(dt)
 	goals.tick(dt)
 
 ## Прирост счётчиков источников → опыт классов, знания, известные теги.
@@ -411,6 +428,15 @@ func _pull_sources() -> void:
 	for id in pneu.launched_subs:
 		launched.subs[id] = true
 	_last.launched = pneu.launched_kg
+	var nv: float = pneu.vented - float(_last.get("vented", 0.0))
+	if nv > 0.0:
+		terra.add_vented(nv)
+		gas.vented_total += nv
+		robot.xp.shaman += 0.05 * nv
+	_last.vented = pneu.vented
+	for l in pneu.launches:
+		terra.add_mirrors(l[0], l[1])
+	pneu.launches.clear()
 	_last.placed = pneu.placed
 	_last.delivered = pneu.delivered
 	_last.processed = pneu.processed
@@ -442,6 +468,31 @@ func _apply_passives() -> void:
 			pm /= 3.0
 		pneu.pump_mult = pm
 		pneu.speed_mult = 1.5 if ev_id == "time_loop" else 1.0
+
+# ---------------------------------------------------------------- климат
+
+## Климат планеты — из ProtoTerraform; зелёные зоны — у куполов с жилыми условиями.
+func _climate(dt: float) -> void:
+	var was := terra.habitability()
+	terra.apply(planet, pneu, temp_shift())
+	if pneu != null:
+		var ok: Array = []
+		var all: Array = []
+		for c in pneu.parts:
+			if pneu.parts[c].kind == "dome":
+				all.append(c)
+				var t := float(pneu.parts[c].get("temp", planet.ambient_temp))
+				if pneu.pressure(c) >= 1.0 and t >= 5.0 and t <= 35.0:
+					ok.append(c)
+		terra.grow_zones(ok, all, dt)
+	var now := terra.habitability()
+	for mark in [0.25, 0.5, 0.75, 1.0]:
+		if was < mark and now >= mark:
+			log_event(Vector2i.ZERO, "Планета оживает: пригодность %d%%" % roundi(mark * 100.0))
+
+## Сдвиг температуры от события «перепад» (пока оно идёт).
+func temp_shift() -> float:
+	return float(ev.get("shift", 0.0)) if active_event() == "temp_shift" else 0.0
 
 # ---------------------------------------------------------------- события
 
@@ -505,9 +556,8 @@ func _begin_event() -> void:
 		"quake":
 			_break_random("pipe")
 		"temp_shift":
-			if pneu != null:
-				ev.shift = -40.0 if planet.ambient_temp > 20.0 else 40.0
-				pneu.gas.ambient += ev.shift
+			# Сдвиг применяет _climate поверх климата планеты.
+			ev.shift = -40.0 if planet.ambient_temp > 20.0 else 40.0
 
 func _event_active(dt: float) -> void:
 	match ev.id:
@@ -580,8 +630,6 @@ func _break_random(kind: String) -> void:
 
 func _finish_event() -> void:
 	var d: Dictionary = Events.EVENTS[ev.id]
-	if ev.id == "temp_shift" and pneu != null:
-		pneu.gas.ambient -= float(ev.shift)
 	if ev.id in ["meteors", "ring_debris"] and not ev.hit:
 		robot.xp.hunter += 4.0
 		log_event(Vector2i.ZERO, "Робот переждал «%s» вне зоны: опыт охотника" % d.n)
@@ -675,6 +723,7 @@ func summary() -> Array:
 		["Известно тегов", "%d из %d" % [r.known_tags.size(), MaterialTags.TAGS.size()]],
 		["Прокачка", "узлов %d, знаний осталось %d, чертежей %d из %d" % [r.learned.size(), r.knowledge, r.blueprints.size(), Modules.MODULES.size()]],
 		["Событий пережито", "%d" % ev_count],
+		["Климат", "%s (было %d%%)" % [terra.summary(), roundi(terra.base_habitability() * 100.0)]],
 		["Главная роль робота", main_role()],
 	]
 
@@ -729,6 +778,14 @@ func advise(glyph: Callable) -> String:
 			if d.t > st.t[1]:
 				return "В куполе %.0f °C — жарко. Поставьте конденсатор рядом с куполом (можно по диагонали)." % d.t
 			return "В куполе можно жить: держите давление и температуру."
+		"p_vent":
+			var hint := _structure_hint("vent", "Постройте газоотвод", build)
+			if hint != "":
+				return hint
+			for c in pneu.parts:
+				if pneu.parts[c].kind == "vent" and pneu.parts[c].work:
+					return "Газ уходит в небо: %s. Больше насосов у газоотвода — быстрее." % terra.summary()
+			return "Газоотводу нечего выпускать: поставьте насос вплотную к нему."
 		"p_launch":
 			var hint := _structure_hint("launch_silo", "Постройте пусковую шахту", build)
 			if hint != "":
@@ -773,7 +830,8 @@ func to_dict() -> Dictionary:
 			"blueprints": r.blueprints.keys(), "tags": r.known_tags.keys(), "bonus_slots": r.bonus_slots},
 		"goals": {"stage": goals.stage, "hold": goals.hold, "progress": goals.progress, "completed": goals.completed,
 			"choices": goals.choices.duplicate(), "reward": goals.reward_pending.duplicate(), "base_hits": goals.base_hits},
-		"events": {"next": ev_next, "count": ev_count}, "stage_key": _base_key, "bases": _bases.duplicate()}
+		"events": {"next": ev_next, "count": ev_count}, "stage_key": _base_key, "bases": _bases.duplicate(),
+		"terra": terra.to_dict()}
 
 func from_dict(d: Dictionary) -> void:
 	time = float(d.get("time", 0.0))
@@ -806,6 +864,8 @@ func from_dict(d: Dictionary) -> void:
 	var e: Dictionary = d.get("events", {})
 	ev_next = float(e.get("next", ev_next))
 	ev_count = int(e.get("count", 0))
+	terra.from_dict(d.get("terra", {}))
+	terra.apply(planet, pneu)
 	_base_key = str(d.get("stage_key", ""))
 	_bases = (d.get("bases", {}) as Dictionary).duplicate()
 	if not _bases.has("mined"):
