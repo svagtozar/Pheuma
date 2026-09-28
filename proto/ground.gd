@@ -66,17 +66,24 @@ static func for_planet(planet: Planet, ground: Color, cliff: Color, lush := fals
 ## Номер слоя в точке p (система участка), under — глубина под природной
 ## поверхностью (surface_h − y).
 func layer_at(p: Vector3, under: float) -> int:
+	var k := _upper(p, under)
+	return k if k >= 0 else ROCK + _band(_band_y(p))
+
+## Почва, мерзлота или осыпь; −1 — ниже, в пластах.
+func _upper(p: Vector3, under: float) -> int:
 	if under < soil_d:
 		return SOIL
 	if ice_on and under < sub_d + 4.0 and lens.get_noise_3dv(p) > 0.25:
 		return ICE
 	if under < sub_d + warp.get_noise_2d(p.x * 3.0, p.z * 3.0) * 0.6:
 		return SUBSOIL
-	return ROCK + band_at(p)
+	return -1
 
-## Пласт по высоте: наклон, изгиб, повтор по кругу.
-func band_at(p: Vector3) -> int:
-	var y := p.y + dip.x * p.x + dip.y * p.z + warp.get_noise_3dv(p) * 4.0
+## Высота в «системе пластов»: наклон и изгиб.
+func _band_y(p: Vector3) -> float:
+	return p.y + dip.x * p.x + dip.y * p.z + warp.get_noise_3dv(p) * 4.0
+
+func _band(y: float) -> int:
 	var t := fposmod(y, band_sum)
 	for i in band_h.size():
 		t -= band_h[i]
@@ -86,22 +93,24 @@ func band_at(p: Vector3) -> int:
 
 ## Цвет толщи в точке: слой, мелкое зерно, у границы пластов — тонкая тёмная прослойка.
 func color_at(p: Vector3, under: float) -> Color:
-	var k := layer_at(p, under)
-	var c: Color = layers[k].color
+	var k := _upper(p, under)
 	var gr := grain.get_noise_3dv(p)
-	if k >= ROCK:
-		var y := p.y + dip.x * p.x + dip.y * p.z + warp.get_noise_3dv(p) * 4.0
-		var edge := fposmod(y, band_sum)
+	var c: Color
+	if k < 0:
+		var y := _band_y(p)
+		c = layers[ROCK + _band(y)].color
+		var t := fposmod(y, band_sum)
 		var acc := 0.0
 		var dmin := 99.0
 		for b in band_h:
 			acc += b
-			dmin = minf(dmin, absf(edge - acc))
+			dmin = minf(dmin, absf(t - acc))
+		dmin = minf(dmin, t)
 		c = c * (0.93 + 0.1 * gr) * (0.78 + 0.22 * smoothstep(0.0, 0.35, dmin))
 	elif k == SUBSOIL:
-		c = c * (0.85 + 0.3 * absf(gr))          # галька
+		c = layers[k].color * (0.85 + 0.3 * absf(gr))       # галька
 	else:
-		c = c * (0.95 + 0.08 * gr)
+		c = layers[k].color * (0.95 + 0.08 * gr)
 	c.a = 1.0
 	return c
 
