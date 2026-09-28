@@ -67,14 +67,14 @@ func test_robot_batching_keeps_joints():
 	for path in ["hips/chest/head", "hips/chest/shoulder_l/elbow_l/hand_l", "hips/hip_r/knee_r/ankle_r"]:
 		assert_not_null(r.get_node_or_null(path), path)
 
-const LIVE := ["lamp", "spin", "fill", "fill_mesh", "piston", "roller", "heap", "carousel", "sample", "gauge", "tank_body", "model"]
+const LIVE := ["lamp", "fill", "fill_mesh", "heap", "sample", "gauge", "model"]
 
 ## Живые части и треугольники модели: [имена живых узлов по порядку, треугольники].
 func _live_and_tris(n: Node) -> Array:
 	var names := []
 	var tris := 0
 	for c in n.find_children("*", "", true, false):
-		if String(c.name) in LIVE:
+		if String(c.name) in LIVE or c.has_meta("anim"):
 			names.append(String(n.get_path_to(c)))
 		var mi := c as MeshInstance3D
 		if mi != null and mi.mesh != null and mi.visible:

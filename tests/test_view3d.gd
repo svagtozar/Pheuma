@@ -140,7 +140,37 @@ func test_machines_get_models_and_lamps():
 	v.set_world(w)
 	assert_true(v._live.has(m.id), "у машины живые части")
 	assert_not_null(v._live[m.id].lamp, "есть лампа")
-	assert_not_null(v._live[m.id].spin, "у центрифуги крутится барабан")
+	var spins: Array = v._live[m.id].node.find_children("*", "", true, false).filter(
+		func(c): return c.has_meta("anim") and c.get_meta("anim").type == "spin")
+	assert_eq(spins.size(), 1, "у центрифуги крутится барабан")
 	m.enabled = false
 	v._process(0.1)
 	assert_eq(v._live[m.id].lamp.material_override, MachineModels.mat("lamp_off"), "выключенная — красная лампа")
+
+func test_machine_parts_move_only_while_working():
+	# Движения за работой (MachineKit.anim): крутится, ходит, дымит — только в работе.
+	var body := StandardMaterial3D.new()
+	for kind in ["pump", "crusher", "sinter", "loom", "centrifuge", "fabricator"]:
+		var n := MachineModels.build(kind, body)
+		add_child_autofree(n)
+		MachineKit.animate(n, false, 0.0, 0.1)
+		var anims: Array = n.get_meta("anims")
+		assert_gt(anims.size(), 0, "%s: есть живые части" % kind)
+		var still := anims.map(func(a): return a.transform if a is Node3D else Transform3D())
+		MachineKit.animate(n, false, 1.3, 0.1)
+		assert_eq(anims.map(func(a): return a.transform if a is Node3D else Transform3D()), still, "%s: в простое стоит" % kind)
+		MachineKit.animate(n, true, 1.3, 0.1)
+		assert_ne(anims.map(func(a): return a.transform if a is Node3D else Transform3D()), still, "%s: в работе движется" % kind)
+		MachineKit.animate(n, false, 2.0, 0.1)
+		for a in anims:
+			if a is CPUParticles3D:
+				assert_false(a.emitting, "%s: в простое не дымит" % kind)
+	# Печь: дым из трубы и дыхание пламени — только в работе.
+	var f := MachineModels.build("furnace", body)
+	add_child_autofree(f)
+	MachineKit.animate(f, true, 0.5, 0.1)
+	var smoke: Array = f.get_meta("anims").filter(func(a): return a is CPUParticles3D)
+	assert_eq(smoke.size(), 1, "у печи дымит труба")
+	assert_true(smoke[0].emitting, "в работе дымит")
+	MachineKit.animate(f, false, 0.6, 0.1)
+	assert_false(smoke[0].emitting, "в простое не дымит")
