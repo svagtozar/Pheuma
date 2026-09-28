@@ -47,6 +47,13 @@ var _geo := {}                 # ключ куска → Geo
 var plants := 0
 var best := Vector3.INF        # самое густое место с крупной формой (для кадра)
 var best_fert := -INF
+## Растения, которые робот срезает (ProtoHarvest): {key — кусок сетки, v0..v1 и
+## i0..i1 — его вершины и индексы, p — основание, h — высота, r — размах, form, col, cut}.
+var items: Array = []
+var node: Node3D               # общий узел флоры (на шаре двигается с участком)
+var meshes := {}               # ключ куска → MeshInstance3D
+var mat: ShaderMaterial
+var _dirty := {}               # куски, которые надо пересобрать после среза
 
 static func for_planet(p: Planet, st: ProtoWorldStyle, seed_value: int) -> ProtoFlora:
 	var f := ProtoFlora.new()
@@ -190,7 +197,10 @@ func build(root: Node3D, terr: ProtoTerrain, keep_clear: Callable, lite := false
 		x += step
 	if life >= 2 or fungal:
 		_cave(keep_clear, lite)
-	var mat := material(glow, wind)
+	mat = material(glow, wind)
+	node = Node3D.new()
+	node.name = "flora"
+	root.add_child(node)
 	var made := 0
 	for k in _geo:
 		var g: Geo = _geo[k]
@@ -205,9 +215,54 @@ func build(root: Node3D, terr: ProtoTerrain, keep_clear: Callable, lite := false
 			mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 			mi.visibility_range_end = 40.0 if lite else 60.0
 			mi.visibility_range_end_margin = 6.0
-		root.add_child(mi)
+		node.add_child(mi)
+		meshes[k] = mi
 		made += 1
 	return made
+
+## Копия для куска шара вдали от участка (ProtoPlanetFill): своя случайность и
+## свои сетки — строится в потоке, не трогая исходную. Шум и облик общие.
+func fork(seed_value: int) -> ProtoFlora:
+	var f := ProtoFlora.new()
+	for k in ["life", "forms", "tuft", "hue", "hue2", "hue3", "sat", "val", "glow", "wind", "grow",
+			"floating", "thermo", "fungal", "terrain", "style", "noise", "thr"]:
+		f.set(k, get(k))
+	f.rng.seed = seed_value
+	f.far = true
+	return f
+
+var far := false               # кусок шара: крупные формы — одной сеткой на кусок
+
+## Плодородие вдали от участка: тот же шум, что у ковра поросли на шаре
+## (ProtoTerrain.far_key), плюс берег моря (wet 0..1).
+func far_fertility(key: Vector2, wet: float) -> float:
+	return fertility(key.x, key.y) + wet * (0.7 if forms.has("frond") or forms.has("coral") else 0.35)
+
+## Растение в точке p с нормалью nrm (система куска, Y — вверх). Как _try_spot,
+## но место уже выбрано и проверено вызывающим. Сетки — в _geo этой копии.
+func far_spot(p: Vector3, nrm: Vector3, fert: float, wet: float) -> void:
+	if fert < thr or nrm.y < 0.5:
+		return
+	var s := rng.randf_range(0.7, 1.25) * (0.75 + 0.25 * clampf(fert - thr, 0.0, 1.0) * 2.0)
+	var big_p := 0.04 + 0.04 * life + 0.06 * clampf(fert - thr, 0.0, 1.0)
+	plants += 1
+	if not forms.is_empty() and nrm.y > 0.78 and rng.randf() < big_p:
+		var w := {}
+		for k in forms:
+			var a := 1.0
+			if k in ["frond", "coral"]: a = 0.4 + wet * 3.0
+			elif k == "tubes" and thermo: a = 1.5
+			w[k] = a
+		_form(_pick(w, rng), p, nrm, s * 1.2, _g("big", p))
+		return
+	var low := _g("low", p)
+	var r := rng.randf()
+	if fungal and r < 0.35:
+		_moss(low, p, nrm, s * 0.8, false)
+	elif tuft and r < 0.6:
+		_tuft(low, p, nrm, s)
+	elif r < 0.8:
+		_curls(low, p, s)
 
 func verts() -> int:
 	var n := 0
@@ -216,12 +271,80 @@ func verts() -> int:
 	return n
 
 func _g(kind: String, p: Vector3) -> Geo:
-	var k := "%s_%d_%d" % [kind, int(p.x / CHUNK), int(p.z / CHUNK)]
-	if kind == "cave":
-		k = "cave"
+	var k := _key(kind, p)
 	if not _geo.has(k):
 		_geo[k] = Geo.new()
 	return _geo[k]
+
+func _key(kind: String, p: Vector3) -> String:
+	if kind == "cave" or (far and kind == "big"):
+		return "cave"
+	return "%s_%d_%d" % [kind, int(floor(p.x / CHUNK)), int(floor(p.z / CHUNK))]
+
+# ---------------------------------------------------------------- срез
+
+## Начало растения в куске kind: где в нём сейчас конец вершин и индексов.
+func _begin(kind: String, p: Vector3) -> Array:
+	var g := _g(kind, p)
+	return [_key(kind, p), g.v.size(), g.idx.size()]
+
+## Конец растения: запомнить его диапазон, высоту и размах (для среза).
+func _end(mk: Array, p: Vector3, form: String) -> void:
+	var g: Geo = _geo[mk[0]]
+	var v1 := g.v.size()
+	if v1 == mk[1]:
+		return
+	var h := 0.0
+	var r := 0.0
+	for j in range(mk[1], v1):
+		var d: Vector3 = g.v[j] - p
+		h = maxf(h, d.y)
+		r = maxf(r, Vector2(d.x, d.z).length())
+	items.append({"key": mk[0], "v0": mk[1], "v1": v1, "i0": mk[2], "i1": g.idx.size(), "p": p,
+		"h": h, "r": r, "form": form, "col": g.c[(int(mk[1]) + v1) >> 1], "cut": false})
+
+## Срезать растение i: его вершины стягиваются под основание (кусок пересоберёт
+## flush). Возвращает отдельную сетку растения — от основания, для анимации.
+func cut(i: int, detach := true) -> ArrayMesh:
+	var it: Dictionary = items[i]
+	if it.cut:
+		return null
+	it.cut = true
+	var g: Geo = _geo[it.key]
+	var p: Vector3 = it.p
+	var out: ArrayMesh = null
+	if detach:
+		var pg := Geo.new()
+		for j in range(it.v0, it.v1):
+			pg.v.append(g.v[j] - p)
+			pg.n.append(g.n[j])
+			pg.c.append(g.c[j])
+			pg.uv.append(g.uv[j])
+		for j in range(it.i0, it.i1):
+			pg.idx.append(g.idx[j] - it.v0)
+		out = pg.mesh()
+	var sink := p - Vector3(0, 0.08, 0)
+	for j in range(it.v0, it.v1):
+		g.v[j] = sink
+		g.uv[j] = Vector2.ZERO     # без качания: иначе стянутые точки разойдутся щепками
+	_dirty[it.key] = true
+	return out
+
+## Пересобрать куски, где что-то срезали.
+func flush() -> void:
+	for k in _dirty:
+		var mi: MeshInstance3D = meshes.get(k)
+		if mi != null and is_instance_valid(mi):
+			mi.mesh = (_geo[k] as Geo).mesh()
+	_dirty.clear()
+
+## Номера срезанных растений (сохранение).
+func cut_ids() -> Array:
+	var r := []
+	for i in items.size():
+		if items[i].cut:
+			r.append(i)
+	return r
 
 ## Насколько близко вода (река или озеро), м.
 func _water_dist(x: float, z: float) -> float:
@@ -270,7 +393,10 @@ func _try_spot(x: float, z: float, keep_clear: Callable) -> void:
 			if k in ["frond", "coral"]: a = 0.4 + wet * 3.0
 			elif k == "tubes" and thermo: a = 1.5
 			w[k] = a
-		_form(_pick(w, rng), p, nrm, s * 1.2, _g("big", p))
+		var mk := _begin("big", p)
+		var form := _pick(w, rng)
+		_form(form, p, nrm, s * 1.2, _g("big", p))
+		_end(mk, p, form)
 		if fert > best_fert and wd > 1.5 and p.y > terrain.surface_h(x, z) - 0.5:
 			best_fert = fert
 			best = p
@@ -281,13 +407,17 @@ func _try_spot(x: float, z: float, keep_clear: Callable) -> void:
 	# Низкая поросль: мох уже ковром на грунте, сверху — щетина, завитки,
 	# у грибной биосферы — дождевики.
 	var low := _g("low", p)
+	var mk := _begin("low", p)
 	var r := rng.randf()
 	if fungal and r < 0.35:
 		_moss(low, p, nrm, s * 0.8, false)
+		_end(mk, p, "moss")
 	elif tuft and r < 0.6:
 		_tuft(low, p, nrm, s)
+		_end(mk, p, "tuft")
 	elif r < 0.8:
 		_curls(low, p, s)
+		_end(mk, p, "curls")
 
 func _form(k: String, p: Vector3, nrm: Vector3, s: float, g: Geo) -> void:
 	match k:
@@ -325,7 +455,9 @@ func _cave(keep_clear: Callable, lite: bool) -> void:
 			var wn := _normal_at(hit)
 			if absf(wn.y) > 0.55:
 				continue
+			var mk := _begin("cave", hit)
 			_shelf(g, hit, wn, rng.randf_range(0.6, 1.2))
+			_end(mk, hit, "shelf")
 			made += 1
 			continue
 		var p := Vector3(q.x, terrain.floor_at(q), q.z)
@@ -340,10 +472,14 @@ func _cave(keep_clear: Callable, lite: bool) -> void:
 		if not forms.is_empty() and rng.randf() < 0.25:
 			var k: String = forms[rng.randi() % forms.size()]
 			if k != "bladder" or rng.randf() < 0.5:
+				var mk := _begin("cave", p)
 				_form(k, p, nrm, rng.randf_range(0.4, 0.6), g)
+				_end(mk, p, k)
 				made += 1
 				continue
+		var mk := _begin("cave", p)
 		_moss(g, p, nrm, rng.randf_range(0.6, 1.0), true)
+		_end(mk, p, "moss")
 		made += 1
 
 ## Нормаль поверхности породы по полю плотности (наружу, в воздух).

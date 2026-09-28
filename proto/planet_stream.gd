@@ -27,6 +27,7 @@ var n_face := 20              # кусков на ребро грани
 var chunks := {}              # Vector3i(грань, i, j) → {"mi", "step", "want"}
 var coarse_mi: MeshInstance3D
 var frame := Transform3D.IDENTITY   # планета → мир
+var daynight: ProtoDayNight   # солнце и звёзды стоят над планетой: у робота своё время суток
 ## Предметы участка (машины, грибы, жидкости…): вместе с шаром.
 var site_nodes: Array = []
 var _site_base := {}          # узел → исходный transform (в системе планеты)
@@ -96,6 +97,7 @@ func _process(dt: float) -> void:
 	# Для радара и карты: где робот на участке (система планеты) и поворот шара.
 	target.set_meta("planet_pos", local_pos())
 	target.set_meta("planet_turn", frame.basis)
+	target.set_meta("planet_frame", frame)
 	if cam:
 		var e := cam.global_position
 		mat.set_shader_parameter("eye", e)
@@ -146,6 +148,8 @@ func _turn() -> void:
 	frame = f
 	transform = f
 	terrain.set_frame(f)
+	if daynight != null:
+		daynight.turn = f.basis
 	# Участок за горизонтом не виден: прячем и не двигаем (там сотни узлов).
 	var far := _arc(q) > SITE_HIDE
 	if far and _site_hidden:
@@ -319,7 +323,7 @@ func _merge(parts: Array) -> Array:
 
 ## Сетка (n + 1)² узлов на грани f от (u0, v0) с шагом du. Клетки внутри участка
 ## (у него свой объёмный рельеф) пропускаются; skirt — полоса вниз по краю.
-func _grid(f: int, u0: float, v0: float, du: float, n: int, skirt: bool) -> Array:
+func _grid(f: int, u0: float, v0: float, du: float, n: int, skirt: bool, keep_site := false) -> Array:
 	var t := terrain
 	var c := t.center
 	var m := n + 1
@@ -363,8 +367,12 @@ func _grid(f: int, u0: float, v0: float, du: float, n: int, skirt: bool) -> Arra
 			# Цвет — как у участка, в местной системе «вверх = от центра».
 			var ny := nrm.dot(d)
 			var hgt := (ps[id] - c).length() - t.radius
-			var lp := Vector3(ps[id].x + ps[id].y * 0.37, hgt, ps[id].z - ps[id].y * 0.61)
+			var fk := ProtoTerrain.far_key(ps[id])
+			var lp := Vector3(fk.x, hgt, fk.y)
 			var col := t._color_h(lp, Vector3(sqrt(maxf(0.0, 1.0 - ny * ny)), ny, 0.0), 0.0, hgt)
+			if hgt < t.sea_level + 0.7:
+				# Берег — светлая полоса, под водой — темнее.
+				col = col.lerp(t.ground.lightened(0.3), 0.55) if hgt > t.sea_level - 0.4 else col.darkened(0.35)
 			col.a = 1.0
 			cols[id] = col
 	var idx := PackedInt32Array()
@@ -374,7 +382,7 @@ func _grid(f: int, u0: float, v0: float, du: float, n: int, skirt: bool) -> Arra
 	for j in n:
 		for i in n:
 			var a := j * m + i
-			if f == 0:
+			if f == 0 and not keep_site:
 				var r := Rect2(_on_top(dirs[a]), Vector2.ZERO).expand(_on_top(dirs[a + m + 1]))
 				if site.encloses(r):
 					continue
