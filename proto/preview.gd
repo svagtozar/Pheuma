@@ -56,6 +56,7 @@ extends Node3D
 
 var seed_value := 14
 var view := "third"
+var horizon := false          # прототип: рельеф планеты до горизонта вокруг участка
 var shot_path := ""
 var planet: Planet
 var terrain: ProtoTerrain
@@ -151,6 +152,7 @@ func _ready() -> void:
 		elif a.begins_with("--drill-hard="): drill_hard = float(a.substr(13))
 		elif a.begins_with("--record="): record = a.substr(9)
 		elif a == "--mute": mute = true
+		elif a == "--horizon": horizon = true
 		elif a == "--hud": show_hud = true
 		elif a == "--pad": hud_pad = true
 		elif a == "--cargo": demo_cargo = true
@@ -204,6 +206,9 @@ func _ready() -> void:
 		ground.material_override = tm
 		add_child(ground)
 		RobotGround.add_collision(ground)
+	if horizon or view.begins_with("horizon"):
+		add_child(ProtoHorizon.build(terrain))
+		_lap("horizon")
 	_environment()
 	_lap("environment")
 	_liquids()
@@ -857,6 +862,20 @@ func _robot_and_camera() -> void:
 			robot.rotation.y = PI
 			cam.position = Vector3(pc.x - 4.0, top + 16.0, pc.z + 14.0)
 			cam.look_at(Vector3(pc.x - 1.0, top, pc.z - 1.0))
+		"horizon":
+			# С края площадки завода — через участок к горизонту планеты.
+			robot.position = Vector3(pc.x - 4.0, top, pc.z + 4.0)
+			robot.rotation.y = PI * 0.75
+			cam.far = 4000.0
+			cam.fov = 62.0
+			cam.position = Vector3(pc.x + 6.0, top + 9.0, pc.z - 8.0)
+			cam.look_at(Vector3(pc.x - 30.0, top - 4.0, pc.z + 40.0))
+		"horizon_high":
+			robot.position = Vector3(pc.x, top, pc.z)
+			cam.far = 5000.0
+			cam.fov = 60.0
+			cam.position = Vector3(terrain.sx * 0.5 + 60.0, 150.0, terrain.sz + 160.0)
+			cam.look_at(Vector3(terrain.sx * 0.5 - 60.0, -40.0, -200.0))
 		"vista":
 			# Робот на склоне над руслом, вдоль реки к озеру.
 			var vx := 52.0
