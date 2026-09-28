@@ -3,7 +3,9 @@ extends Node
 ## Правка рельефа роботом, как в Astroneer: бур без кристалла под прицелом
 ## вгрызается в породу там, куда смотрит прицел (вниз, в стену, в свод), а
 ## вынутый грунт кисть насыпает туда же (H / D-pad влево). Грунт — не груз:
-## робот держит до SOIL_MAX «вёдер» в бункере.
+## робот держит до SOIL_MAX «вёдер» в бункере. Полный бункер копать не мешает:
+## лишний грунт ссыпается под ноги (как в Astroneer без канистры), высыпать
+## бункер можно и из инвентаря (ProtoInventory).
 ## Работает плавно: лунка (или насыпь) растёт от малого шара до BITE_R, пока
 ## держите кнопку; выросла — следующая начинается глубже по лучу прицела.
 ## Рельеф меняет ProtoTerrain.edit / edit_grow, сетки перестраивает
@@ -27,6 +29,7 @@ var robot: Node3D
 var soil := 0.0                # вёдер грунта в бункере (дробное: лунка растёт плавно)
 var dug := 0                   # лунок начато за всё время
 var filled := 0                # насыпей начато
+var spilled := 0               # лунок, когда бункер был полон и грунт ссыпался
 var status := ""               # подсказка для HUD ("" — нечего сказать)
 var speed_mult := 1.0
 ## Прицел (мир): точка на породе под перекрестьем и направление луча. INF —
@@ -86,14 +89,18 @@ func step(dt: float, drilling: bool, fill: bool) -> bool:
 	var did := false
 	if drilling:
 		var at := dig_point()
-		if soil >= SOIL_MAX:
-			status = "бункер грунта полон — насыпьте (%s)" % "H"
-		elif not in_reach():
+		if not in_reach():
 			status = "далеко — подойдите ближе"
 		elif not terrain.can_edit(at):
 			status = "площадка завода укреплена — копать нельзя"
 		else:
+			var full := soil >= SOIL_MAX - 0.001
+			if full:
+				status = "бункер грунта полон — лишний ссыпается"
+			var n0 := dug
 			var dv := _grow(at, false, DIG_RATE * clampf(speed_mult, 0.2, 3.0) * dt, INF)
+			if full and dug > n0:
+				spilled += 1
 			soil = minf(float(SOIL_MAX), soil + dv / BUCKET)
 			did = true
 	elif fill:

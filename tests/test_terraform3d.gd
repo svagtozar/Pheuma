@@ -266,3 +266,24 @@ func test_digger_digs_toward_aim_and_brush_spares_robot():
 		d.step(0.05, false, true)
 	if t.edits[t.edits.size() - 1][2] > 0.0:
 		assert_lt(float(t.edits[t.edits.size() - 1][1]), 0.6, "насыпь не накрывает робота")
+
+func test_digger_keeps_digging_with_full_bunker():
+	var t := _terrain()
+	var root: Node3D = add_child_autofree(Node3D.new())
+	var robot := Node3D.new()
+	root.add_child(robot)
+	var x := 59.0
+	var z := 30.0
+	robot.position = Vector3(x, t.surface_h(x, z), z)
+	var d: ProtoDigger = add_child_autofree(ProtoDigger.new())
+	d.setup(t, [], robot)
+	d.soil = ProtoDigger.SOIL_MAX
+	var at := d.dig_point()
+	var before := t.floor_at(at + Vector3(0, 3, 0))
+	assert_true(d.step(0.05, true, false), "полный бункер копать не мешает")
+	for i in 7:
+		d.step(0.05, true, false)
+	assert_almost_eq(d.soil, float(ProtoDigger.SOIL_MAX), 0.001)
+	assert_eq(d.spilled, 1, "лишний грунт ссыпался")
+	assert_string_contains(d.status, "полон")
+	assert_lt(t.floor_at(at + Vector3(0, 3, 0)), before - 0.4)
