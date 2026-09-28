@@ -277,9 +277,11 @@ func _site_h(x: float, z: float) -> float:
 	var b := bed_at(x)
 	if x > lake_c.x - 2.0:
 		h = min(h, b + max(0.0, dr - 1.6) * 0.8)
-	# Котловина озера — ниже воды у устья.
+	# Котловина озера — ниже воды у устья; к середине глубже (≈4 м): там робот
+	# уходит под воду с головой (ProtoSwim).
 	var dl := Vector2(x, z).distance_to(lake_c)
-	h = min(h, lake_level_base() - 1.6 + max(0.0, dl - lake_r * 0.55) * 0.55)
+	var bowl := 2.6 * (1.0 - smoothstep(0.0, lake_r * 0.6, dl))
+	h = min(h, lake_level_base() - 1.6 - bowl + max(0.0, dl - lake_r * 0.55) * 0.55)
 	# Площадка выровнена: внутри прямоугольника ровно, к краям — плавный откос.
 	var q := (Vector2(x, z) - PAD_C).abs() - PAD_HALF
 	var out: float = Vector2(max(q.x, 0.0), max(q.y, 0.0)).length()

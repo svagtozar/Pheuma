@@ -23,6 +23,9 @@ extends Node3D
 ##   высоты, шаг в лаву или кислоту, поломка, сборка на базе; кадры путь_1..4.png.
 ##   В --play: H / D-pad → (держать) — починить корпус материалом из груза, у завода
 ##   корпус чинится сам
+##   --auto=swim --screenshot=путь.png — жидкости (ProtoSwim, ProtoWater): вброд по
+##   реке, прыжок в озеро, на дне или на плаву, вид из-под воды; кадры путь_1..4.png.
+##   В --play в жидкости: Прыжок (держать) — грести вверх, Бег — нырнуть
 ##   --auto=sound — тот же маршрут без кадров, в конце бур у стены и выстрел кистью
 ##   (для проверки звука); --record=путь.wav — записать звук, --mute — без звука
 ##   --auto=bench [--bench=отчёт.json] — бенчмарк: загрузка и время кадра на том же
@@ -277,6 +280,12 @@ func _ready() -> void:
 			hurt_prefix = shot_path.get_basename() if shot_path != "" else "user://hurt"
 			shot_path = ""
 		_health(pl)
+		if auto == "swim":
+			var sd := ProtoSwimDemo.new()
+			sd.name = "swim_demo"
+			sd.setup(pl, health, shot_path.get_basename() if shot_path != "" else "user://swim")
+			add_child(sd)
+			shot_path = ""
 		if not mute:
 			var snd := ProtoSound.new()
 			snd.name = "sound"
@@ -379,33 +388,45 @@ func _liquids() -> void:
 	var rv := MeshInstance3D.new()
 	rv.mesh = ProtoLiquids.sloped_mesh(terrain, func(x, z): return terrain.river_level_at(x, z),
 		func(x, z): return abs(z - terrain.river_z(x)) < 6.0 and x > terrain.lake_c.x + 2.0)
-	rv.material_override = ProtoLiquids.material(river_mat, planet.ambient_temp)
+	var river_sm := ProtoLiquids.material(river_mat, planet.ambient_temp)
+	# Течение к озеру (дно русла понижается к нему): полосы пены сносятся, робота сносит.
+	river_sm.set_shader_parameter("flow", Vector2(-1, 0) * ProtoSwim.flow_speed(ProtoSwim.viscosity(river_mat)))
+	rv.material_override = river_sm
 	add_child(rv)
 	_map_water.append([rv.mesh, river_mat.color])
 	var rl := ProtoLiquids.look(river_mat, planet.ambient_temp)
 	if rl.vapor or rl.haze:
 		add_child(ProtoLiquids.vapor(Vector3(40, terrain.river_level_at(40) + 0.8, 58), Vector3(38, 0.5, 5), river_mat.color, rl.haze))
 	var in_lake := func(x, z): return Vector2(x, z).distance_to(terrain.lake_c) < terrain.lake_r + 4.5
-	_liquid_surface(lake_mat, terrain.lake_level, in_lake,
+	var lake_sm := _liquid_surface(lake_mat, terrain.lake_level, in_lake,
 		Vector3(terrain.lake_c.x, terrain.lake_level + 0.8, terrain.lake_c.y), Vector3(10, 0.5, 10))
 	var ll: float = terrain.lake_level
-	_liquid_zone(lake_mat, func(_x, _z): return ll, in_lake)
+	_liquid_zone(lake_mat, func(_x, _z): return ll, in_lake, lake_sm)
 	var pc: Vector3 = terrain.pool_c()
 	var lv: float = terrain.pool_level()
 	var in_pool := func(x, z): return Vector2(x, z).distance_to(Vector2(pc.x, pc.z)) < terrain.pool_r + 1.0
-	_liquid_surface(cave_mat, lv, in_pool, Vector3(pc.x, lv + 0.6, pc.z), Vector3(2.5, 0.3, 2.5))
-	_liquid_zone(cave_mat, func(_x, _z): return lv, in_pool)
+	var pool_sm := _liquid_surface(cave_mat, lv, in_pool, Vector3(pc.x, lv + 0.6, pc.z), Vector3(2.5, 0.3, 2.5))
+	_liquid_zone(cave_mat, func(_x, _z): return lv, in_pool, pool_sm)
 	# Русло — последним: у устья озеро важнее.
 	var in_river := func(x, z): return abs(z - terrain.river_z(x)) < 6.0 and x > terrain.lake_c.x + 2.0
-	_liquid_zone(river_mat, func(x, z): return terrain.river_level_at(x, z), in_river)
+	_liquid_zone(river_mat, func(x, z): return terrain.river_level_at(x, z), in_river, river_sm, river_flow)
 
-func _liquid_zone(s: Substance, level: Callable, area: Callable) -> void:
-	liquid_zones.append({"sub": s, "temp": ProtoHealth.liquid_temp(s, planet.ambient_temp), "level": level, "area": area})
+## Направление течения реки в точке (вниз по руслу, к озеру).
+func river_flow(x: float, _z: float) -> Vector3:
+	var dz := 0.63 * cos(x * 0.09)     # производная ProtoTerrain.river_z
+	return -Vector3(1, 0, dz).normalized()
 
-func _liquid_surface(s: Substance, level: float, area: Callable, vpos: Vector3, vext: Vector3) -> void:
+## Зона жидкости для урона (ProtoHealth) и плавания (ProtoPlayer, ProtoWater):
+## mat — её шейдер (круги на поверхности), flow — Callable(x, z) -> направление течения.
+func _liquid_zone(s: Substance, level: Callable, area: Callable, mat: Material = null, flow = null) -> void:
+	liquid_zones.append({"sub": s, "temp": ProtoHealth.liquid_temp(s, planet.ambient_temp), "level": level, "area": area,
+		"mat": mat, "flow": flow})
+
+func _liquid_surface(s: Substance, level: float, area: Callable, vpos: Vector3, vext: Vector3) -> ShaderMaterial:
 	var mi := MeshInstance3D.new()
 	mi.mesh = ProtoLiquids.surface_mesh(terrain, level, area)
-	mi.material_override = ProtoLiquids.material(s, planet.ambient_temp)
+	var sm := ProtoLiquids.material(s, planet.ambient_temp)
+	mi.material_override = sm
 	add_child(mi)
 	_map_water.append([mi.mesh, s.color])
 	var look := ProtoLiquids.look(s, planet.ambient_temp)
@@ -418,6 +439,7 @@ func _liquid_surface(s: Substance, level: float, area: Callable, vpos: Vector3, 
 		l.omni_range = 8.0
 		l.position = vpos + Vector3(0, 1, 0)
 		add_child(l)
+	return sm
 
 # ---------------------------------------------------------------- пещера
 
@@ -1123,6 +1145,10 @@ func _health(pl: ProtoPlayer) -> void:
 	health.factory_at = pc + Vector3(0, 0, 2.5)    # центр площадки завода
 	pl.health = health
 	add_child(health)
+	var wt := ProtoWater.new()
+	wt.name = "water"
+	wt.setup(pl, health, env, liquid_zones)
+	add_child(wt)
 	var fx := ProtoHurtFx.new()
 	fx.name = "hurt_fx"
 	fx.cam = cam

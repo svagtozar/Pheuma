@@ -32,6 +32,7 @@ const PAD_COLORS := {"A": Color(0.33, 0.66, 0.2), "B": Color(0.78, 0.2, 0.18),
 	"X": Color(0.16, 0.42, 0.8), "Y": Color(0.8, 0.62, 0.1)}
 
 ## Подсказки: [подпись, действия...]. Несуществующие действия пропускаются.
+const SWIM_NAMES := {"Бег": "Нырнуть", "Прыжок": "Всплыть"}
 const HINTS_WALK := [
 	["Ходьба", &"move_forward", &"move_left", &"move_back", &"move_right"],
 	["Камера", &"cam_left", &"cam_right", &"cam_up", &"cam_down"],
@@ -374,12 +375,15 @@ static func _event_glyph(e: InputEvent, for_pad: bool) -> String:
 ## не больше стольких строк (лишние — из HINTS_TRIM).
 func hint_rows(building: bool, has_cargo: bool, can_repair := false, max_rows := 0) -> Array:
 	var rows: Array = []
+	# Плывёт (ProtoPlayer.swim): Прыжок — грести вверх, Бег — нырнуть.
+	var swim: bool = robot != null and robot.get_meta("swim", false)
 	for h in (HINTS_BUILD if building else HINTS_WALK):
 		var g := glyph(h.slice(1), pad)
+		var label: String = SWIM_NAMES.get(h[0], h[0]) if swim else h[0]
 		if h[1] == &"cam_left" and not pad:
 			g = "Мышь" + (" " + g if g != "" else "")   # камера — мышью (ProtoPlayer)
 		if g != "":
-			rows.append([h[0], g])
+			rows.append([label, g])
 	if has_cargo and not building:
 		var g := glyph([UNLOAD], pad)
 		if g != "":
