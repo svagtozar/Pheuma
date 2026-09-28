@@ -557,7 +557,7 @@ func _burst(c: Vector2i) -> void:
 	var part: Dictionary = parts.get(c, {})
 	if part.is_empty():
 		return
-	events.append({"kind": "burst", "cell": c, "part": part.kind, "p": gas.pressure(part.id), "max_p": part.stats.max_p})
+	events.append({"kind": "burst", "cell": c, "part": part.kind, "p": gas.pressure(part.id), "max_p": part.stats.max_p, "lift": lift(c)})
 	burst_log.append([part.kind, c, part.dir, part.sub])
 	remove(c)
 
@@ -569,6 +569,15 @@ static func cell_at(origin: Vector3, p: Vector3) -> Vector2i:
 
 static func cell_pos(origin: Vector3, c: Vector2i) -> Vector3:
 	return origin + Vector3(c.x * CELL, 0, c.y * CELL)
+
+## Подъём детали над площадкой (origin.y): за площадкой деталь стоит на грунте
+## своей клетки (ProtoBuilder кладёт part.lift, а под неё — фундамент part.foot).
+func lift(c: Vector2i) -> float:
+	return float(parts.get(c, {}).get("lift", 0.0))
+
+## Где стоит деталь в клетке c — с её подъёмом.
+func at(origin: Vector3, c: Vector2i) -> Vector3:
+	return cell_pos(origin, c) + Vector3(0, lift(c), 0)
 
 ## Направление сетки, ближайшее к вектору в плоскости XZ.
 static func dir_of(v: Vector3) -> int:

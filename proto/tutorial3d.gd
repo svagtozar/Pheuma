@@ -430,7 +430,7 @@ func target() -> Vector3:
 			for c in net.parts:
 				if net.parts[c].kind != "intake":
 					continue
-				var p: Vector3 = ProtoPneumatics.cell_pos(view.origin, c)
+				var p: Vector3 = net.at(view.origin, c)
 				if best == Vector3.INF or p.distance_to(r.global_position) < best.distance_to(r.global_position):
 					best = p
 			return best

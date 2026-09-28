@@ -269,6 +269,9 @@ static func _net_to(net) -> Dictionary:
 			"gas": net.gas.amount(part.id)}
 		if part.has("temp"):
 			pd.temp = part.temp
+		if part.has("lift"):
+			pd.lift = part.lift
+			pd.foot = part.get("foot", 0.0)
 		var cap = part.get("cap")
 		if cap != null:
 			pd.cap = {"p": SaveGame.p_to(cap.p), "cell": [cap.cell.x, cap.cell.y], "from": [cap.from.x, cap.from.y], "t": cap.t}
@@ -286,6 +289,9 @@ static func _net_from(net, planet: Planet, d: Dictionary) -> void:
 		var part: Dictionary = net.place(str(pd.kind), SaveGame.v2i(pd.cell), int(pd.dir), sub)
 		if part.is_empty():
 			continue
+		if pd.has("lift"):
+			part.lift = float(pd.lift)
+			part.foot = float(pd.get("foot", 0.0))
 		part.items = []
 		for a in pd.items:
 			var p := _p_from(planet, a)

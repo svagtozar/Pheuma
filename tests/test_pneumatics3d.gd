@@ -220,3 +220,17 @@ func test_in_game_only_nearest_machine_is_labeled():
 	robot.position += Vector3(0, 0, 20)
 	view.sync()
 	assert_eq(shown.call(), 0, "далеко от завода подписей нет")
+
+## За площадкой деталь стоит на своём грунте: at() учитывает подъём, лопнувшая
+## деталь оставляет его в событии (клуб газа — там, где она стояла).
+func test_part_lift_off_pad():
+	var n := ProtoPneumatics.new(planet)
+	var o := Vector3(10, 5, 10)
+	var part := n.place("pipe", Vector2i(2, 1), 0, steel)
+	assert_eq(n.at(o, Vector2i(2, 1)), ProtoPneumatics.cell_pos(o, Vector2i(2, 1)), "на площадке подъёма нет")
+	part.lift = -1.5
+	assert_almost_eq(n.at(o, Vector2i(2, 1)).y, 3.5, 0.001)
+	n._burst(Vector2i(2, 1))
+	assert_false(n.parts.has(Vector2i(2, 1)))
+	var e: Dictionary = n.events.filter(func(x): return x.kind == "burst")[0]
+	assert_almost_eq(float(e.lift), -1.5, 0.001)
