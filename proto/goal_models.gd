@@ -6,7 +6,7 @@ class_name GoalModels
 ##   "sleek"    — цельные обтекаемые формы: люк в бетонном кольце, светлая
 ##                оболочка с поясом окон, обелиск с кристаллом.
 ## Контракт как у MachineModels.build: выход на +Z, мета "h" — высота, узел
-## "spin" крутится, пока деталь работает.
+## движения за работой — MachineKit.anim (вид зовёт MachineKit.animate).
 
 const KINDS := ["launch_silo", "beacon", "dome"]
 const STYLES := ["", "landmark", "sleek"]
