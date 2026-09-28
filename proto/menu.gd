@@ -45,11 +45,20 @@ static func launch(tree: SceneTree, s: int, fresh := false) -> void:
 	tree.paused = false
 	tree.change_scene_to_file(GAME)
 
-## Из игры — в меню, сразу на выбор планеты (сид по умолчанию — следующий).
+## Из игры — в меню, сразу на выбор планеты (сид по умолчанию — новый случайный).
 static func goto_picker(tree: SceneTree, s := -1) -> void:
 	start_page = "picker"
 	picker_seed = s
 	goto_menu(tree)
+
+## Сид ещё не посещённой планеты: случайный, а не «следующий по счёту» — иначе
+## каждая игра проходит одну и ту же цепочку 14, 15, 16…
+static func new_seed() -> int:
+	for i in 50:
+		var s := randi() % 100000
+		if ProtoSave.read(s).is_empty():
+			return s
+	return randi() % 100000
 
 static func goto_menu(tree: SceneTree) -> void:
 	tree.paused = false
@@ -77,7 +86,7 @@ func _ready() -> void:
 	last_seed = ProtoSave.last_seed()
 	if last_seed >= 0 and ProtoSave.read(last_seed).is_empty():
 		last_seed = -1
-	seed_value = picker_seed if picker_seed >= 0 else (last_seed + 1 if last_seed >= 0 else 14)
+	seed_value = picker_seed if picker_seed >= 0 else (new_seed() if last_seed >= 0 else 14)
 	_backdrop = Backdrop.new()
 	_backdrop.set_anchors_preset(Control.PRESET_FULL_RECT)
 	add_child(_backdrop)
@@ -264,7 +273,7 @@ func set_seed(s: int) -> void:
 	_refresh_picker()
 
 func _random() -> void:
-	set_seed(randi() % 100000)
+	set_seed(new_seed())
 
 func _refresh_picker() -> void:
 	if _info == null:
