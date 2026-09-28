@@ -1418,11 +1418,11 @@ func _open_for_shot() -> void:
 		"menu", "settings":
 			run_ui.open.call_deferred(open_win)
 
-## «Новая планета» — выбор в главном меню (сид по умолчанию — следующий).
+## «Новая планета» — выбор в главном меню (сид по умолчанию — новый случайный).
 func _next_planet() -> void:
 	if saves != null:
 		saves.save_now(true)
-	ProtoMainMenu.goto_picker(get_tree(), seed_value + 1)
+	ProtoMainMenu.goto_picker(get_tree(), ProtoMainMenu.new_seed())
 
 func _main_menu() -> void:
 	if saves != null:
