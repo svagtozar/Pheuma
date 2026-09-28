@@ -464,8 +464,21 @@ func _move(d: Vector3) -> void:
 	var body := maxf(g, robot.position.y)
 	# Плывя — выбирается на берег до пояса.
 	var step := 1.1 if swim else maxf(terrain.style.step_height(), d.length() * 1.6)
-	if (g - robot.position.y) > step or terrain.solid(np.x, body + 1.2, np.z) \
-			or (air and terrain.solid(np.x, robot.position.y + 0.3, np.z)) or (_hits_machine(Vector3(np.x, body, np.z)) and not _hits_machine(robot.position)):
+	if _blocked(np, g, body, step):
+		# Скриптовый маршрут упёрся в породу на уровне груди (низкий свод у входа
+		# в пещеру) — обойти, взяв чуть в сторону, как сделал бы игрок.
+		if not route.is_empty() and not air:
+			for ang in [0.6, -0.6, 1.2, -1.2]:
+				var d2 := d.rotated(Vector3.UP, ang)
+				var np2 := robot.position + d2
+				var g2 := ground_at(np2 + Vector3(0, 0.7, 0))
+				if not _blocked(np2, g2, maxf(g2, robot.position.y), step):
+					d = d2
+					np = np2
+					g = g2
+					body = maxf(g2, robot.position.y)
+					break
+	if _blocked(np, g, body, step):
 		# Скриптовый маршрут упёрся в уступ (не в породу и не в машину) — перескочить,
 		# как сделал бы игрок: иначе проверка (--auto=cave, bench) стоит вечно.
 		if not route.is_empty() and not air and g - robot.position.y < JUMP_MAX_H \
@@ -479,6 +492,13 @@ func _move(d: Vector3) -> void:
 		_land(g, 0.0)
 		return
 	_settle()
+
+## Шаг в np не пройти: уступ выше step, порода на уровне груди (в прыжке — и ног)
+## или машина.
+func _blocked(np: Vector3, g: float, body: float, step: float) -> bool:
+	return (g - robot.position.y) > step or terrain.solid(np.x, body + 1.2, np.z) \
+			or (air and terrain.solid(np.x, robot.position.y + 0.3, np.z)) \
+			or (_hits_machine(Vector3(np.x, body, np.z)) and not _hits_machine(robot.position))
 
 ## Высота и наклон — по видимой сетке рельефа (RobotGround); поле плотности —
 ## запасной вариант, если сетки под роботом нет.

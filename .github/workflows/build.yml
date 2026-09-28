@@ -16,6 +16,8 @@ jobs:
     name: Tests and export (Windows, Linux, Steam Deck)
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
 
@@ -111,6 +113,15 @@ jobs:
           tar -C build/steamdeck -czf "dist/Pneuma3D-${NAME}-steamdeck.tar.gz" .
           ls -la dist
 
+      # Релиз по тегу v* — прямо из этой задачи, без артефактов Actions
+      # (их квота может кончиться, а релиз от неё не зависит).
+      - name: GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          body_path: docs/releases/${{ github.ref_name }}.md
+
       - uses: actions/upload-artifact@v4
         with:
           name: Pneuma-windows-x86_64
@@ -155,20 +166,3 @@ jobs:
         with:
           name: dist
           path: dist/
-
-  release:
-    name: GitHub Release
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: build
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          name: dist
-          path: dist
-      - uses: softprops/action-gh-release@v2
-        with:
-          files: dist/*
-          generate_release_notes: true
