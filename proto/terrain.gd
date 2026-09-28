@@ -720,18 +720,89 @@ uniform vec3 vein_glow : source_color = vec3(0.5, 0.8, 1.0);
 uniform float sink = 0.0;      // грубая сетка шара: опустить у робота под подробные куски
 uniform vec3 eye;
 uniform vec3 sink_center;
+// Состояние поверхности (ProtoSurfaceState): R поросль, G влага, B лёд, A грунт —
+// шесть граней кубосферы; в системе планеты (она же система сетки рельефа).
+uniform bool surf_on = false;
+uniform sampler2DArray surf : filter_linear, repeat_disable;
+uniform vec3 surf_center;
+uniform vec3 veg_col : source_color = vec3(0.3, 0.5, 0.25);
+uniform vec3 veg_col2 : source_color = vec3(0.45, 0.55, 0.2);
+uniform vec3 ice_col : source_color = vec3(0.84, 0.9, 0.96);
+uniform vec3 soil_col : source_color = vec3(0.2, 0.15, 0.11);
 varying float sky;
+varying vec3 pl_pos;
+varying vec3 pl_n;
+varying float gloss;
 void vertex() {
 	sky = COLOR.a;
+	pl_pos = VERTEX;
+	pl_n = NORMAL;
 	if (sink > 0.0) {
 		vec3 wp = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
 		float k = 1.0 - smoothstep(130.0, 160.0, length(wp - eye));
 		VERTEX -= normalize(VERTEX - sink_center) * sink * k;
 	}
 }
+float hash3(vec3 p) {
+	p = fract(p * 0.3183099 + vec3(0.71, 0.113, 0.419));
+	p *= 17.0;
+	return fract(p.x * p.y * p.z * (p.x + p.y + p.z));
+}
+float vnoise(vec3 x) {
+	vec3 i = floor(x);
+	vec3 f = fract(x);
+	f = f * f * (3.0 - 2.0 * f);
+	return mix(mix(mix(hash3(i), hash3(i + vec3(1, 0, 0)), f.x),
+			mix(hash3(i + vec3(0, 1, 0)), hash3(i + vec3(1, 1, 0)), f.x), f.y),
+		mix(mix(hash3(i + vec3(0, 0, 1)), hash3(i + vec3(1, 0, 1)), f.x),
+			mix(hash3(i + vec3(0, 1, 1)), hash3(i + vec3(1, 1, 1)), f.x), f.y), f.z);
+}
+// Грань и (u, v) — как ProtoSurfaceState.face_uv.
+vec3 face_uv(vec3 d) {
+	vec3 a = abs(d);
+	float f;
+	vec2 ab;
+	if (a.y >= a.x && a.y >= a.z) {
+		if (d.y > 0.0) { f = 0.0; ab = vec2(d.x, d.z) / a.y; } else { f = 1.0; ab = vec2(d.x, -d.z) / a.y; }
+	} else if (a.x >= a.z) {
+		if (d.x > 0.0) { f = 2.0; ab = vec2(-d.y, d.z) / a.x; } else { f = 3.0; ab = vec2(d.y, d.z) / a.x; }
+	} else {
+		if (d.z > 0.0) { f = 4.0; ab = vec2(d.x, d.y) / a.z; } else { f = 5.0; ab = vec2(-d.x, d.y) / a.z; }
+	}
+	return vec3(atan(ab) / (PI * 0.5) + 0.5, f);
+}
 void fragment() {
-	ALBEDO = COLOR.rgb;
-	ROUGHNESS = 0.92;
+	vec3 col = COLOR.rgb;
+	float rough = 0.92;
+	gloss = 0.0;
+	if (surf_on) {
+		vec3 d = normalize(pl_pos - surf_center);
+		vec4 s = texture(surf, face_uv(d));
+		if (s.r + s.g + s.b + s.a > 0.004) {     // нетронутая планета — без шума
+			float up = clamp(dot(normalize(pl_n), d), 0.0, 1.0);
+			// Шум рвёт края пятен: точка текстуры ~5 м, а край — куртинами по метру.
+			float n1 = vnoise(pl_pos * 0.23);
+			float n2 = vnoise(pl_pos * 0.9 + 7.0);
+			float nz = n1 * 0.65 + n2 * 0.35 - 0.5;
+			float open_sky = smoothstep(0.35, 0.75, sky);
+			float soil = smoothstep(0.2, 0.55, s.a + nz * 0.5) * open_sky;
+			col = mix(col, soil_col * (0.8 + 0.4 * n2), soil * 0.85);
+			float wet = s.g * open_sky;
+			col *= 1.0 - 0.38 * wet;
+			float veg = smoothstep(0.28, 0.52, s.r + nz * 0.55) * smoothstep(0.5, 0.82, up) * open_sky;
+			// Гуще и реже куртинами, два оттенка, мелкая рябь; в редкой — виден грунт.
+			float dense = vnoise(pl_pos * 0.045 + 11.0);
+			vec3 vc = mix(veg_col, veg_col2, smoothstep(0.3, 0.7, vnoise(pl_pos * 0.08 + 3.0)));
+			vc *= 0.7 + 0.5 * vnoise(pl_pos * 2.7) + 0.15 * (dense - 0.5);
+			col = mix(col, vc, veg * mix(0.55, 1.0, smoothstep(0.25, 0.75, dense)));
+			float ice = smoothstep(0.3, 0.55, s.b + nz * 0.5 + (up - 0.75) * 0.35) * open_sky;
+			col = mix(col, ice_col * (0.9 + 0.12 * n2), ice);
+			rough = mix(rough, 0.62, max(wet * (1.0 - veg), ice));
+			gloss = max(wet * (1.0 - veg) * 0.3, ice * 0.12);
+		}
+	}
+	ALBEDO = col;
+	ROUGHNESS = rough;
 	AO = mix(0.06, 1.0, sky);
 	AO_LIGHT_AFFECT = 0.0;
 	EMISSION = vein_glow * UV.x * 0.35;
@@ -739,6 +810,11 @@ void fragment() {
 void light() {
 	float k = LIGHT_IS_DIRECTIONAL ? sky : 1.0;
 	DIFFUSE_LIGHT += clamp(dot(NORMAL, LIGHT), 0.0, 1.0) * ATTENUATION * LIGHT_COLOR * k / PI;
+	if (gloss > 0.0) {
+		// Мокрый грунт и лёд блестят на солнце.
+		vec3 h = normalize(LIGHT + VIEW);
+		SPECULAR_LIGHT += pow(clamp(dot(NORMAL, h), 0.0, 1.0), 48.0) * gloss * ATTENUATION * LIGHT_COLOR * k;
+	}
 }
 """
 

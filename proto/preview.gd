@@ -47,6 +47,9 @@ extends Node3D
 ##   Обучение первых минут (ProtoTutorial) — в --play, пока не пройдено; --tutorial —
 ##   заново, --tutorial=N — с шага N (для кадра), --no-tutorial — без него
 ##   Смена дня и ночи и небо — ProtoDayNight (по тегам и сиду планеты);
+##   --surface=frost|thaw|grow[:шагов] — состояние поверхности планеты (ProtoSurfaceState):
+##   иней по всему шару; он же тает у завода и следом ползёт поросль; поросль,
+##   влага и взрыхлённый грунт у завода расползаются (для кадра до/после)
 ##   --time=0..1 — время суток для кадра (0 — полночь, 0,25 — рассвет, 0,5 — полдень)
 ##   --robot=clean (по умолчанию; другой вариант из RobotDesigns или old — прежний
 ##   каркас; корпус — металл планеты)
@@ -63,6 +66,8 @@ var seed_value := 14
 var view := "third"
 var planet_on := true         # вся планета вокруг участка (ProtoPlanetStream); --no-planet — только участок
 var planet_stream: ProtoPlanetStream
+var surface: ProtoSurfaceState   # поросль, влага, лёд, грунт по всему шару (терраформинг)
+var surface_demo := ""
 const PLANET_R := 800.0       # радиус планеты-шара, м
 var shot_path := ""
 var planet: Planet
@@ -164,6 +169,7 @@ func _ready() -> void:
 		elif a.begins_with("--record="): record = a.substr(9)
 		elif a == "--mute": mute = true
 		elif a == "--no-planet": planet_on = false
+		elif a.begins_with("--surface="): surface_demo = a.substr(10)
 		elif a == "--hud": show_hud = true
 		elif a == "--pad": hud_pad = true
 		elif a == "--cargo": demo_cargo = true
@@ -245,6 +251,7 @@ func _ready() -> void:
 				planet_stream.site_nodes.append(c)
 		planet_stream.build_now()
 		_lap("planet_around")
+		_surface(tm)
 	_caption()
 	_map_data()
 	_lap("robot")
@@ -769,6 +776,53 @@ func _surface_features() -> void:
 			made += 1
 
 ## Инопланетная органика по тегам (ProtoFlora): мох, заросли, пещерные трутовики.
+## Состояние поверхности шара: подключить к материалам рельефа (участок, куски,
+## грубый шар); --surface=… — пример для кадра.
+func _surface(tm: ShaderMaterial) -> void:
+	surface = ProtoSurfaceState.new(terrain.center, terrain.radius)
+	surface.name = "surface"
+	add_child(surface)
+	var v1 := Color.from_hsv(0.33, 0.5, 0.42)
+	var v2 := Color.from_hsv(0.22, 0.55, 0.5)
+	if flora.life > 0:
+		v1 = Color.from_hsv(flora.hue, flora.sat * 0.9, flora.val * 0.85)
+		v2 = Color.from_hsv(flora.hue2, flora.sat, flora.val)
+	surface.bind(tm, v1, v2)
+	surface.bind(planet_stream.coarse_mat, v1, v2)
+	if surface_demo != "":
+		_surface_demo()
+	surface.upload()
+
+func _surface_demo() -> void:
+	var parts := surface_demo.split(":")
+	var mode := parts[0]
+	var n := int(parts[1]) if parts.size() > 1 else 40
+	var pc := terrain.plateau()
+	var site := Vector3(pc.x, pc.y, pc.z)
+	var t0 := Time.get_ticks_usec()
+	if mode == "frost" or mode == "thaw":
+		var fn := FastNoiseLite.new()
+		fn.seed = seed_value
+		fn.frequency = 0.012
+		surface.fill(ProtoSurfaceState.ICE, func(d: Vector3) -> float:
+			return clampf(0.62 + fn.get_noise_3dv(d * terrain.radius) * 0.7, 0.0, 1.0))
+	if mode == "thaw":
+		# Тёплый пузырь у завода растёт; талая вода мочит грунт; у завода — семя поросли.
+		surface.paint(site, 18.0, ProtoSurfaceState.VEG, 1.0)
+		for i in n:
+			var r := 40.0 + i * 2.5
+			surface.paint(site, r, ProtoSurfaceState.ICE, 0.0)
+			surface.paint(site, r * 0.85, ProtoSurfaceState.WET, 0.015, true)
+			surface.step_now()
+	elif mode == "grow":
+		surface.paint(site, 16.0, ProtoSurfaceState.VEG, 1.0)
+		surface.paint(Vector3(terrain.lake_c.x, 0.0, terrain.lake_c.y), 30.0, ProtoSurfaceState.WET, 0.9)
+		surface.paint(Vector3(terrain.lake_c.x, 0.0, terrain.lake_c.y), 8.0, ProtoSurfaceState.VEG, 1.0)
+		surface.paint(site + Vector3(-22.0, 0.0, 14.0), 9.0, ProtoSurfaceState.SOIL, 1.0)
+		surface.step_now(n)
+	print("Поверхность: %s, шагов %d, %d мс; текстура %.1f МБ" % [mode, surface.steps,
+		(Time.get_ticks_usec() - t0) / 1000, ProtoSurfaceState.bytes() / 1048576.0])
+
 func _flora() -> void:
 	var keep := func(p: Vector3) -> bool:
 		return not terrain.cave_box.has_point(p) or _clear_of_view(p)
