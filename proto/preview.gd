@@ -11,6 +11,8 @@ extends Node3D
 ##   --auto=drill --screenshot=путь.png — подойти к друзе и выбурить её (ProtoMining),
 ##   кадры путь_1..4.png; в --play бур по действию tool_work (F / правый курок);
 ##   --form=vein — бурить залежь этой формы (ProtoDeposit: vein, nodules, strata…)
+##   --auto=harvest --screenshot=путь.png — срезать буром растение у самых густых
+##   зарослей (ProtoHarvest), кадры путь_1..4.png: прицел, срез, валится, груз
 ##   --view=factory — пневмозавод крупно; --build — режим стройки (призрак детали)
 ##   --view=goals — ряд сооружений целей планеты: маяк, купол с печью, пусковая шахта;
 ##   --goal-style=landmark|sleek — другой облик этих сооружений (GoalModels)
@@ -81,6 +83,7 @@ var record := ""             # --record=путь.wav: записать звук 
 var mute := false            # --mute: без звука
 var env: Environment
 var mining: ProtoMining
+var harvest: ProtoHarvest       # срез растений (ProtoHarvest), если на планете жизнь
 var drill_hard := -1.0       # --drill-hard=N — твёрдость бура (иначе — по материалам планеты)
 var hud: ProtoHud
 var show_hud := false        # --hud: HUD и без --play (для кадра)
@@ -186,6 +189,8 @@ func _ready() -> void:
 	if auto == "drill":
 		RobotDesigns.tool_r = "drill"
 		view = "cave"
+	if auto == "harvest":
+		RobotDesigns.tool_r = "drill"
 	if (auto == "sound" or play) and RobotDesigns.tool_r == "":
 		RobotDesigns.tool_r = "drill"          # играя, робот добывает: бур в предплечье
 	if OS.has_feature("steamdeck"):
@@ -255,6 +260,7 @@ func _ready() -> void:
 		pl.setup(robot, cam, terrain, env)
 		pl.capture = play and auto == "" and DisplayServer.get_name() != "headless"
 		pl.mining = mining
+		_harvest(pl)
 		if auto == "drill":
 			# --form: на время выбора цели бур видит только залежи этой формы.
 			var all := mining.druses
@@ -265,6 +271,9 @@ func _ready() -> void:
 					mining.druses = all
 			pl.auto_drill(shot_path.get_basename() if shot_path != "" else "user://drill")
 			mining.druses = all
+			shot_path = ""
+		elif auto == "harvest" and harvest != null:
+			pl.auto_harvest(shot_path.get_basename() if shot_path != "" else "user://harvest")
 			shot_path = ""
 		elif auto == "cave":
 			pl.auto_cave(shot_path.get_basename() if shot_path != "" else "user://route")
@@ -348,6 +357,22 @@ func _lap(what: String) -> void:
 func restore_mined(ids: Array) -> void:
 	if mining:
 		mining.restore_mined(ids)
+
+## …и срезанные растения.
+func restore_cut(ids: Array) -> void:
+	if harvest:
+		harvest.restore_cut(ids)
+
+## Сбор органики тем же буром (ProtoHarvest) — если на планете есть жизнь.
+func _harvest(pl: ProtoPlayer) -> void:
+	if flora == null or flora.node == null or flora.items.is_empty() or mining == null:
+		return
+	harvest = ProtoHarvest.new()
+	harvest.name = "harvest"
+	add_child(harvest)
+	harvest.setup(flora, mining, planet)
+	pl.harvest = harvest
+	print("Органика: %s, растений %d" % [harvest.sub.name, flora.items.size()])
 
 # ---------------------------------------------------------------- палитра и свет
 

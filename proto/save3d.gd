@@ -6,6 +6,7 @@ extends Node
 ##   робот — место, поворот, камера; груз — robot.get_meta("cargo") (Array[Portion]);
 ##   добытые друзы — мета "mined" корня сцены (id задаёт бурение; при загрузке
 ##   корень получает restore_mined(ids), если такой метод есть);
+##   срезанные растения — мета "cut" (номера ProtoFlora.items, restore_cut(ids));
 ##   пневмозавод — детали, их груз, газ и капсулы (корень.pneu, если он есть);
 ##   ран — цель, прокачка и события (корень.run — ProtoRun, если он есть).
 ##   знания о веществах — корень.lab_desk (известные и исключённые теги, догадки, баллон);
@@ -147,6 +148,7 @@ static func to_dict(r: Node3D) -> Dictionary:
 		d.camera = {"yaw": pl.cam_yaw, "pitch": pl.cam_pitch, "dist": pl.cam_dist}
 	d.cargo = (robot.get_meta("cargo", []) as Array).map(func(p): return SaveGame.p_to(p))
 	d.mined = (r.get_meta("mined", []) as Array).duplicate(true)
+	d.cut = (r.get_meta("cut", []) as Array).duplicate(true)
 	var derived: Array = []
 	for s in planet.db.all():
 		if "#" in s.id:
@@ -197,6 +199,9 @@ static func apply(r: Node3D, d: Dictionary) -> void:
 	r.set_meta("mined", mined.duplicate(true))
 	if r.has_method("restore_mined"):
 		r.restore_mined(mined)
+	var cut: Array = _ints(d.get("cut", []))
+	if not cut.is_empty() and r.has_method("restore_cut"):
+		r.restore_cut(cut)
 	var net = r.get("pneu")
 	if net != null and d.has("pneumatics"):
 		_net_from(net, planet, d.pneumatics)
