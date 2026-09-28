@@ -100,18 +100,26 @@ func _process(dt: float) -> void:
 		var e := cam.global_position
 		mat.set_shader_parameter("eye", e)
 		coarse_mat.set_shader_parameter("eye", e)
+	_feed()
 	var q := local_pos()
 	if q.distance_to(_last_pick) < 8.0:
 		return
 	_last_pick = q
 	var want := {}
+	_queue.clear()
 	for k: Vector3i in _pick():
 		var st := _step_for(k)
 		want[k] = true
 		var ch: Dictionary = chunks.get(k, {})
 		if ch.is_empty() or (ch.want != st and ch.step != st):
 			chunks[k] = {"mi": ch.get("mi"), "step": ch.get("step", 0.0), "want": st}
-			WorkerThreadPool.add_task(_build_chunk.bind(k, st), false, "кусок рельефа")
+		if chunks[k].want != chunks[k].step:
+			_queue.append(k)
+	# Ближние — первыми.
+	var d := (q - terrain.center).normalized()
+	_queue.sort_custom(func(a: Vector3i, b: Vector3i) -> bool:
+		return _dir(a.x, (a.y + 0.5) / n_face, (a.z + 0.5) / n_face).distance_to(d) \
+			< _dir(b.x, (b.y + 0.5) / n_face, (b.z + 0.5) / n_face).distance_to(d))
 	for k: Vector3i in chunks.keys():
 		if not want.has(k):
 			var mi: MeshInstance3D = chunks[k].get("mi")
@@ -203,9 +211,31 @@ func _step_for(k: Vector3i) -> float:
 	var c := _dir(k.x, (k.y + 0.5) / n_face, (k.z + 0.5) / n_face)
 	return 1.0 if acos(clampf(c.dot(d), -1.0, 1.0)) * terrain.radius < FINE else 4.0
 
+## Куски строятся по очереди, не больше _max_busy сразу: на слабом процессоре
+## пачка кусков в потоках иначе отнимает ядра у самой игры.
+var _queue: Array = []
+var _busy := 0
+var _building := {}           # кусок → шаг, который сейчас строится
+var _max_busy := maxi(1, OS.get_processor_count() / 4)
+
+func _feed() -> void:
+	while _busy < _max_busy and not _queue.is_empty():
+		var k: Vector3i = _queue.pop_front()
+		var ch: Dictionary = chunks.get(k, {})
+		if ch.is_empty() or ch.want == ch.step or _building.get(k, -1.0) == ch.want:
+			continue
+		_busy += 1
+		_building[k] = ch.want
+		WorkerThreadPool.add_task(_build_chunk.bind(k, ch.want), false, "кусок рельефа")
+
 func _build_chunk(k: Vector3i, st: float) -> void:
 	var arr := _chunk_arrays(k, st)
-	call_deferred("_chunk_ready", k, st, arr)
+	call_deferred("_chunk_built", k, st, arr)
+
+func _chunk_built(k: Vector3i, st: float, arr: Array) -> void:
+	_busy -= 1
+	_building.erase(k)
+	_chunk_ready(k, st, arr)
 
 func _chunk_ready(k: Vector3i, st: float, arr: Array) -> void:
 	var ch: Dictionary = chunks.get(k, {})
