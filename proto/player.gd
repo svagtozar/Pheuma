@@ -723,17 +723,22 @@ func _follow_route() -> Vector3:
 		return _follow_route()
 	return to.normalized()
 
-## Под сводом: фара, тёмный плотный туман; под небом — как было.
+## Под сводом: фара, тёмный плотный туман; под небом — как было (ночью — с фарой).
 func _underground(dt: float) -> void:
 	var p := robot.position + Vector3(0, 1.5, 0)
 	var u := 1.0 - terrain.sky_vis(p)
 	under = move_toward(under, u, dt * 1.5)
+	# Ночью фара горит и под открытым небом (ProtoDayNight).
+	var dn := ProtoDayNight.of(robot)
+	var dark := maxf(under, dn.night * 0.8 if dn != null else 0.0)
+	if dn != null:
+		fog_out = dn.fog_color
 	var lamp := robot.find_child("head_lamp", true, false) as SpotLight3D
 	if lamp:
-		lamp.light_energy = 4.0 * under
+		lamp.light_energy = 4.0 * dark
 	var eye := robot.find_child("eye_light", true, false) as OmniLight3D
 	if eye:
-		eye.light_energy = 1.0 * under
+		eye.light_energy = 1.0 * dark
 		eye.omni_range = 5.0
 	env.fog_light_color = fog_out.lerp(Color(0.04, 0.045, 0.055), under)
 	env.fog_density = lerpf(fog_out_d, 0.06, under)

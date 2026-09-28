@@ -193,7 +193,7 @@ func surface_h(x: float, z: float) -> float:
 	return lerp(h, pad_h(), k)
 
 func river_z(x: float) -> float:
-	return 58.0 + sin(x * 0.09) * 7.0
+	return style.river_z(x)
 
 ## Плотность в точке: плюс — порода.
 ## h — высота поверхности над точкой, если уже известна (считается по столбцу).
