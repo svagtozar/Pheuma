@@ -417,7 +417,8 @@ func _planet(seed_v: int, full: bool) -> void:
 	check(menu != null and menu.page == "picker", "«Новая планета» → выбор планеты")
 	if menu == null:
 		return
-	check(menu.seed_value == seed_v + 1, "в выборе — следующая планета (%d)" % menu.seed_value)
+	check(menu.seed_value != seed_v and ProtoSave.read(menu.seed_value).is_empty(),
+		"в выборе — новая, ещё не посещённая планета (%d)" % menu.seed_value)
 	await shot("picker2")
 	var next: int = menu.seed_value
 	await accept()

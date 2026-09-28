@@ -164,6 +164,9 @@ static func to_dict(r: Node3D) -> Dictionary:
 	var map = r.get("map_data")
 	if map != null:
 		d.map = map.save_dict()
+	var dn = r.get("daynight")
+	if dn != null:
+		d.day_time = dn.time
 	return d
 
 static func apply(r: Node3D, d: Dictionary) -> void:
@@ -207,6 +210,10 @@ static func apply(r: Node3D, d: Dictionary) -> void:
 	var map = r.get("map_data")
 	if map != null and d.has("map"):
 		map.load_dict(d.map)
+	var dn = r.get("daynight")
+	if dn != null and d.has("day_time") and dn.running:
+		dn.time = float(d.day_time)
+		dn.update_now()
 
 # ---------------------------------------------------------------- пневмозавод
 

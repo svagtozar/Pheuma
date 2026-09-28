@@ -28,6 +28,7 @@ var _content: Node3D
 var _chunks := {}                # Vector2i → Node3D: кусок рельефа с жидкостями
 var _ground_mat: Material
 var _world_env: WorldEnvironment
+var cycle: ProtoDayNight        # смена дня и ночи (ProtoSky)
 var _liquid_mats := {}
 const CHUNK := 32                # ячеек сетки рельефа в куске (16 м)
 var _machines: Node3D
@@ -75,6 +76,7 @@ func set_world(w: World) -> void:
 	var sky := ProtoSky.build(world.planet, _content)
 	env = sky.env
 	_world_env = sky.world_env
+	cycle = sky.cycle
 	particles = sky.particles
 	_ruins()
 	_build_deposits()
@@ -518,10 +520,23 @@ func _process(dt: float) -> void:
 	_fx3d.update(dt)
 	_follow(dt)
 	_event_zone(dt)
+	_night_lamp()
 	if main != null and cursor != null:
 		var mc: Vector2i = main.mouse_cell()
 		cursor.visible = world.planet.in_bounds(mc)
 		cursor.position = terrain.cell_pos(mc) + Vector3(0, 0.05, 0)
+
+## Ночью фара робота ярче и светит глазок (ProtoDayNight).
+func _night_lamp() -> void:
+	if cycle == null:
+		return
+	var lamp := robot.find_child("head_lamp", true, false) as SpotLight3D
+	if lamp:
+		lamp.light_energy = lerpf(1.5, 4.0, cycle.night)
+	var eye := robot.find_child("eye_light", true, false) as OmniLight3D
+	if eye:
+		eye.light_energy = cycle.night
+		eye.omni_range = 5.0
 
 ## Урон по правилам World: вспышки на падении прочности, поломка — надпись.
 func _hurt(dt: float, moved: Vector2) -> void:
