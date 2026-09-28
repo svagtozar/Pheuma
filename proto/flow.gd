@@ -38,6 +38,9 @@ var change := 0.0            # наибольший сдвиг зеркала с
 var mesh := ArrayMesh.new()
 
 var _out := PackedFloat32Array()     # отток к 4 соседям (x+, x−, z+, z−) за шаг
+## 1 — клетку занимает неподвижная жидкость (русло реки): туда не течём, иначе
+## озеро утекало бы под гладь реки и у устья стояло бы ниже неё ступенькой.
+var blocked := PackedByteArray()
 
 func _init(t: ProtoTerrain, s: Substance) -> void:
 	terrain = t
@@ -53,6 +56,7 @@ func _init(t: ProtoTerrain, s: Substance) -> void:
 	heat.fill(1.0)
 	hot.resize(n)
 	dried.resize(n)
+	blocked.resize(n)
 	_out.resize(n * 4)
 	# Вязкость → скорость растекания и предел текучести.
 	var v := ProtoSwim.viscosity(s)
@@ -78,9 +82,37 @@ func g(i: int) -> float:
 		# на крутом склоне они расходятся на полметра, и тонкий слой прятался бы.
 		var px := i % nx + 0.5
 		var pz := i / nx + 0.5
-		v = terrain.floor_at(Vector3(px, terrain._site_h(px, pz) + 0.6, pz))
+		var top := terrain._site_h(px, pz) + 0.6
+		if not terrain.edits.is_empty():
+			top += terrain.edit_raise(px, pz)
+		v = terrain.floor_at(Vector3(px, top, pz)) + crust[i]
 		ground[i] = v
 	return v
+
+## Рельеф правили в box (бур, насыпь): дно задетых клеток — заново. Жидкость
+## остаётся на месте и сама стекает в выкопанную яму (или растекается с насыпи),
+## а не висит над ней на прежней высоте.
+func reground(box: AABB) -> void:
+	var x0 := maxi(int(floor(box.position.x)) - 1, 0)
+	var z0 := maxi(int(floor(box.position.z)) - 1, 0)
+	var x1 := mini(int(ceil(box.end.x)) + 1, nx - 1)
+	var z1 := mini(int(ceil(box.end.z)) + 1, nz - 1)
+	var touched := false
+	for z in range(z0, z1 + 1):
+		for x in range(x0, x1 + 1):
+			var i := idx(x, z)
+			if is_nan(ground[i]):
+				continue
+			var old := ground[i]
+			ground[i] = NAN
+			var v := g(i)
+			if absf(v - old) > 0.01:
+				touched = true
+				if d[i] > WET:
+					_grow(x, z)
+	if touched:
+		_calm = 0
+		dirty = true
 
 ## Налить до уровня level в клетки области area (Callable(x, z) -> bool);
 ## keep — своё ложе: не остывает и не сохнет.
@@ -193,6 +225,7 @@ func _step(dt: float) -> void:
 	var gr := ground
 	var dd := d
 	var out := _out
+	var bl := blocked
 	# 1) Отток каждой клетки к соседям с зеркалом ниже, не больше её слоя.
 	for z in range(z0, z1 + 1):
 		for x in range(x0, x1 + 1):
@@ -211,10 +244,10 @@ func _step(dt: float) -> void:
 				r *= hv * hv
 				y += (1.0 - hv) * 0.4
 			var h := gr[i] + di - y
-			var a := 0.0 if x + 1 >= nx else maxf(0.0, h - gr[i + 1] - dd[i + 1]) * r
-			var b := 0.0 if x == 0 else maxf(0.0, h - gr[i - 1] - dd[i - 1]) * r
-			var c := 0.0 if z + 1 >= nz else maxf(0.0, h - gr[i + nx] - dd[i + nx]) * r
-			var e := 0.0 if z == 0 else maxf(0.0, h - gr[i - nx] - dd[i - nx]) * r
+			var a := 0.0 if x + 1 >= nx or bl[i + 1] == 1 else maxf(0.0, h - gr[i + 1] - dd[i + 1]) * r
+			var b := 0.0 if x == 0 or bl[i - 1] == 1 else maxf(0.0, h - gr[i - 1] - dd[i - 1]) * r
+			var c := 0.0 if z + 1 >= nz or bl[i + nx] == 1 else maxf(0.0, h - gr[i + nx] - dd[i + nx]) * r
+			var e := 0.0 if z == 0 or bl[i - nx] == 1 else maxf(0.0, h - gr[i - nx] - dd[i - nx]) * r
 			var sum := a + b + c + e
 			if sum > di:
 				var k := di / sum

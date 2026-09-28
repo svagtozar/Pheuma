@@ -355,6 +355,7 @@ func _site_density(x: float, y: float, z: float, h := NAN) -> float:
 		if dist < 3.0 and y > h - fs[3] - 1.0:
 			var w: float = fs[2] * clampf((y - (h - fs[3])) / fs[3], 0.0, 1.0)
 			d = min(d, dist - w + noise.get_noise_2d(x * 4.0, z * 4.0) * 0.25)
+	var dpool := INF
 	# Зал, озерцо и ход — только рядом с ними: дальше они всё равно не ближе
 	# поверхности (до build_field коробки нет — считаем всегда).
 	if cave_near.size == Vector3.ZERO or cave_near.has_point(Vector3(x, y, z)):
@@ -363,7 +364,8 @@ func _site_density(x: float, y: float, z: float, h := NAN) -> float:
 		# Чаша подземного озерца в дальней части зала.
 		var pq := Vector3(x, y, z) - (_pool_c if cave_near.size != Vector3.ZERO else pool_c())
 		pq.y *= 2.6
-		d = min(d, pq.length() - pool_r)
+		dpool = pq.length() - pool_r
+		d = min(d, dpool)
 		# Ход от склона к залу: капсула с извилиной.
 		var a := cave_entry
 		var b := cave_c + Vector3(0, 1, 0)
@@ -376,8 +378,9 @@ func _site_density(x: float, y: float, z: float, h := NAN) -> float:
 		d = min(d, (w - style.worms) * 30.0)
 	if not edits.is_empty():
 		d = _apply_edits(x, y, z, d)
-	# Пол у края карты и дно — всегда порода.
-	if y < 1.5:
+	# Пол у края карты и дно — всегда порода (кроме чаши озерца: зал бывает
+	# на самом дне, и чаша тогда уходит ниже).
+	if y < 1.5 and not (dpool < 0.0 and y > 0.3):
 		d = max(d, 1.0)
 	return d
 
@@ -491,13 +494,47 @@ static func _seg_dist(p: Vector2, a: Vector2, b: Vector2) -> float:
 
 var pool_r := 3.0
 
-## Центр чаши озерца: у пола зала, дальше от входа.
-func pool_c() -> Vector3:
-	return cave_c + Vector3(2.6, cave_floor_rel(Vector2(2.6, -2.2)) + 0.9, -2.2)
+const POOL_OFF := Vector2(2.6, -2.2)   # чаша озерца от центра зала, м
 
-## Уровень воды в чаше — чуть ниже края (пола зала).
+## Центр чаши озерца: в полу зала, дальше от входа. Чаша сплюснута (полувысота
+## pool_r / 2,6 ≈ 1,15 м): центр чуть выше края — вода глубиной около 0,8 м.
+func pool_c() -> Vector3:
+	return Vector3(cave_c.x + POOL_OFF.x, pool_rim() + 0.1, cave_c.z + POOL_OFF.y)
+
+## Уровень воды в чаше — чуть ниже края (самого низкого места пола вокруг).
 func pool_level() -> float:
-	return pool_c().y + 0.35
+	return pool_rim() - 0.2
+
+## Радиус глади озерца: сечение сплюснутой чаши на уровне воды (с запасом
+## под стенку).
+func pool_surface_r() -> float:
+	var dy := (pool_level() - pool_c().y) * 2.6
+	return sqrt(maxf(0.0, pool_r * pool_r - dy * dy)) + 0.12
+
+## Край чаши: самое низкое место настоящего пола зала вокруг неё (по полю зала,
+## а не по эллипсоиду: у расщелин и ледяных залов пол неровный, у труб — плоский,
+## а ниже 1,5 м всегда порода). Прежде центр ставился на 0,9 м выше пола по
+## эллипсоиду, и вода висела над полом зала плоской плёнкой.
+func pool_rim() -> float:
+	if not is_nan(_pool_rim):
+		return _pool_rim
+	var rim := INF
+	for k in 16:
+		var a := TAU * k / 16.0
+		for rr: float in [pool_r + 0.3, pool_r + 0.8]:
+			var q := Vector3(cave_c.x + POOL_OFF.x + cos(a) * rr, cave_c.y, cave_c.z + POOL_OFF.y + sin(a) * rr)
+			if cave_dist(q) > 0.0:
+				continue            # стена зала — там край выше
+			var y := q.y
+			while y > 1.5 and cave_dist(Vector3(q.x, y - 0.05, q.z)) < 0.0:
+				y -= 0.05
+			rim = minf(rim, y)
+	if rim == INF:
+		rim = cave_c.y + cave_floor_rel(POOL_OFF)
+	_pool_rim = rim           # build_field сбрасывает, когда опускает зал
+	return rim
+
+var _pool_rim := NAN
 
 ## Коробка вокруг зала и хода: там сетка мельче, а червоточин нет.
 var cave_box := AABB()
@@ -514,11 +551,15 @@ func build_field() -> void:
 			minh = minf(minh, surface_h(cave_c.x + dx, cave_c.z + dz))
 	cave_c.y = clampf(minh - cave_h - 3.0, cave_h * 0.75 + 1.5, 12.0)
 	cave_entry.y = surface_h(cave_entry.x, cave_entry.z) - 1.0
+	_pool_rim = NAN
+	pool_rim()
 	var r := Vector3(cave_r + 2.5, cave_h + 2.5, cave_r + 2.5)
 	cave_box = AABB(cave_c - r, r * 2.0)
 	var tun := AABB(cave_entry, Vector3.ZERO).expand(cave_c + Vector3(0, 1, 0)).grow(3.5)
 	cave_box = cave_box.merge(tun)
-	cave_box.position.y = maxf(cave_box.position.y, 1.0)
+	# Дно коробки — над каменным дном карты, но под чашей озерца (она может
+	# уходить ниже 1,5 м, если пол зала лежит на каменном дне).
+	cave_box.position.y = maxf(cave_box.position.y, minf(1.0, pool_rim() - 1.3))
 	_pool_c = pool_c()
 	cave_near = cave_box.grow(6.0)
 	_fill = PackedFloat32Array()

@@ -82,10 +82,19 @@ void fragment() {
 	col = mix(col, vec3(0.045, 0.04, 0.042) * (0.7 + 0.6 * vnoise(uv * 4.0)), c);
 	float b = step(0.93, vnoise(uv * 6.0 + vec2(0.0, t * 1.5))) * bubbles;
 	col += vec3(b) * 0.6;
+	// Завеса (ProtoLiquids.sloped): жидкость стекает с края вниз — светлые струи
+	// бегут вниз, завеса прозрачнее глади.
+	vec3 wn = (INV_VIEW_MATRIX * vec4(NORMAL, 0.0)).xyz;
+	float fall = 1.0 - smoothstep(0.3, 0.6, abs(wn.y));
+	if (fall > 0.0) {
+		vec2 fu = vec2((w.x + w.z) * 2.2, w.y * 0.7 + TIME * 2.4 * speed);
+		float s = vnoise(fu) * 0.6 + vnoise(fu * vec2(3.0, 0.4)) * 0.4;
+		col = mix(col, mix(base_color.rgb, vec3(1.0), 0.6), smoothstep(0.45, 0.8, s) * fall * (1.0 - crust));
+	}
 	vec3 nm = vec3(0.5 + (r - 0.5) * 0.6 * wave - grad.x * 0.1, 0.5 + (vnoise(uv * 2.0 + t) - 0.5) * 0.6 * wave - grad.y * 0.1, 1.0);
-	if (FRONT_FACING) {
+	if (FRONT_FACING || fall > 0.5) {
 		ALBEDO = col;
-		ALPHA = mix(base_color.a, 1.0, c);
+		ALPHA = mix(base_color.a * mix(1.0, 0.7, fall), 1.0, c);
 		METALLIC = metal * (1.0 - c);
 		ROUGHNESS = mix(rough + r * 0.04, 0.9, c);
 		SPECULAR = mix(0.8, 0.05, c);
@@ -180,17 +189,70 @@ static func surface_mesh(terrain: ProtoTerrain, level: float, area: Callable) ->
 					st.add_vertex(p)
 	return st.commit()
 
+## Круглая гладь (чаша): диск радиуса r на уровне level — край уходит под стенку
+## чаши ровно по кругу, а не квадратными клетками над её склоном.
+static func disc_mesh(c: Vector2, r: float, level: float, seg := 40) -> ArrayMesh:
+	var st := SurfaceTool.new()
+	st.begin(Mesh.PRIMITIVE_TRIANGLES)
+	var o := Vector3(c.x, level, c.y)
+	for k in seg:
+		var a0 := TAU * k / seg
+		var a1 := TAU * (k + 1) / seg
+		for p in [o, o + Vector3(cos(a1), 0, sin(a1)) * r, o + Vector3(cos(a0), 0, sin(a0)) * r]:
+			st.set_normal(Vector3.UP)
+			st.add_vertex(p)
+	return st.commit()
+
 ## Поверхность жидкости с уровнем, зависящим от места (level — Callable(x, z) -> float),
 ## только там, где рельеф ниже уровня: река спускается по руслу.
 static func sloped_mesh(terrain: ProtoTerrain, level: Callable, area: Callable) -> ArrayMesh:
+	return sloped(terrain, level, area)[0]
+
+const VOID := 1.8            # пол глубже под гладью — там дыра (ход в пещеру, яма), м
+const CURTAIN := 0.35        # край выше пола снаружи на столько — опускаем завесу, м
+
+## Как sloped_mesh, но по настоящему полю плотности (с правками рельефа) и без
+## висящих краёв: над дырой (ход в пещеру под руслом, глубокая яма) глади нет,
+## а где соседняя клетка ниже глади (край над ямой, конец русла) — с края вниз
+## до пола опущена завеса: вода стекает водопадом, а не висит плёнкой.
+## other — Callable(x, z) -> bool: там другая жидкость (озеро), к ней не
+## стекаем и завес не ставим. target — сетка, в которую собрать (иначе новая).
+## span — Callable(x) -> Vector2i: полоса клеток z в столбце x, где вообще может
+## быть область (русло), чтобы не обходить всю карту.
+## Возвращает [сетка, мокрые клетки (PackedByteArray sx × sz)].
+static func sloped(terrain: ProtoTerrain, level: Callable, area: Callable, other := Callable(),
+		target: ArrayMesh = null, span := Callable()) -> Array:
+	var nx := terrain.sx
+	var nz := terrain.sz
+	var wet := PackedByteArray()
+	wet.resize(nx * nz)
+	var lv := PackedFloat32Array()
+	lv.resize(nx * nz)
+	var zr := PackedInt32Array()
+	zr.resize(nx * 2)
+	for x in nx:
+		var sp: Vector2i = span.call(x) if span.is_valid() else Vector2i(0, nz - 1)
+		zr[x * 2] = clampi(sp.x, 0, nz - 1)
+		zr[x * 2 + 1] = clampi(sp.y, 0, nz - 1)
+	for x in nx:
+		for z in range(zr[x * 2], zr[x * 2 + 1] + 1):
+			var cx := x + 0.5
+			var cz := z + 0.5
+			if not area.call(cx, cz) or (other.is_valid() and other.call(cx, cz)):
+				continue
+			var y0: float = level.call(cx, cz)
+			lv[x + z * nx] = y0
+			if terrain.field_at(Vector3(cx, y0 + 0.2, cz)) > 0.0:
+				continue                          # берег выше глади
+			if _drop(terrain, cx, y0, cz, VOID, 0.3) > VOID:
+				continue                          # под гладью дыра
+			wet[x + z * nx] = 1
 	var st := SurfaceTool.new()
 	st.begin(Mesh.PRIMITIVE_TRIANGLES)
-	for z in terrain.sz:
-		for x in terrain.sx:
-			if not area.call(x + 0.5, z + 0.5):
-				continue
-			var y0: float = level.call(x + 0.5, z + 0.5)
-			if terrain.surface_h(x + 0.5, z + 0.5) > y0 + 0.2:
+	var nb := [Vector2i(1, 0), Vector2i(-1, 0), Vector2i(0, 1), Vector2i(0, -1)]
+	for x in nx:
+		for z in range(zr[x * 2], zr[x * 2 + 1] + 1):
+			if wet[x + z * nx] == 0:
 				continue
 			var ys := [level.call(x, z), level.call(x + 1, z), level.call(x + 1, z + 1), level.call(x, z + 1)]
 			var c := [Vector3(x, ys[0], z), Vector3(x + 1, ys[1], z), Vector3(x + 1, ys[2], z + 1), Vector3(x, ys[3], z + 1)]
@@ -198,7 +260,41 @@ static func sloped_mesh(terrain: ProtoTerrain, level: Callable, area: Callable) 
 				for k in tri:
 					st.set_normal(Vector3.UP)
 					st.add_vertex(c[k])
-	return st.commit()
+			# Завесы: к соседу, который ниже глади и не мокрый (и не другая жидкость).
+			var y0 := lv[x + z * nx]
+			for k in 4:
+				var n: Vector2i = Vector2i(x, z) + nb[k]
+				if n.x < 0 or n.y < 0 or n.x >= nx or n.y >= nz or wet[n.x + n.y * nx] == 1:
+					continue
+				var ncx := n.x + 0.5
+				var ncz := n.y + 0.5
+				if other.is_valid() and other.call(ncx, ncz):
+					continue
+				if terrain.field_at(Vector3(ncx, y0 - CURTAIN, ncz)) > 0.0:
+					continue                      # берег держит воду
+				var fl := y0 - _drop(terrain, ncx, y0, ncz, 12.0, 0.4)   # низ завесы уходит в породу
+				# Ребро клетки со стороны соседа: два угла.
+				var e: Array = [[1, 2], [3, 0], [2, 3], [0, 1]][k]
+				var a: Vector3 = c[e[0]]
+				var b: Vector3 = c[e[1]]
+				var out := Vector3(nb[k].x, 0, nb[k].y)
+				for p in [a, b, Vector3(b.x, fl, b.z), a, Vector3(b.x, fl, b.z), Vector3(a.x, fl, a.z)]:
+					st.set_normal(out)
+					st.add_vertex(p)
+	if target != null:
+		target.clear_surfaces()
+		return [st.commit(target), wet]
+	return [st.commit(), wet]
+
+## На сколько ниже y пол в столбце (шагом step, не глубже limit) — по сетке поля
+## (как видимый рельеф, с правками): грубо, зато быстро.
+static func _drop(terrain: ProtoTerrain, x: float, y: float, z: float, limit: float, step: float) -> float:
+	var dy := 0.0
+	while dy < limit:
+		dy += step
+		if terrain.field_at(Vector3(x, y - dy, z)) > 0.0:
+			return dy
+	return limit + step
 
 ## Пар или дымка над жидкостью.
 static func vapor(pos: Vector3, extent: Vector3, col: Color, haze: bool) -> CPUParticles3D:

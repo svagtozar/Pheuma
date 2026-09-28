@@ -111,6 +111,14 @@ func build_sea() -> void:
 				var low := t.sphere_h(mid)
 				for d: Vector3 in ds:
 					low = minf(low, t.sphere_h(d))
+				# Клетка ~30 м: по углам и середине берег, а между ними рельеф может
+				# уйти под уровень — тогда край соседней клетки моря висел над
+				# впадиной. Близкие к уровню клетки проверяем мельче.
+				if low > lv + 0.3 and low < lv + 16.0:
+					for sj in 4:
+						for si in 4:
+							var sd := stream._dir(f, (i + (si + 0.5) / 4.0) / n, (j + (sj + 0.5) / 4.0) / n)
+							low = minf(low, t.sphere_h(sd))
 				if low > lv + 0.3:
 					continue
 				var ps: Array = []
