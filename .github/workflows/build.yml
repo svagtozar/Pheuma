@@ -11,6 +11,10 @@ on:
         description: "Выпустить релиз с этим тегом (например v0.1.0); CI сам создаст тег на этом коммите"
         required: false
         default: ""
+      skip_tests:
+        description: "Только сборка: без тестов, прогона и смоук-тестов"
+        type: boolean
+        default: false
 
 env:
   # Тег релиза: пуш тега v* или запуск вручную с release_tag.
@@ -64,12 +68,15 @@ jobs:
         run: ~/godot/godot --headless --path . --import || true
 
       - name: Unit tests (GUT)
+        if: ${{ !inputs.skip_tests }}
         run: ~/godot/godot --headless --path . -s addons/gut/gut_cmdln.gd -gexit
 
       - name: Gameplay autotest
+        if: ${{ !inputs.skip_tests }}
         run: ~/godot/godot --headless --path . -- --autotest --seed=7
 
       - name: 3D benchmark (load time and CPU frame time, headless)
+        if: ${{ !inputs.skip_tests }}
         run: |
           set -euo pipefail
           ~/godot/godot --headless --path . --fixed-fps 30 res://proto/preview.tscn -- \
@@ -77,9 +84,11 @@ jobs:
           grep -q "^Загрузка .* мс; кадр" bench3d.log
 
       - name: UI test (fabricator window and mouse building)
+        if: ${{ !inputs.skip_tests }}
         run: xvfb-run -a -s "-screen 0 1600x900x24" ~/godot/godot --path . --rendering-driver opengl3 -- --seed=5 --uitest
 
       - name: 3D playthrough (menu to next planet by real input, gamepad and keyboard)
+        if: ${{ !inputs.skip_tests }}
         run: |
           set -euo pipefail
           for dev in pad keys; do
@@ -91,9 +100,11 @@ jobs:
         run: GODOT=~/godot/godot tools/export.sh
 
       - name: Smoke-test Linux build
+        if: ${{ !inputs.skip_tests }}
         run: build/linux/Pneuma.x86_64 --headless -- --autotest --seed=7
 
       - name: Smoke-test Steam Deck build (starts in 3D at 1280x800)
+        if: ${{ !inputs.skip_tests }}
         run: |
           set -euo pipefail
           timeout 180 xvfb-run -a -s "-screen 0 1280x800x24" build/steamdeck/Pneuma.x86_64 \
@@ -102,6 +113,7 @@ jobs:
           test -s steamdeck.png
 
       - name: Smoke-test Steam Deck main menu
+        if: ${{ !inputs.skip_tests }}
         run: |
           set -euo pipefail
           timeout 120 xvfb-run -a -s "-screen 0 1280x800x24" build/steamdeck/Pneuma.x86_64 \
