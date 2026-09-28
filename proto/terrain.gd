@@ -707,7 +707,7 @@ func _color_h(p: Vector3, n: Vector3, vein_m: float, h: float) -> Color:
 	if under > 1.5 or (under > 0.6 and n.y < -0.2):
 		if ground_model != null:
 			# Стены пещер и ходов — слои толщи: пласты полосами, мерзлота, осыпь у верха.
-			c = ground_model.color_at(p, under)
+			c = ground_model.color_at(p, under, maxf(n.y, 0.0))
 			if n.y > 0.55:
 				c = c.lerp(Color(0.62, 0.55, 0.45), 0.2).lightened(0.08)
 				c = c * (0.9 + 0.2 * patch_noise.get_noise_2d(p.x * 2.0, p.z * 2.0))
@@ -727,7 +727,8 @@ func _color_h(p: Vector3, n: Vector3, vein_m: float, h: float) -> Color:
 		var steep: float = clamp((0.8 - n.y) * 2.0, 0.0, 1.0)
 		if ground_model != null:
 			# На крутом почва не держится: обрыв показывает осыпь и пласты.
-			c = c.lerp(ground_model.color_at(p, under + steep * 6.0), steep)
+			if steep > 0.0:
+				c = c.lerp(ground_model.color_at(p, under + steep * 3.0, n.y), steep)
 		else:
 			c = c.lerp(cliff * (0.85 + 0.3 * strata), steep)
 		var depth: float = clamp((under - 1.5) / 6.0, 0.0, 1.0)

@@ -836,12 +836,14 @@ func _section_slab(zc: float) -> MeshInstance3D:
 	for x in nx:
 		var px := x * st
 		var h := terrain.surface_h(px + st * 0.5, zc)
+		var sl := (terrain.surface_h(px + st * 0.5 + 1.0, zc) - terrain.surface_h(px + st * 0.5 - 1.0, zc)) * 0.5
+		var up := 1.0 / sqrt(1.0 + sl * sl)
 		for y in ny:
 			var py := y * st
 			if py + st > h:
 				break
 			var q := Vector3(px + st * 0.5, py + st * 0.5, zc)
-			var c: Color = g.color_at(q, h - q.y) if g != null else terrain.cliff
+			var c: Color = g.color_at(q, h - q.y, up) if g != null else terrain.cliff
 			for v in [Vector3(px, py, zc), Vector3(px + st, py, zc), Vector3(px + st, py + st, zc),
 					Vector3(px, py, zc), Vector3(px + st, py + st, zc), Vector3(px, py + st, zc)]:
 				verts.append(v)
