@@ -31,6 +31,10 @@ var sun: DirectionalLight3D
 var mat: ShaderMaterial
 var cave := false                  # вид «пещера»: дымку не трогаем
 var frame := Basis()               # местная система (Y — верх) → мир
+## Поворот планеты → местная система наблюдателя. Солнце, луны и звёзды стоят
+## над планетой, а робот ходит по шару: где он стоит, там и своё время суток
+## (ProtoPlanetStream ставит turn каждый кадр; у завода — единичный).
+var turn := Basis()
 var running := true
 var time := 0.34                   # утро
 var day_len := 480.0               # реальных секунд на сутки (без ускорения ночи)
@@ -176,7 +180,7 @@ func _material(r: Rng) -> void:
 	mat.set_shader_parameter("ground_col", day_hor.darkened(0.5))
 	mat.set_shader_parameter("low_glow", low_glow)
 	mat.set_shader_parameter("stars", stars)
-	mat.set_shader_parameter("band_n", Vector3(r.range_f(-1, 1), r.range_f(-0.5, 0.5), r.range_f(-1, 1)).normalized())
+	_band_n = Vector3(r.range_f(-1, 1), r.range_f(-0.5, 0.5), r.range_f(-1, 1)).normalized()
 	mat.set_shader_parameter("cloud_cover", clouds)
 	mat.set_shader_parameter("cloud_col", Color(0.95, 0.95, 0.95).lerp(day_hor, 0.3))
 	mat.set_shader_parameter("aurora", aurora)
@@ -187,7 +191,7 @@ func _material(r: Rng) -> void:
 		var tilt := r.range_f(0.95, 1.3)
 		var fl := Vector3(noon_dir.x, 0, noon_dir.z).normalized().rotated(Vector3.UP, r.range_f(-0.4, 0.4))
 		mat.set_shader_parameter("ring_on", 1.0)
-		mat.set_shader_parameter("ring_n", (Vector3.UP * cos(tilt) - fl * sin(tilt)).normalized())
+		_ring_n = (Vector3.UP * cos(tilt) - fl * sin(tilt)).normalized()
 		var r0 := r.range_f(1.4, 1.9)
 		mat.set_shader_parameter("ring_r", Vector2(r0, r0 + r.range_f(0.6, 1.2)))
 		mat.set_shader_parameter("ring_col", [Color(0.85, 0.8, 0.7), Color(0.75, 0.8, 0.88), Color(0.8, 0.65, 0.5)][r.range_i(0, 2)])
@@ -195,12 +199,27 @@ func _material(r: Rng) -> void:
 	if hole:
 		var fl := Vector3(noon_dir.x, 0, noon_dir.z).normalized()
 		var hd := (fl * r.range_f(0.6, 1.0) + east * r.range_f(-0.5, 0.5) + Vector3.UP * r.range_f(0.35, 0.7)).normalized()
-		mat.set_shader_parameter("hole", Vector4(hd.x, hd.y, hd.z, r.range_f(0.03, 0.05)))
+		_hole = Vector4(hd.x, hd.y, hd.z, r.range_f(0.03, 0.05))
 
-## Направление на солнце в момент t суток.
+# Направления в системе планеты (как у наблюдателя на участке); в местную — через turn.
+var _band_n := Vector3(0.3, 0.2, 0.93)
+var _ring_n := Vector3.ZERO
+var _hole := Vector4.ZERO
+
+## Направление на солнце в момент t суток (местная система наблюдателя).
 func sun_dir_at(t: float) -> Vector3:
 	var a := (t - 0.25) * TAU
-	return (east * cos(a) + noon_dir * sin(a)).normalized()
+	return turn * (east * cos(a) + noon_dir * sin(a)).normalized()
+
+## Местное время: на другой стороне шара полдень наступает в другой момент.
+## Сдвиг — угол от участка до робота вокруг оси неба.
+func local_time() -> float:
+	var up := turn.inverse() * Vector3.UP
+	var a := Vector3.UP - pole * pole.dot(Vector3.UP)
+	var b := up - pole * pole.dot(up)
+	if a.length_squared() < 1.0e-6 or b.length_squared() < 1.0e-6:
+		return time
+	return fposmod(time - a.signed_angle_to(b, pole) / TAU, 1.0)
 
 ## Высота солнца (синус угла над горизонтом) сейчас.
 func sun_height() -> float:
@@ -208,7 +227,7 @@ func sun_height() -> float:
 
 ## Часы для HUD: «06:30».
 func clock() -> String:
-	var m := int(fposmod(time, 1.0) * 24.0 * 60.0)
+	var m := int(local_time() * 24.0 * 60.0)
 	return "%02d:%02d" % [m / 60, m % 60]
 
 func _process(dt: float) -> void:
@@ -242,7 +261,7 @@ func _apply(sky_too: bool) -> void:
 			sun.light_energy = sun_energy * sun_k * (0.55 if thin and h < 0.1 else 1.0)
 		else:
 			var md := _brightest_moon()
-			_aim(md if md != Vector3.ZERO else pole.slerp(Vector3.UP, 0.6))
+			_aim(md if md != Vector3.ZERO else (turn * pole).slerp(Vector3.UP, 0.6))
 			var moon_k := smoothstep(-0.03, -0.18, h)
 			sun.light_color = Color(0.6, 0.7, 1.0)
 			sun.light_energy = (0.28 if md != Vector3.ZERO else 0.14) * moon_k
@@ -261,11 +280,17 @@ func _apply(sky_too: bool) -> void:
 		mat.set_shader_parameter("day", day)
 		mat.set_shader_parameter("twilight", tw)
 		if binary:
-			var s2 := sun_dir_at(time + 0.02).rotated(pole, 0.12)
+			var s2 := sun_dir_at(time + 0.02).rotated(turn * pole, 0.12)
 			mat.set_shader_parameter("sun2", Vector4(s2.x, s2.y, s2.z, sun_size * 0.45))
 			mat.set_shader_parameter("sun2_color", Color(1.0, 0.7, 0.45) if star != "red" else Color(0.85, 0.9, 1.0))
 		# Небо поворачивается вместе с сутками (у захваченных — стоит).
-		mat.set_shader_parameter("star_rot", Basis(pole, -time * TAU))
+		mat.set_shader_parameter("star_rot", Basis(pole, -time * TAU) * turn.inverse())
+		mat.set_shader_parameter("band_n", turn * _band_n)
+		if rings:
+			mat.set_shader_parameter("ring_n", turn * _ring_n)
+		if hole:
+			var hd := turn * Vector3(_hole.x, _hole.y, _hole.z)
+			mat.set_shader_parameter("hole", Vector4(hd.x, hd.y, hd.z, _hole.w))
 		for i in 2:
 			var key := "moon%d" % i
 			if i < moons.size():
@@ -283,7 +308,7 @@ func moon_dir(i: int) -> Vector3:
 	var a: float = (time - 0.25) * TAU * (1.0 - 1.0 / m.period) + m.phase
 	var ax: Vector3 = m.axis
 	var e := ax.cross(Vector3.FORWARD if absf(ax.z) < 0.9 else Vector3.RIGHT).normalized()
-	return e.rotated(ax, a)
+	return turn * e.rotated(ax, a)
 
 func _brightest_moon() -> Vector3:
 	var best := Vector3.ZERO
