@@ -203,7 +203,7 @@ func build(root: Node3D, terr: ProtoTerrain, keep_clear: Callable, lite := false
 		mi.material_override = mat
 		if k.begins_with("low"):
 			mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-			mi.visibility_range_end = 60.0
+			mi.visibility_range_end = 40.0 if lite else 60.0
 			mi.visibility_range_end_margin = 6.0
 		root.add_child(mi)
 		made += 1
