@@ -15,6 +15,39 @@ const PITCH_MAX := 1.45
 const DIST_MIN := 18.0
 const DIST_MAX := 150.0
 
+## Глобус (ProtoGlobe): вся планета-шар — отдельно от макета участка.
+const GLOBE_AT := Vector3(40, 0, 6000)
+const GDIST_MIN := 70.0
+const GDIST_MAX := 260.0
+
+const GLOBE_SHADER := """
+shader_type spatial;
+render_mode unshaded;
+uniform sampler2D fog : filter_linear, repeat_enable;
+uniform float water = 0.0;
+uniform vec3 water_col : source_color = vec3(0.3, 0.5, 0.7);
+varying vec3 dir;
+void vertex() {
+	dir = VERTEX;
+}
+void fragment() {
+	vec3 d = normalize(dir);
+	vec2 uv = vec2(atan(d.z, d.x) / 6.2831853 + 0.5, acos(clamp(d.y, -1.0, 1.0)) / 3.14159265);
+	float f = texture(fog, uv).r;
+	vec3 col = mix(COLOR.rgb * 1.15, water_col * 0.85, water);
+	// Свет — от камеры: какой стороной ни поверни, глобус освещён.
+	float lit = 0.45 + 0.55 * max(dot(NORMAL, VIEW), 0.0);
+	// Неразведанное: тёмный шар с сеткой параллелей и меридианов через 30°.
+	vec2 q = vec2(uv.x * 12.0, uv.y * 6.0);
+	vec2 g = abs(fract(q) - 0.5);
+	vec2 w = fwidth(q) * 1.2;
+	float grid = max(1.0 - smoothstep(0.0, w.x, 0.5 - g.x), 1.0 - smoothstep(0.0, w.y, 0.5 - g.y));
+	grid *= smoothstep(0.02, 0.12, uv.y) * smoothstep(0.98, 0.88, uv.y);
+	vec3 dark = vec3(0.075, 0.1, 0.14) * (0.6 + 0.8 * lit) + vec3(0.12, 0.3, 0.42) * grid * 0.6;
+	ALBEDO = mix(dark, col * lit, f);
+}
+"""
+
 const TERRAIN_SHADER := """
 shader_type spatial;
 render_mode cull_disabled;
@@ -114,6 +147,16 @@ var _pitch := 0.9
 var _dist := 70.0
 var _drag := 0                   # 1 — крутим, 2 — сдвигаем
 var _mouse_mode := Input.MOUSE_MODE_VISIBLE
+var globe_mode := false          # показан глобус (вся планета), а не участок
+var _g_root: Node3D
+var _g_built := false
+var _g_robot: Node3D
+var _g_marks: Node3D
+var _g_sig := ""
+var _gdist := 150.0
+var _gyaw := 0.0
+var _gpitch := 0.5
+var _share_t := 0.0
 var _t := 0.0
 var _sig := ""
 
@@ -208,6 +251,134 @@ func _scene(terrain: Array, caves: Array, water: Array) -> void:
 	_cam.fov = 50.0
 	_cam.far = 600.0
 	_vp.add_child(_cam)
+	_g_root = Node3D.new()
+	_g_root.name = "globe"
+	_g_root.position = GLOBE_AT
+	_vp.add_child(_g_root)
+
+## Глобус: сетки из ProtoGlobe (строятся в потоке), метки завода и россыпей, робот.
+func _build_globe() -> bool:
+	if _g_built:
+		return true
+	var g: ProtoGlobe = data.globe
+	if g == null or not g.ready():
+		return false
+	_g_built = true
+	var gm := _shader_mat(GLOBE_SHADER)
+	gm.set_shader_parameter("fog", g.fog)
+	var mi := MeshInstance3D.new()
+	mi.mesh = g.globe_mesh
+	mi.material_override = gm
+	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	_g_root.add_child(mi)
+	if g.sea_mesh != null:
+		var sm := _shader_mat(GLOBE_SHADER)
+		sm.set_shader_parameter("fog", g.fog)
+		sm.set_shader_parameter("water", 1.0)
+		sm.set_shader_parameter("water_col", g.fill.sea_sub.color)
+		var si := MeshInstance3D.new()
+		si.mesh = g.sea_mesh
+		si.material_override = sm
+		_g_root.add_child(si)
+	_g_marks = Node3D.new()
+	_g_root.add_child(_g_marks)
+	_g_robot = _globe_pin("robot", "Робот", Color.WHITE)
+	_g_root.add_child(_g_robot)
+	return true
+
+## Штырь на глобусе: вдоль «вверх» от центра шара, голова по виду метки.
+func _globe_pin(kind: String, label: String, col: Color) -> Node3D:
+	var n := Node3D.new()
+	var tall := 3.0 if kind in ["factory", "robot"] else 1.6
+	var stem := MeshInstance3D.new()
+	var cyl := CylinderMesh.new()
+	cyl.top_radius = 0.07
+	cyl.bottom_radius = 0.07
+	cyl.height = tall
+	cyl.radial_segments = 6
+	cyl.rings = 1
+	stem.mesh = cyl
+	stem.position.y = tall * 0.5
+	stem.material_override = _flat(Color(col, 0.8))
+	n.add_child(stem)
+	var head := MeshInstance3D.new()
+	head.position.y = tall
+	if kind == "factory":
+		var b := BoxMesh.new()
+		b.size = Vector3(0.9, 0.9, 0.9)
+		head.mesh = b
+	else:
+		var sp := SphereMesh.new()
+		sp.radius = 0.45 if kind == "robot" else 0.35
+		sp.height = sp.radius * (2.0 if kind == "robot" else 2.5)
+		if kind != "robot":
+			sp.radial_segments = 4
+			sp.rings = 2
+		head.mesh = sp
+	head.material_override = _flat(col)
+	n.add_child(head)
+	if label != "":
+		var l := Label3D.new()
+		l.text = label
+		l.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+		l.fixed_size = true
+		l.pixel_size = 0.0011
+		l.font_size = 28
+		l.outline_size = 10
+		l.modulate = col.lerp(Color.WHITE, 0.5)
+		l.no_depth_test = true
+		l.render_priority = 3
+		l.outline_render_priority = 2
+		l.position.y = tall
+		l.offset = Vector2(0, 34)
+		n.add_child(l)
+	return n
+
+## Поставить штырь n на глобус в точку p (система планеты).
+func _pin_at(n: Node3D, p: Vector3) -> void:
+	var g: ProtoGlobe = data.globe
+	var at := g.to_globe(p)
+	var up := at.normalized()
+	var x := up.cross(Vector3.FORWARD if absf(up.z) < 0.9 else Vector3.RIGHT).normalized()
+	n.transform = Transform3D(Basis(x, up, x.cross(up)), at)
+
+func _sync_globe_marks() -> void:
+	var g: ProtoGlobe = data.globe
+	var list: Array = [{"kind": "factory", "name": "Завод", "pos": g.factory, "color": ProtoMapData.KINDS.factory[1]}]
+	if g.fill != null:
+		for id in g.fill.finds:
+			if g.fill.finds[id].found:
+				list.append(g.fill.finds[id])
+	var sig := str(list.size())
+	if sig == _g_sig:
+		return
+	_g_sig = sig
+	for c in _g_marks.get_children():
+		c.queue_free()
+	for m in list:
+		var n := _globe_pin(m.kind, "Завод" if m.kind == "factory" else "", m.color)
+		_pin_at(n, m.pos)
+		_g_marks.add_child(n)
+
+## Глобус ↔ участок. На глобус — повернуть так, чтобы робот был к камере.
+func set_globe(on: bool) -> void:
+	if on and not _build_globe():
+		return
+	globe_mode = on
+	if on:
+		_face_robot()
+		_gdist = 150.0
+	_cam.far = 1000.0 if on else 600.0
+	_hint_key = ""
+	_fill_legend()
+
+func _face_robot() -> void:
+	if robot == null or data.globe == null:
+		return
+	var p: Vector3 = robot.get_meta("planet_pos", robot.global_position)
+	var d := (p - (data.globe as ProtoGlobe).terrain.center).normalized()
+	_gyaw = atan2(d.x, d.z)
+	_gpitch = clampf(asin(d.y), -1.35, 1.35)
 
 func _shader_mat(code: String) -> ShaderMaterial:
 	var m := ShaderMaterial.new()
@@ -365,6 +536,10 @@ func show_map() -> void:
 	_dist = 72.0
 	data.flush()
 	_sync_marks()
+	# Робот ушёл с участка по шару — сразу глобус.
+	var g: ProtoGlobe = data.globe
+	var q: Vector3 = robot.get_meta("planet_pos", robot.global_position) if robot else Vector3.ZERO
+	set_globe(g != null and g.away(q))
 	_place_cam()
 
 func close() -> void:
@@ -385,6 +560,11 @@ func center_on_robot() -> void:
 		_target = Vector3(p.x, maxf(p.y, data.height_at(p.x, p.z)), p.z)
 
 func _place_cam() -> void:
+	if globe_mode:
+		var go := Vector3(sin(_gyaw) * cos(_gpitch), sin(_gpitch), cos(_gyaw) * cos(_gpitch))
+		_cam.position = GLOBE_AT + go * _gdist
+		_cam.look_at(GLOBE_AT, Vector3.UP)
+		return
 	var off := Vector3(sin(_yaw) * cos(_pitch), sin(_pitch), cos(_yaw) * cos(_pitch))
 	_cam.position = _target + off * _dist
 	_cam.look_at(_target, Vector3.UP)
@@ -417,16 +597,19 @@ func _input(e: InputEvent) -> void:
 	get_viewport().set_input_as_handled()
 	if e is InputEventMouseButton:
 		if e.button_index == MOUSE_BUTTON_WHEEL_UP and e.pressed:
-			_dist = maxf(DIST_MIN, _dist * 0.9)
+			_zoom(0.9)
 		elif e.button_index == MOUSE_BUTTON_WHEEL_DOWN and e.pressed:
-			_dist = minf(DIST_MAX, _dist * 1.1)
+			_zoom(1.1)
 		elif e.button_index == MOUSE_BUTTON_LEFT:
 			_drag = 1 if e.pressed else 0
 		elif e.button_index in [MOUSE_BUTTON_RIGHT, MOUSE_BUTTON_MIDDLE]:
 			_drag = 2 if e.pressed else 0
 		return
 	if e is InputEventMouseMotion:
-		if _drag == 1:
+		if globe_mode and _drag > 0:
+			_gyaw -= e.relative.x * 0.006
+			_gpitch = clampf(_gpitch + e.relative.y * 0.005, -1.35, 1.35)
+		elif _drag == 1:
 			_yaw -= e.relative.x * 0.006
 			_pitch = clampf(_pitch + e.relative.y * 0.005, PITCH_MIN, PITCH_MAX)
 		elif _drag == 2:
@@ -440,9 +623,27 @@ func _input(e: InputEvent) -> void:
 		close()
 	elif key == KEY_SPACE or btn == JOY_BUTTON_A:
 		center_on_robot()
+		_face_robot()
+	elif key == KEY_G or btn == JOY_BUTTON_X:
+		set_globe(not globe_mode)
 	elif (key == KEY_TAB or btn == JOY_BUTTON_Y) and on_next_planet.is_valid():
 		close()
 		on_next_planet.call()
+
+## Масштаб: за краем участка — глобус, из глобуса ближе — снова участок.
+func _zoom(k: float) -> void:
+	if globe_mode:
+		_gdist *= k
+		if _gdist < GDIST_MIN and k < 1.0:
+			set_globe(false)
+			_dist = DIST_MAX
+		_gdist = clampf(_gdist, GDIST_MIN, GDIST_MAX)
+		return
+	if _dist >= DIST_MAX and k > 1.0 and data.globe != null:
+		set_globe(true)
+		_gdist = GDIST_MIN + 10.0
+		return
+	_dist = clampf(_dist * k, DIST_MIN, DIST_MAX)
 
 ## Сдвиг цели: x — вправо по экрану, y — «вверх» (от камеры по земле).
 func _pan(v: Vector2) -> void:
@@ -460,15 +661,21 @@ func _process(dt: float) -> void:
 	# Стики и клавиши: левый / WASD — сдвиг, правый / Q,E — поворот и наклон,
 	# курки и D-pad — масштаб.
 	var mv := ProtoControls.move_vector()
-	if mv.length() > 0.0:
-		_pan(mv * dt * (12.0 + _dist * 0.6))
 	var lk := Input.get_vector(ProtoControls.CAM_LEFT, ProtoControls.CAM_RIGHT, ProtoControls.CAM_DOWN, ProtoControls.CAM_UP)
-	_yaw -= lk.x * dt * 2.0
-	_pitch = clampf(_pitch - lk.y * dt * 1.2, PITCH_MIN, PITCH_MAX)
 	var zoom := Input.get_action_strength(ProtoControls.WORK) - Input.get_action_strength(ProtoControls.FIST)
 	if Input.is_action_pressed(ProtoControls.CAM_ZOOM_IN): zoom += 1.0
 	if Input.is_action_pressed(ProtoControls.CAM_ZOOM_OUT): zoom -= 1.0
-	_dist = clampf(_dist * (1.0 - zoom * dt * 1.4), DIST_MIN, DIST_MAX)
+	if globe_mode:
+		_process_globe(dt, mv + lk, zoom)
+		return
+	if mv.length() > 0.0:
+		_pan(mv * dt * (12.0 + _dist * 0.6))
+	_yaw -= lk.x * dt * 2.0
+	_pitch = clampf(_pitch - lk.y * dt * 1.2, PITCH_MIN, PITCH_MAX)
+	if absf(zoom) > 0.0:
+		_zoom(1.0 - zoom * dt * 1.4)
+		if globe_mode:
+			return
 	_place_cam()
 	data.flush()
 	_sync_marks()
@@ -489,6 +696,33 @@ func _process(dt: float) -> void:
 		_ring.scale = Vector3.ONE * k * (0.6 + pulse * 1.2)
 		(_ring.material_override as StandardMaterial3D).albedo_color.a = 0.9 * (1.0 - pulse)
 	_stats.text = "Разведано %d%%" % roundi(data.explored_share() * 100.0)
+	_fill_hints()
+
+## Глобус: стики и WASD крутят шар, курки — масштаб; робот — штырь по курсу.
+func _process_globe(dt: float, turn: Vector2, zoom: float) -> void:
+	_gyaw -= turn.x * dt * 1.6
+	_gpitch = clampf(_gpitch - turn.y * dt * 1.2, -1.35, 1.35)
+	if absf(zoom) > 0.0:
+		_zoom(1.0 - zoom * dt * 1.4)
+		if not globe_mode:
+			return
+	_place_cam()
+	var g: ProtoGlobe = data.globe
+	g.flush()
+	_sync_globe_marks()
+	if robot != null:
+		_pin_at(_g_robot, robot.get_meta("planet_pos", robot.global_position))
+		# Штыри — одного размера на экране.
+		var ks := _gdist / 150.0
+		_g_robot.scale = Vector3.ONE * ks
+		for c: Node3D in _g_marks.get_children():
+			c.scale = Vector3.ONE * ks
+		var pulse := fmod(_t * 0.8, 1.0)
+		_g_robot.get_child(1).scale = Vector3.ONE * (1.0 + 0.35 * sin(pulse * TAU))
+	_share_t -= dt
+	if _share_t <= 0.0:
+		_share_t = 0.5
+		_stats.text = "Разведано %.1f%% планеты" % (g.explored_share() * 100.0)
 	_fill_hints()
 
 # ---------------------------------------------------------------- подписи
@@ -529,10 +763,20 @@ func _overlay() -> void:
 
 func _fill_legend() -> void:
 	_title.text = "КАРТА · " + data.name if data.name != "" else "КАРТА"
+	if globe_mode:
+		_title.text = "ПЛАНЕТА · " + data.name if data.name != "" else "ПЛАНЕТА"
 	for c in _legend.get_children():
 		c.queue_free()
 	var kinds := []
-	for m in data.found():
+	var found: Array = data.found()
+	if globe_mode:
+		found = [{"kind": "factory"}]
+		var g: ProtoGlobe = data.globe
+		if g.fill != null:
+			for id in g.fill.finds:
+				if g.fill.finds[id].found:
+					found.append(g.fill.finds[id])
+	for m in found:
 		if not m.kind in kinds:
 			kinds.append(m.kind)
 	var rows: Array = [["robot", "Робот", Color.WHITE]]
@@ -565,10 +809,14 @@ var _hint_key := ""
 func _fill_hints() -> void:
 	var rows := [["Повернуть", "ЛКМ", "R-стик"], ["Сдвинуть", "WASD ПКМ", "L-стик"],
 		["Масштаб", "Колесо", "LT RT"], ["К роботу", "Пробел", "A"]]
+	if globe_mode:
+		rows = [["Крутить", "ЛКМ WASD", "Стики"], ["Масштаб", "Колесо", "LT RT"], ["К роботу", "Пробел", "A"]]
+	if data.globe != null:
+		rows.append(["Участок" if globe_mode else "Вся планета", "G", "X"])
 	if on_next_planet.is_valid():
 		rows.append(["Другая планета", "Tab", "Y"])
 	rows.append(["Закрыть", "M Esc", "View B"])
-	var key := str([rows, pad])
+	var key := str([rows, pad, globe_mode])
 	if key == _hint_key:
 		return
 	_hint_key = key

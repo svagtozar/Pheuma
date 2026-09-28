@@ -149,6 +149,10 @@ static func to_dict(r: Node3D) -> Dictionary:
 	d.cargo = (robot.get_meta("cargo", []) as Array).map(func(p): return SaveGame.p_to(p))
 	d.mined = (r.get_meta("mined", []) as Array).duplicate(true)
 	d.cut = (r.get_meta("cut", []) as Array).duplicate(true)
+	d.mined_far = (r.get_meta("mined_far", []) as Array).duplicate(true)
+	var fill = r.get("planet_fill")
+	if fill != null:
+		d.far_finds = fill.save_finds()
 	var derived: Array = []
 	for s in planet.db.all():
 		if "#" in s.id:
@@ -202,6 +206,13 @@ static func apply(r: Node3D, d: Dictionary) -> void:
 	var cut: Array = _ints(d.get("cut", []))
 	if not cut.is_empty() and r.has_method("restore_cut"):
 		r.restore_cut(cut)
+	# Россыпи на шаре вдали от участка (ProtoPlanetFill): id строками.
+	var far: Array = (d.get("mined_far", []) as Array).map(func(x): return str(x))
+	r.set_meta("mined_far", far)
+	var fill = r.get("planet_fill")
+	if fill != null:
+		fill.hide_mined(far)
+		fill.load_finds(d.get("far_finds", []))
 	var net = r.get("pneu")
 	if net != null and d.has("pneumatics"):
 		_net_from(net, planet, d.pneumatics)

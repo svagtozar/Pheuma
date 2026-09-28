@@ -302,6 +302,13 @@ func _note_mined(druse: Node) -> void:
 			if is_instance_valid(k) and k.get_parent() == druse and not k.has_meta("broken"):
 				return
 		var root := get_parent()
+		if druse.has_meta("far_id"):
+			# Россыпь на шаре вдали от участка (ProtoPlanetFill): номер — её id.
+			var far: Array = root.get_meta("mined_far", [])
+			if not far.has(druse.get_meta("far_id")):
+				far.append(druse.get_meta("far_id"))
+			root.set_meta("mined_far", far)
+			return
 		var ids: Array = root.get_meta("mined", [])
 		if not ids.has(i):
 			ids.append(i)

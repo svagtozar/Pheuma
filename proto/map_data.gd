@@ -32,6 +32,7 @@ var fog: ImageTexture            # разведано на поверхност�
 var fog_under: ImageTexture      # разведано под землёй (ходы и залы)
 var markers: Array = []          # {kind, pos: Vector3, name, color, found, under}
 var name := ""                   # название планеты для заголовка карты
+var globe = null                 # ProtoGlobe: весь шар (разведанное, глобус), если планета — шар
 var _fog_img: Image
 var _under_img: Image
 var _fog_dirty := false
@@ -181,8 +182,11 @@ func save_dict() -> Dictionary:
 	for i in markers.size():
 		if markers[i].found:
 			ids.append(i)
-	return {"fog": Marshalls.raw_to_base64(_fog_img.get_data()),
+	var d := {"fog": Marshalls.raw_to_base64(_fog_img.get_data()),
 		"under": Marshalls.raw_to_base64(_under_img.get_data()), "found": ids}
+	if globe != null:
+		d.globe = globe.save_dict()
+	return d
 
 func load_dict(d: Dictionary) -> void:
 	for pair in [["fog", _fog_img], ["under", _under_img]]:
@@ -195,10 +199,14 @@ func load_dict(d: Dictionary) -> void:
 		if int(i) >= 0 and int(i) < markers.size():
 			markers[int(i)].found = true
 	_last_reveal = Vector3.INF
+	if globe != null and d.has("globe"):
+		globe.load_dict(d.globe)
 	flush()
 
 ## Открыть всё (отладка и кадры).
 func reveal_all() -> void:
+	if globe != null:
+		globe.reveal_all()
 	_fog_img.fill(Color.WHITE)
 	_under_img.fill(Color.WHITE)
 	for m in markers:

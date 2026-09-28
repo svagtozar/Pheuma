@@ -220,6 +220,50 @@ func build(root: Node3D, terr: ProtoTerrain, keep_clear: Callable, lite := false
 		made += 1
 	return made
 
+## Копия для куска шара вдали от участка (ProtoPlanetFill): своя случайность и
+## свои сетки — строится в потоке, не трогая исходную. Шум и облик общие.
+func fork(seed_value: int) -> ProtoFlora:
+	var f := ProtoFlora.new()
+	for k in ["life", "forms", "tuft", "hue", "hue2", "hue3", "sat", "val", "glow", "wind", "grow",
+			"floating", "thermo", "fungal", "terrain", "style", "noise", "thr"]:
+		f.set(k, get(k))
+	f.rng.seed = seed_value
+	f.far = true
+	return f
+
+var far := false               # кусок шара: крупные формы — одной сеткой на кусок
+
+## Плодородие вдали от участка: тот же шум, что у ковра поросли на шаре
+## (ProtoTerrain.far_key), плюс берег моря (wet 0..1).
+func far_fertility(key: Vector2, wet: float) -> float:
+	return fertility(key.x, key.y) + wet * (0.7 if forms.has("frond") or forms.has("coral") else 0.35)
+
+## Растение в точке p с нормалью nrm (система куска, Y — вверх). Как _try_spot,
+## но место уже выбрано и проверено вызывающим. Сетки — в _geo этой копии.
+func far_spot(p: Vector3, nrm: Vector3, fert: float, wet: float) -> void:
+	if fert < thr or nrm.y < 0.5:
+		return
+	var s := rng.randf_range(0.7, 1.25) * (0.75 + 0.25 * clampf(fert - thr, 0.0, 1.0) * 2.0)
+	var big_p := 0.04 + 0.04 * life + 0.06 * clampf(fert - thr, 0.0, 1.0)
+	plants += 1
+	if not forms.is_empty() and nrm.y > 0.78 and rng.randf() < big_p:
+		var w := {}
+		for k in forms:
+			var a := 1.0
+			if k in ["frond", "coral"]: a = 0.4 + wet * 3.0
+			elif k == "tubes" and thermo: a = 1.5
+			w[k] = a
+		_form(_pick(w, rng), p, nrm, s * 1.2, _g("big", p))
+		return
+	var low := _g("low", p)
+	var r := rng.randf()
+	if fungal and r < 0.35:
+		_moss(low, p, nrm, s * 0.8, false)
+	elif tuft and r < 0.6:
+		_tuft(low, p, nrm, s)
+	elif r < 0.8:
+		_curls(low, p, s)
+
 func verts() -> int:
 	var n := 0
 	for k in _geo:
@@ -232,8 +276,10 @@ func _g(kind: String, p: Vector3) -> Geo:
 		_geo[k] = Geo.new()
 	return _geo[k]
 
-static func _key(kind: String, p: Vector3) -> String:
-	return "cave" if kind == "cave" else "%s_%d_%d" % [kind, int(p.x / CHUNK), int(p.z / CHUNK)]
+func _key(kind: String, p: Vector3) -> String:
+	if kind == "cave" or (far and kind == "big"):
+		return "cave"
+	return "%s_%d_%d" % [kind, int(floor(p.x / CHUNK)), int(floor(p.z / CHUNK))]
 
 # ---------------------------------------------------------------- срез
 
