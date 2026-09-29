@@ -269,6 +269,8 @@ static func _net_to(net) -> Dictionary:
 			"gas": net.gas.amount(part.id)}
 		if part.has("temp"):
 			pd.temp = part.temp
+		if part.get("filter") != null:
+			pd.filter = part.filter.id
 		if part.has("lift"):
 			pd.lift = part.lift
 			pd.foot = part.get("foot", 0.0)
@@ -289,6 +291,8 @@ static func _net_from(net, planet: Planet, d: Dictionary) -> void:
 		var part: Dictionary = net.place(str(pd.kind), SaveGame.v2i(pd.cell), int(pd.dir), sub)
 		if part.is_empty():
 			continue
+		if pd.has("filter"):
+			part.filter = planet.db.get_sub(str(pd.filter))
 		if pd.has("lift"):
 			part.lift = float(pd.lift)
 			part.foot = float(pd.get("foot", 0.0))

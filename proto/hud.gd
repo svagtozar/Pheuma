@@ -47,12 +47,12 @@ const HINTS_WALK := [
 	["Карта", &"map_toggle"],
 ]
 const HINTS_BUILD := [
-	["Деталь", &"build_prev", &"build_next"],
+	["Каталог деталей", &"build_mode"],
+	["Панель", &"build_prev", &"build_next"],
 	["Повернуть", &"build_rotate"],
 	["Материал", &"build_material"],
-	["Поставить", &"build_place"],
+	["Поставить · держать — труба", &"build_place"],
 	["Разобрать", &"build_remove"],
-	["Выйти из стройки", &"build_mode"],
 ]
 ## Если подсказки не влезают под панель завода (у геймпада с грузом и ремонтом
 ## их до 14), первыми уходят эти — обучение их уже показало.
@@ -200,7 +200,9 @@ func refresh() -> void:
 	soil = int(dg.soil) if dg != null else 0
 	if dg != null and dg.status != "" and note == "":
 		note = dg.status
-	var key := str([cg, fs, part, note, pad, building, kn, busy, hs, soil])
+	var m = builder.get("menu") if builder != null else null
+	var menu_open: bool = m != null and bool(m.open)
+	var key := str([cg, fs, part, note, pad, building, kn, busy, hs, soil, menu_open])
 	if key == _key:
 		return
 	_key = key
@@ -211,6 +213,10 @@ func refresh() -> void:
 	_fill_health(hs)
 	_fill_build(part)
 	_fill_hints(building, cg.kg > 0.0, hs.get("repair", false))
+	# Открыт каталог стройки — у него свои подсказки и описание детали.
+	_hints_box.get_parent().visible = not menu_open
+	if menu_open:
+		_build_panel.visible = false
 	_toast.text = note
 	_toast.offset_bottom = -PAD - (_build_panel.size.y + 12.0 if building else 12.0)
 
@@ -323,9 +329,18 @@ func _part_info() -> Dictionary:
 	var mat: String = sub.name if sub != null else ""
 	if sub != null and knowledge != null:
 		mat = knowledge.short_label(sub)      # «?2» — сколько тегов материала ещё не известно
-	return {"name": info.get("n", kind), "mat": mat,
+	var out := {"name": info.get("n", kind), "mat": mat,
 		"mat_color": sub.color if sub != null else Color.GRAY, "limit": limit,
 		"i": order.find(kind) + 1, "n": order.size()}
+	# Быстрая панель и то, что перед роботом (ProtoBuilder с каталогом).
+	if builder.get("hotbar") != null:
+		out.hotbar = builder.hotbar.duplicate()
+		out.slot = builder.slot
+		var m = builder.get("menu")
+		out.icons = m.get("_icons").size() if m != null else 0
+	if builder.has_method("aim_info"):
+		out.aim = builder.aim_info()
+	return out
 
 ## Константы скрипта завода (KINDS, ORDER) — без прямой ссылки на класс.
 func _net_consts() -> Dictionary:
@@ -526,16 +541,18 @@ func _fill_build(part: Dictionary) -> void:
 	if part.is_empty():
 		return
 	_clear(_build_box)
+	var prev := glyph([&"build_prev"], pad)
+	var next := glyph([&"build_next"], pad)
+	if part.has("hotbar"):
+		_build_box.add_child(_hotbar(part, prev, next))
 	var head := HBoxContainer.new()
 	head.add_theme_constant_override("separation", 12)
 	head.alignment = BoxContainer.ALIGNMENT_CENTER
-	var prev := glyph([&"build_prev"], pad)
-	var next := glyph([&"build_next"], pad)
-	if prev != "":
+	if prev != "" and not part.has("hotbar"):
 		head.add_child(_chip(prev))
 	var nm := _label(part.name, FONT + 6, TEXT)
 	head.add_child(nm)
-	if next != "":
+	if next != "" and not part.has("hotbar"):
 		head.add_child(_chip(next))
 	_build_box.add_child(head)
 	var line := HBoxContainer.new()
@@ -551,13 +568,62 @@ func _fill_build(part: Dictionary) -> void:
 		txt += " · держит %.1f атм" % part.limit
 	line.add_child(_label(txt, FONT_SMALL, DIM))
 	_build_box.add_child(line)
-	if part.n > 0:
+	var aim: Dictionary = part.get("aim", {})
+	if not aim.is_empty():
+		var al := _label("Перед роботом: %s · %s — взять такую же · %s — повернуть" % [aim.name,
+			glyph([&"build_place"], pad), glyph([&"build_rotate"], pad)], FONT_SMALL, WARN)
+		al.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		_build_box.add_child(al)
+	elif part.n > 0 and not part.has("hotbar"):
 		var pos := _label("СТРОЙКА · деталь %d из %d" % [part.i, part.n], FONT_SMALL, DIM)
 		pos.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		_build_box.add_child(pos)
 	_build_panel.reset_size()
-	_build_panel.offset_top = -PAD - _build_panel.get_combined_minimum_size().y
+	var ms := _build_panel.get_combined_minimum_size()
+	_build_panel.offset_top = -PAD - ms.y
 	_build_panel.offset_bottom = -PAD
+	# С быстрой панелью — левее середины: справа внизу столбик подсказок.
+	var shift := -70.0 if part.has("hotbar") else 0.0
+	_build_panel.offset_left = shift - ms.x / 2.0
+	_build_panel.offset_right = shift + ms.x / 2.0
+
+## Быстрая панель стройки: 8 ячеек с картинками деталей, выбранная — в рамке.
+func _hotbar(part: Dictionary, prev: String, next: String) -> HBoxContainer:
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 5)
+	row.alignment = BoxContainer.ALIGNMENT_CENTER
+	if prev != "":
+		var c := _chip(prev)
+		c.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+		row.add_child(c)
+	var m = builder.get("menu")
+	for i in part.hotbar.size():
+		var on: bool = i == part.slot
+		var cell := PanelContainer.new()
+		var sb := StyleBoxFlat.new()
+		sb.bg_color = Color(0.3, 0.6, 1.0, 0.25) if on else Color(1, 1, 1, 0.05)
+		sb.border_color = Color(0.45, 0.75, 1.0, 0.95) if on else Color(1, 1, 1, 0.1)
+		sb.set_border_width_all(2 if on else 1)
+		sb.set_corner_radius_all(8)
+		sb.set_content_margin_all(2)
+		cell.add_theme_stylebox_override("panel", sb)
+		cell.custom_minimum_size = Vector2(52, 52)
+		var tr := TextureRect.new()
+		tr.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+		tr.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+		tr.texture = m.icon(part.hotbar[i]) if m != null else null
+		cell.add_child(tr)
+		if not pad:
+			var n := _label(str(i + 1), 13, WARN)
+			n.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
+			n.size_flags_vertical = Control.SIZE_SHRINK_BEGIN
+			cell.add_child(n)
+		row.add_child(cell)
+	if next != "":
+		var c := _chip(next)
+		c.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+		row.add_child(c)
+	return row
 
 func _fill_hints(building: bool, has_cargo: bool, can_repair := false) -> void:
 	_clear(_hints_box)

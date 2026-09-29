@@ -2,11 +2,13 @@ class_name ProtoBuilder
 extends Node
 ## Стройка пневмозавода роботом (в --play). Деталь ставится в клетку перед
 ## роботом, выходом туда, куда он смотрит (R — повернуть ещё).
-##   B / Y на геймпаде      — режим стройки вкл/выкл
-##   T / D-pad вправо-влево — выбрать деталь (Tab занят сменой планеты)
-##   R / RB                  — повернуть
+##   B / Y на геймпаде      — стройка: каталог деталей (ProtoBuildMenu); в каталоге
+##                            ещё раз — выйти из стройки
+##   T / D-pad вправо-влево — деталь с быстрой панели (1–8 на клавиатуре)
+##   R / RB                  — повернуть (перед роботом деталь — повернуть её)
 ##   M / LB                  — материал детали (из твёрдых материалов планеты)
-##   Пробел / A              — поставить
+##   Пробел / A              — поставить; держать и идти — труба тянется следом;
+##                            перед роботом деталь — взять такую же в руки
 ##   X / B на геймпаде       — разобрать (груз из детали — роботу)
 ##   C / X на геймпаде       — выгрузить груз робота в приёмник рядом (и вне стройки)
 ## Груз робота — метаданные "cargo" на узле робота: Array[Portion]. Бур кладёт
@@ -39,6 +41,13 @@ var mats: Array = []          # Substance — из чего можно стро�
 var active := false
 var kind_i := 0
 var mat_i := 0
+## Быстрая панель (как в Satisfactory): деталь из каталога встаёт в выбранную
+## ячейку. slot — выбранная ячейка, kind_i — ORDER-индекс детали в руках.
+const HOTBAR_N := 8
+var hotbar: Array = ["pipe", "pump", "intake", "splitter", "crusher", "tank", "relief", "lamp"]
+var slot := 0
+var menu: ProtoBuildMenu = null
+var _drag_last := Vector2i(-9999, -9999)  # последняя труба, протянутая удержанием «поставить»
 var rot := 0
 var hud: Label
 var note := ""
@@ -87,9 +96,43 @@ func setup(v: ProtoPneumaticsView, r: Node3D, materials: Array, t: ProtoTerrain 
 	hud.add_theme_color_override("font_outline_color", Color.BLACK)
 	hud.add_theme_constant_override("outline_size", 6)
 	layer.add_child(hud)
+	menu = ProtoBuildMenu.new()
+	menu.name = "build_menu"
+	add_child(menu)
+	menu.setup(self)
 
 func kind() -> String:
 	return ProtoPneumatics.ORDER[kind_i]
+
+## Взять деталь в руки: есть на панели — выбрать ячейку, нет — положить в выбранную.
+func choose(k: String) -> void:
+	var i := ProtoPneumatics.ORDER.find(k)
+	if i < 0:
+		return
+	kind_i = i
+	var h := hotbar.find(k)
+	if h >= 0:
+		slot = h
+	else:
+		hotbar[slot] = k
+	_drag_last = Vector2i(-9999, -9999)
+
+func select_slot(i: int) -> void:
+	slot = posmod(i, HOTBAR_N)
+	kind_i = ProtoPneumatics.ORDER.find(hotbar[slot])
+
+func next_material(step := 1) -> void:
+	if not mats.is_empty():
+		mat_i = posmod(mat_i + step, mats.size())
+
+## Войти в стройку — сразу с каталогом; выйти — из каталога той же кнопкой.
+func open_menu() -> void:
+	active = true
+	menu.show_menu()
+
+func exit_build() -> void:
+	active = false
+	menu.hide_menu()
 
 func material() -> Substance:
 	return mats[mat_i] if not mats.is_empty() else World.starter_substance()
@@ -154,19 +197,35 @@ func _probe(c: Vector2i) -> Dictionary:
 
 func _process(dt: float) -> void:
 	_note_t = maxf(0.0, _note_t - dt)
+	if menu != null and menu.open:
+		view.ghost("", Vector2i.ZERO, 0, material(), true)
+		_hud()
+		return                                 # каталог сам слушает кнопки
 	if robot != null and (bool(robot.get_meta("map_open", false)) or bool(robot.get_meta("ui_busy", false))):
 		return                                 # открыта карта или карточка материала: кнопки — их
+	if menu != null and Engine.get_process_frames() - menu.closed_frame <= 1:
+		_hud()
+		return                                 # кнопка, закрывшая каталог, больше ничего не делает
 	if Input.is_action_just_pressed(BUILD_MODE):
-		active = not active
+		open_menu()
+		_hud()
+		return
 	if Input.is_action_just_pressed(UNLOAD):
 		unload()
 	if active:
-		var n := ProtoPneumatics.ORDER.size()
-		if Input.is_action_just_pressed(BUILD_NEXT): kind_i = (kind_i + 1) % n
-		if Input.is_action_just_pressed(BUILD_PREV): kind_i = (kind_i + n - 1) % n
-		if Input.is_action_just_pressed(BUILD_ROTATE): rot = (rot + 1) % 4
-		if Input.is_action_just_pressed(BUILD_MATERIAL) and not mats.is_empty(): mat_i = (mat_i + 1) % mats.size()
-		if Input.is_action_just_pressed(BUILD_PLACE): place()
+		if Input.is_action_just_pressed(BUILD_NEXT): select_slot(slot + 1)
+		if Input.is_action_just_pressed(BUILD_PREV): select_slot(slot - 1)
+		if Input.is_action_just_pressed(BUILD_ROTATE): rotate_or_turn()
+		if Input.is_action_just_pressed(BUILD_MATERIAL): next_material()
+		if Input.is_action_just_pressed(BUILD_PLACE):
+			if not view.net.can_place(target()[0]):
+				pipette()
+			elif place():
+				_drag_last = target()[0]
+		elif Input.is_action_pressed(BUILD_PLACE):
+			_drag()
+		else:
+			_drag_last = Vector2i(-9999, -9999)
 		if Input.is_action_just_pressed(BUILD_REMOVE): dismantle()
 	var t := target()
 	var g := ground(t[0]) if active else {"ok": true, "lift": 0.0}
@@ -187,6 +246,58 @@ func place() -> bool:
 	part.foot = g.foot
 	_ground.clear()          # соседи теперь тянутся к высоте этой детали
 	return true
+
+## Держат «поставить» и идут с трубой в руках: труба тянется в соседнюю клетку,
+## прошлая поворачивается к новой — так же сворачивает линия (как конвейер Factorio).
+func _drag() -> void:
+	if kind() != "pipe" or _drag_last.x == -9999:
+		return
+	var c: Vector2i = target()[0]
+	var d := c - _drag_last
+	var di := ProtoPneumatics.DIRS.find(d)
+	if di < 0 or not view.net.can_place(c) or not ground(c).ok:
+		return
+	var last: Dictionary = view.net.parts.get(_drag_last, {})
+	if last.is_empty():
+		return
+	if last.kind == "pipe":
+		last.dir = di
+	var g := ground(c)
+	var part := view.net.place("pipe", c, di, material())
+	part.lift = g.lift
+	part.foot = g.foot
+	_ground.clear()
+	_drag_last = c
+
+## Перед роботом деталь — взять в руки такую же (вид, материал, поворот), как пипетка.
+func pipette() -> void:
+	var part: Dictionary = view.net.parts.get(target()[0], {})
+	if part.is_empty():
+		return
+	choose(part.kind)
+	var mi := mats.find(part.sub)
+	if mi >= 0:
+		mat_i = mi
+	var fwd := ProtoPneumatics.dir_of(view.global_transform.basis.inverse() * robot.global_transform.basis.z)
+	rot = posmod(part.dir - fwd, 4)
+	_say("В руках: %s" % ProtoPneumatics.KINDS[part.kind].n)
+
+## R: перед роботом деталь — повернуть её, иначе — призрак.
+func rotate_or_turn() -> void:
+	var c: Vector2i = target()[0]
+	if view.net.parts.has(c):
+		view.net.rotate(c)
+	else:
+		rot = (rot + 1) % 4
+
+## Что перед роботом: {name, status} или пусто.
+func aim_info() -> Dictionary:
+	if not active:
+		return {}
+	var part: Dictionary = view.net.parts.get(target()[0], {})
+	if part.is_empty():
+		return {}
+	return {"name": ProtoPneumatics.KINDS[part.kind].n, "status": str(part.status), "sub": part.sub}
 
 func dismantle() -> void:
 	var t := target()
@@ -244,6 +355,15 @@ func _hud() -> void:
 	if _note_t > 0.0:
 		lines.append(note)
 	hud.text = "\n".join(lines)
+
+## Цифры 1–8 — ячейки быстрой панели (только клавиатура, только в стройке).
+func _unhandled_input(e: InputEvent) -> void:
+	if not active or (menu != null and menu.open) or not (e is InputEventKey) or not e.pressed or e.echo:
+		return
+	var k: int = e.physical_keycode
+	if k >= KEY_1 and k <= KEY_8:
+		select_slot(k - KEY_1)
+		get_viewport().set_input_as_handled()
 
 static func _key(code: Key) -> InputEventKey:
 	var e := InputEventKey.new()

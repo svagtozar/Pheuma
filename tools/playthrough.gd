@@ -193,9 +193,13 @@ func set_build(on: bool) -> void:
 	for i in 4:
 		await settle()
 		if builder().active == on:
-			return
+			break
 		await tap(&"build_mode")
 		await frames(3)
+	# Стройка открывается с каталогом: закрыть его кнопкой «назад» (стройка остаётся).
+	if on and builder().menu != null and builder().menu.open:
+		await back()
+		check(builder().active and not builder().menu.open, "B / Esc закрыл каталог, стройка осталась")
 
 ## Выбрать деталь кнопкой «следующая» (окно рана может открыться посреди выбора).
 func _select(kind: String) -> void:

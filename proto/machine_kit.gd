@@ -16,7 +16,8 @@ extends RefCounted
 const MODELS := ["intake", "pump", "crusher", "furnace", "tank", "centrifuge", "lab"]
 ## Buildings.CATS → краска.
 const CAT_PAINT := ["store", "pneu", "proc", "logic", "goal", "store"]
-const CAT := {"intake": "pneu", "lab": "logic"}
+const CAT := {"intake": "pneu", "lab": "logic", "splitter": "pneu", "sorter": "pneu", "relief": "pneu",
+	"buffer": "store", "lamp": "logic"}
 ## Высота верха основания (салазок).
 const BASE_H := 0.26
 
