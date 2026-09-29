@@ -341,6 +341,9 @@ func rebuild() -> void:
 		b1 = Vector2i(maxi(b1.x, crust_box_hi.x), maxi(b1.y, crust_box_hi.y))
 	if b1.x < 0:
 		return
+	# Клетка запаса: гладкий край заходит на сухих соседей.
+	b0 = Vector2i(maxi(b0.x - 1, 0), maxi(b0.y - 1, 0))
+	b1 = Vector2i(mini(b1.x + 1, nx - 1), mini(b1.y + 1, nz - 1))
 	var w := b1.x - b0.x + 1
 	var hgt := b1.y - b0.y + 1
 	# Сетка рельефа сглажена и чуть выше рельефа по формуле: тонкий слой лавы
@@ -369,56 +372,165 @@ func rebuild() -> void:
 				any = true
 	if not any:
 		return
-	# Углы: среднее по показанным соседним клеткам (каждая клетка — в свои 4 угла).
-	var cw := w + 1
-	var cy := PackedFloat32Array()
-	cy.resize(cw * (hgt + 1))
-	var ch := PackedFloat32Array()
-	ch.resize(cw * (hgt + 1))
-	var cn := PackedFloat32Array()
-	cn.resize(cw * (hgt + 1))
-	for z in hgt:
-		for x in w:
-			var k := x + z * w
-			if show[k] == 0:
-				continue
-			var c0 := x + z * cw
-			for cc in [c0, c0 + 1, c0 + cw, c0 + cw + 1]:
-				cy[cc] += top[k]
-				ch[cc] += ht[k]
-				cn[cc] += 1.0
-	for cc in cy.size():
-		if cn[cc] > 0.0:
-			cy[cc] /= cn[cc]
-			ch[cc] /= cn[cc]
+	# Вершины — центры клеток. Край гладкий: «мокрость» клеток (1/0) размыта
+	# 3×3, контур — изолиния 0,5 (марширующие треугольники); квадраты у края
+	# делим на 2×2, внутри озера — по квадрату на клетку, как раньше.
+	var n := w * hgt
+	var sv := PackedFloat32Array()
+	sv.resize(n)
+	var sy := PackedFloat32Array()
+	sy.resize(n)
+	var sh := PackedFloat32Array()
+	sh.resize(n)
+	for k in n:
+		if show[k] == 1:
+			sv[k] = 1.0
+			sy[k] = top[k]
+			sh[k] = ht[k]
+	# Размытие 1-2-1 по x, потом по z (вместе — ядро 3×3 с весами 1/2/4).
+	for pass_z in 2:
+		var step := w if pass_z == 1 else 1
+		var av := sv.duplicate()
+		var ay := sy.duplicate()
+		var ah := sh.duplicate()
+		for z in hgt:
+			for x in w:
+				var k := x + z * w
+				var has_lo := (z > 0) if pass_z == 1 else (x > 0)
+				var has_hi := (z < hgt - 1) if pass_z == 1 else (x < w - 1)
+				var v := av[k] * 2.0
+				var y := ay[k] * 2.0
+				var h := ah[k] * 2.0
+				if has_lo:
+					v += av[k - step]
+					y += ay[k - step]
+					h += ah[k - step]
+				if has_hi:
+					v += av[k + step]
+					y += ay[k + step]
+					h += ah[k + step]
+				sv[k] = v
+				sy[k] = y
+				sh[k] = h
+	var vb := PackedFloat32Array()
+	vb.resize(n)
+	var hc := top.duplicate()
+	var hh := ht.duplicate()
+	for k in n:
+		var bl := sv[k] / 16.0
+		if show[k] == 1:
+			# Мокрая клетка всегда внутри, сухая снаружи: размытие лишь двигает
+			# контур между ними (иначе тонкие языки лавы в клетку шириной пропадали).
+			vb[k] = maxf(bl, 0.6)
+		else:
+			vb[k] = minf(bl, 0.45)
+			if sv[k] > 0.0:
+				hc[k] = sy[k] / sv[k]   # сухая клетка у края — высота соседей
+				hh[k] = sh[k] / sv[k]
 	var verts := PackedVector3Array()
 	var norms := PackedVector3Array()
 	var cols := PackedColorArray()
-	for z in hgt:
-		for x in w:
-			if show[x + z * w] == 0:
+	var ox := b0.x + 0.5
+	var oz := b0.y + 0.5
+	for z in hgt - 1:
+		for x in w - 1:
+			var k0 := x + z * w
+			var k1 := k0 + 1
+			var k2 := k0 + w
+			var k3 := k2 + 1
+			var v0 := vb[k0]
+			var v1 := vb[k1]
+			var v2 := vb[k2]
+			var v3 := vb[k3]
+			if v0 < 0.5 and v1 < 0.5 and v2 < 0.5 and v3 < 0.5:
 				continue
-			var c0 := x + z * cw
-			var p0 := Vector3(b0.x + x, cy[c0], b0.y + z)
-			var p1 := Vector3(b0.x + x + 1, cy[c0 + 1], b0.y + z)
-			var p2 := Vector3(b0.x + x + 1, cy[c0 + cw + 1], b0.y + z + 1)
-			var p3 := Vector3(b0.x + x, cy[c0 + cw], b0.y + z + 1)
-			var h0 := ch[c0]
-			var h1 := ch[c0 + 1]
-			var h2 := ch[c0 + cw + 1]
-			var h3 := ch[c0 + cw]
-			var n1 := (p2 - p0).cross(p1 - p0).normalized()
-			var n2 := (p3 - p0).cross(p2 - p0).normalized()
-			verts.append_array([p0, p1, p2, p0, p2, p3])
-			norms.append_array([n1, n1, n1, n2, n2, n2])
-			cols.append_array([Color(h0, h0, h0), Color(h1, h1, h1), Color(h2, h2, h2),
-				Color(h0, h0, h0), Color(h2, h2, h2), Color(h3, h3, h3)])
+			var px := ox + x
+			var pz := oz + z
+			if v0 > 0.99 and v1 > 0.99 and v2 > 0.99 and v3 > 0.99:
+				# Внутри: квадрат целиком.
+				var a0 := Vector3(px, hc[k0], pz)
+				var a1 := Vector3(px + 1, hc[k1], pz)
+				var a2 := Vector3(px, hc[k2], pz + 1)
+				var a3 := Vector3(px + 1, hc[k3], pz + 1)
+				_tri(a0, a1, a3, hh[k0], hh[k1], hh[k3], verts, norms, cols)
+				_tri(a0, a3, a2, hh[k0], hh[k3], hh[k2], verts, norms, cols)
+				continue
+			# У края: 3×3 точки (шаг 0,5 м) билинейно, 4 квадратика по 2 треугольника.
+			var gp := PackedVector3Array()
+			var gv := PackedFloat32Array()
+			var gt := PackedFloat32Array()
+			for j in 3:
+				var fw := j * 0.5
+				for i in 3:
+					var fu := i * 0.5
+					var y := lerpf(lerpf(hc[k0], hc[k1], fu), lerpf(hc[k2], hc[k3], fu), fw)
+					gp.append(Vector3(px + fu, y, pz + fw))
+					gv.append(lerpf(lerpf(v0, v1, fu), lerpf(v2, v3, fu), fw))
+					gt.append(lerpf(lerpf(hh[k0], hh[k1], fu), lerpf(hh[k2], hh[k3], fu), fw))
+			for j in 2:
+				for i in 2:
+					var c0 := i + j * 3
+					var c1 := c0 + 1
+					var c2 := c0 + 4
+					var c3 := c0 + 3
+					_march_tri(gp[c0], gv[c0], gt[c0], gp[c1], gv[c1], gt[c1], gp[c2], gv[c2], gt[c2], verts, norms, cols)
+					_march_tri(gp[c0], gv[c0], gt[c0], gp[c2], gv[c2], gt[c2], gp[c3], gv[c3], gt[c3], verts, norms, cols)
+	if verts.is_empty():
+		return
 	var arr := []
 	arr.resize(Mesh.ARRAY_MAX)
 	arr[Mesh.ARRAY_VERTEX] = verts
 	arr[Mesh.ARRAY_NORMAL] = norms
 	arr[Mesh.ARRAY_COLOR] = cols
 	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arr)
+
+## Часть треугольника, где мокрость ≥ 0,5 (марширующие треугольники).
+static func _march_tri(pa: Vector3, va: float, ta: float, pb: Vector3, vb: float, tb: float,
+		pc: Vector3, vc: float, tc: float, verts: PackedVector3Array, norms: PackedVector3Array,
+		cols: PackedColorArray) -> void:
+	var ia := va >= 0.5
+	var ib := vb >= 0.5
+	var ic := vc >= 0.5
+	if ia and ib and ic:
+		_tri(pa, pb, pc, ta, tb, tc, verts, norms, cols)
+		return
+	if not ia and not ib and not ic:
+		return
+	# Повернём, чтобы «особая» вершина (одна внутри или одна снаружи) была первой.
+	if ia == ib:
+		var p := pa; var v := va; var t := ta
+		pa = pc; va = vc; ta = tc
+		pc = pb; vc = vb; tc = tb
+		pb = p; vb = v; tb = t
+	elif ia == ic:
+		var p := pa; var v := va; var t := ta
+		pa = pb; va = vb; ta = tb
+		pb = pc; vb = vc; tb = tc
+		pc = p; vc = v; tc = t
+	var sab := (0.5 - va) / (vb - va)
+	var sac := (0.5 - va) / (vc - va)
+	var qab := pa.lerp(pb, sab)
+	var qac := pa.lerp(pc, sac)
+	var tab := lerpf(ta, tb, sab)
+	var tac := lerpf(ta, tc, sac)
+	if va >= 0.5:
+		_tri(pa, qab, qac, ta, tab, tac, verts, norms, cols)
+	else:
+		_tri(qab, pb, pc, tab, tb, tc, verts, norms, cols)
+		_tri(qab, pc, qac, tab, tc, tac, verts, norms, cols)
+
+## Треугольник лицом вверх (порядок вершин — по часовой, если смотреть сверху).
+static func _tri(p0: Vector3, p1: Vector3, p2: Vector3, h0: float, h1: float, h2: float,
+		verts: PackedVector3Array, norms: PackedVector3Array, cols: PackedColorArray) -> void:
+	var nn := (p2 - p0).cross(p1 - p0)
+	if nn.y < 0.0:
+		var tp := p1; p1 = p2; p2 = tp
+		var th := h1; h1 = h2; h2 = th
+		nn = -nn
+	var n := nn.normalized()
+	verts.append(p0); verts.append(p1); verts.append(p2)
+	norms.append(n); norms.append(n); norms.append(n)
+	cols.append(Color(h0, h0, h0)); cols.append(Color(h1, h1, h1)); cols.append(Color(h2, h2, h2))
 
 # ---------------------------------------------------------------- корка
 
