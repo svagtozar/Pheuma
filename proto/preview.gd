@@ -55,6 +55,8 @@ extends Node3D
 ##   иней по всему шару; он же тает у завода и следом ползёт поросль; поросль,
 ##   влага и взрыхлённый грунт у завода расползаются (для кадра до/после)
 ##   --time=0..1 — время суток для кадра (0 — полночь, 0,25 — рассвет, 0,5 — полдень)
+##   --rapier=pure|hybrid — опыт: извержение и приток озера частицами Rapier
+##   (tools/rapier.sh), --wait=с — снять кадр не раньше (частицы летят в реальном времени)
 ##   --flow=с — прокрутить живые жидкости вперёд (паводок, извержение, корка); с --view=volcano|flood
 ##   --robot=clean (по умолчанию; другой вариант из RobotDesigns или old — прежний
 ##   каркас; корпус — металл планеты)
@@ -151,6 +153,8 @@ var climate: ProtoClimateView # климат в сцене: небо, жидко
 var terra_demo := ""         # --terra=газ,кг[,радиус]: климат уже поменян (для кадра «после»)
 var dig_demo := false        # --dig: у робота выкопана яма и насыпан вал (для кадра)
 var liquid_life: ProtoLiquidLife   # живые озеро и лава (паводок, извержения)
+var rapier_mode := ""         # --rapier=pure|hybrid: опыт с жидкостью Rapier (ProtoRapierFluid)
+var shot_wait := 1.5          # --wait=с: кадр не раньше (частицам Rapier нужно время)
 var flow_time := 0.0         # --flow=с: прокрутить жидкости вперёд (кадры паводка и извержения)
 var hazard: Substance        # лава или кислота планеты (как клетки 2D), иначе null
 var hurt_prefix := ""        # --auto=hurt: кадры прочности
@@ -227,6 +231,8 @@ func _ready() -> void:
 			dig_demo = true
 			want_run = true
 		elif a.begins_with("--flow="): flow_time = float(a.substr(7))
+		elif a.begins_with("--rapier="): rapier_mode = a.substr(9)
+		elif a.begins_with("--wait="): shot_wait = float(a.substr(7))
 		elif a.begins_with("--cam="): cam_at = Array(a.substr(6).split_floats(","))
 	if auto == "drill":
 		RobotDesigns.tool_r = "drill"
@@ -559,6 +565,8 @@ func _liquids() -> void:
 		var c := ProtoTerrain.VOLC_C
 		var lava_sm := _liquid_surface("lava", hazard, 23.6, Callable(), Vector3(c.x, 24.4, c.y), Vector3(3, 0.5, 3), lava)
 		_liquid_zone(hazard, lava.level_at, lava.wet_at, lava_sm)
+	if rapier_mode != "":
+		liquid_life.setup_rapier(rapier_mode, planet.ambient_temp)
 	if flow_time > 0.0:
 		liquid_life.advance(flow_time)
 		print("Жидкости через %d с: озеро %+.2f м, паводок %.2f, лава %.0f м³, корка %d клеток" % [flow_time,
@@ -2005,7 +2013,7 @@ func _process(dt: float) -> void:
 		var cap := get_node_or_null("caption") as CanvasLayer
 		if cap:
 			cap.visible = not lab_panel.open and run == null   # в ране слева сверху — цель
-	if shot_path != "" and _t > 1.5 and not _shot_wait and (ground_ready() or _t > 10.0):
+	if shot_path != "" and _t > shot_wait and not _shot_wait and (ground_ready() or _t > 10.0):
 		var img := get_viewport().get_texture().get_image()
 		img.save_png(shot_path)
 		print("Кадров в секунду: ", Engine.get_frames_per_second(), " — скриншот: ", shot_path)

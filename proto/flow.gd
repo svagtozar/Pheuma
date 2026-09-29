@@ -136,6 +136,18 @@ func add_source(x: float, z: float, q: float) -> Dictionary:
 	sources.append(s)
 	return s
 
+## Долить объём vol (м³) в клетку i с жаром heat (частица Rapier осела, ProtoRapierFluid).
+func pour(i: int, vol: float, h := 1.0) -> void:
+	if i < 0:
+		return
+	var add := vol          # клетка 1×1 м: объём = толщина слоя
+	if cool > 0.0:
+		heat[i] = (heat[i] * d[i] + h * add) / (d[i] + add)
+	d[i] += add
+	_grow(i % nx, i / nx)
+	_calm = 0
+	dirty = true
+
 func _grow(x: int, z: int) -> void:
 	lo = Vector2i(mini(lo.x, x), mini(lo.y, z))
 	hi = Vector2i(maxi(hi.x, x), maxi(hi.y, z))
