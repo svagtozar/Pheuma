@@ -243,7 +243,7 @@ static func apply(r: Node3D, d: Dictionary) -> void:
 			r.terrain_changed(box)
 	var dg = r.get("digger")
 	if dg != null:
-		dg.soil = int(d.get("soil", 0))
+		dg.soil = float(d.get("soil", 0))
 	var dn = r.get("daynight")
 	if dn != null and d.has("day_time") and dn.running:
 		dn.time = float(d.day_time)

@@ -308,8 +308,8 @@ func drop(row: Array) -> void:
 	if row.is_empty():
 		return
 	if row[0] == "soil":
-		if digger != null and int(digger.soil) > 0:
-			_say("Грунт высыпан: %d вёдер" % int(digger.soil))
+		if digger != null and ceili(digger.soil - 0.05) > 0:
+			_say("Грунт высыпан: %d вёдер" % ceili(digger.soil - 0.05))
 			digger.soil = 0
 	elif row[0] == "cargo" and row[1] < cargo().size():
 		var p: Portion = cargo()[row[1]]
@@ -327,7 +327,7 @@ func _say(s: String) -> void:
 
 func _refresh() -> void:
 	var c = box_cell()
-	var sig := [pad, c, int(digger.soil) if digger != null else -1, _note_t > 0.0, note]
+	var sig := [pad, c, ceili(digger.soil - 0.05) if digger != null else -1, _note_t > 0.0, note]
 	for p: Portion in cargo():
 		sig.append([p.substance.id, snappedf(p.mass, 0.1)])
 	if c != null:
@@ -489,7 +489,7 @@ func _row(p: Portion, row: Array) -> Button:
 
 ## Бункер грунта: вёдра из SOIL_MAX; A или Y — высыпать.
 func _soil_row() -> Button:
-	var n := int(digger.soil)
+	var n := ceili(digger.soil - 0.05)
 	var mx := int(digger.SOIL_MAX)
 	var b := _button(["soil", 0])
 	b.custom_minimum_size.y = 64
