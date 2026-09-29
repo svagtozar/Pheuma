@@ -138,6 +138,13 @@ var yard_light: OmniLight3D   # прожектор над заводом — г�
 var deck: ProtoDeck           # облегчённая графика (Steam Deck или --deck)
 var health: ProtoHealth      # прочность корпуса робота: урон, починка, поломка
 var liquid_zones: Array = [] # жидкости для урона: {sub, temp, level, area}
+var cam_at: Array = []           # --cam=x,y,z,tx,ty,tz
+var _river_mi: MeshInstance3D    # гладь реки (пересобирается после правки рельефа)
+var _river_wet := PackedByteArray()   # мокрые клетки русла (ProtoLiquids.sloped)
+var _river_spray: CPUParticles3D # брызги внизу водопадов реки (в дыру, в яму)
+var _river_in_lake: Callable
+var _liq_box := AABB()           # правки рельефа, ещё не учтённые жидкостями
+var _liq_t := 0.0
 var _liq_root: Node3D        # узлы жидкостей (пересобираются, когда климат плавит или морозит)
 var digger: ProtoDigger      # бур копает грунт, насыпь (правка рельефа)
 var climate: ProtoClimateView # климат в сцене: небо, жидкости, флора
@@ -220,6 +227,7 @@ func _ready() -> void:
 			dig_demo = true
 			want_run = true
 		elif a.begins_with("--flow="): flow_time = float(a.substr(7))
+		elif a.begins_with("--cam="): cam_at = Array(a.substr(6).split_floats(","))
 	if auto == "drill":
 		RobotDesigns.tool_r = "drill"
 		view = "cave"
@@ -351,6 +359,7 @@ func _ready() -> void:
 		add_child(digger)
 		digger.setup(terrain, [get_node("ground"), get_node("ground_cave")], robot)
 		digger.on_edit = func(c: Vector3, r: float, _add: bool):
+			liquids_edited(AABB(c - Vector3.ONE * r, Vector3.ONE * r * 2.0))
 			if climate != null and climate.flora != null:
 				climate.flora.terrain_changed(c, r)
 		pl.digger = digger
@@ -477,6 +486,9 @@ func _liquid_mats() -> Array:
 	return planet.materials.filter(func(m): return m.phase_at(planet.ambient_temp) == Substance.Phase.LIQUID)
 
 func _liquids() -> void:
+	_river_mi = null
+	_river_wet = PackedByteArray()
+	_liq_box = AABB()
 	_liq_root = Node3D.new()
 	_liq_root.name = "liquids"
 	add_child(_liq_root)
@@ -496,9 +508,17 @@ func _liquids() -> void:
 	_sea_sub = river_mat
 	var lake_mat: Substance = hazard if hazard != null else (liq[1] if liq.size() > 1 else liq[0])
 	var cave_mat: Substance = liq[-1] if not liq.is_empty() else hazard
+	# Озеро живое (ProtoLiquidLife) и занимает свою котловину вместе с устьем:
+	# русло там не рисуем, иначе неподвижная гладь реки висела бы над озером в межень.
+	var in_lake := func(x, z): return Vector2(x, z).distance_to(terrain.lake_c) < terrain.lake_r + 4.5
 	var rv := MeshInstance3D.new()
-	rv.mesh = ProtoLiquids.sloped_mesh(terrain, func(x, z): return terrain.river_level_at(x, z),
-		func(x, z): return abs(z - terrain.river_z(x)) < 6.0 and x > terrain.lake_c.x + 2.0)
+	rv.name = "river"
+	rv.mesh = ArrayMesh.new()
+	_river_in_lake = in_lake
+	var rs := ProtoLiquids.sloped(terrain, _river_level, _river_area, in_lake, rv.mesh, _river_span)
+	_river_wet = rs[1]
+	_river_spray = ProtoLiquids.spray(rs[2], river_mat.color)
+	_liq_root.add_child(_river_spray)
 	var river_sm := ProtoLiquids.material(river_mat, planet.ambient_temp)
 	# Течение к озеру (дно русла понижается к нему): полосы пены сносятся, робота сносит.
 	river_sm.set_shader_parameter("flow", Vector2(-1, 0) * ProtoSwim.flow_speed(ProtoSwim.viscosity(river_mat)))
@@ -510,18 +530,18 @@ func _liquids() -> void:
 		_liq_root.add_child(ProtoLiquids.vapor(Vector3(40, terrain.river_level_at(40) + 0.8, 58), Vector3(38, 0.5, 5), river_mat.color, rl.haze))
 	# Озеро живое (ProtoLiquidLife): паводок выходит из берегов, на вулкане
 	# лава из кратера стекает в низины и застывает.
-	var in_lake := func(x, z): return Vector2(x, z).distance_to(terrain.lake_c) < terrain.lake_r + 4.5
 	liquid_life = ProtoLiquidLife.new()
 	liquid_life.name = "liquid_life"
 	_liq_root.add_child(liquid_life)
 	var lake := liquid_life.setup_lake(terrain, lake_mat, terrain.lake_level, in_lake, seed_value)
-	var lake_sm := _liquid_surface(lake_mat, terrain.lake_level, in_lake,
+	lake.blocked = _river_wet.duplicate()
+	var lake_sm := _liquid_surface("lake", lake_mat, terrain.lake_level, in_lake,
 		Vector3(terrain.lake_c.x, terrain.lake_level + 0.8, terrain.lake_c.y), Vector3(10, 0.5, 10), lake)
 	_liquid_zone(lake_mat, lake.level_at, lake.wet_at, lake_sm)
 	if style.volcano and hazard != null:
 		var lava := liquid_life.setup_volcano(hazard)
 		var c := ProtoTerrain.VOLC_C
-		var lava_sm := _liquid_surface(hazard, 23.6, Callable(), Vector3(c.x, 24.4, c.y), Vector3(3, 0.5, 3), lava)
+		var lava_sm := _liquid_surface("lava", hazard, 23.6, Callable(), Vector3(c.x, 24.4, c.y), Vector3(3, 0.5, 3), lava)
 		_liquid_zone(hazard, lava.level_at, lava.wet_at, lava_sm)
 	if flow_time > 0.0:
 		liquid_life.advance(flow_time)
@@ -531,11 +551,67 @@ func _liquids() -> void:
 	var pc: Vector3 = terrain.pool_c()
 	var lv: float = terrain.pool_level()
 	var in_pool := func(x, z): return Vector2(x, z).distance_to(Vector2(pc.x, pc.z)) < terrain.pool_r + 1.0
-	var pool_sm := _liquid_surface(cave_mat, lv, in_pool, Vector3(pc.x, lv + 0.6, pc.z), Vector3(2.5, 0.3, 2.5))
+	var pool_sm := _liquid_surface("pool", cave_mat, lv, in_pool, Vector3(pc.x, lv + 0.6, pc.z), Vector3(2.5, 0.3, 2.5),
+		null, ProtoLiquids.disc_mesh(Vector2(pc.x, pc.z), terrain.pool_surface_r(), lv))
 	_liquid_zone(cave_mat, func(_x, _z): return lv, in_pool, pool_sm)
-	# Русло — последним: у устья озеро важнее.
-	var in_river := func(x, z): return abs(z - terrain.river_z(x)) < 6.0 and x > terrain.lake_c.x + 2.0
-	_liquid_zone(river_mat, func(x, z): return terrain.river_level_at(x, z), in_river, river_sm, river_flow)
+	# Русло — последним: у устья озеро важнее. Зона — только мокрые клетки: в ходе
+	# под руслом робот не «под водой».
+	_liquid_zone(river_mat, _river_level, river_wet_at, river_sm, river_flow)
+	_river_mi = rv
+
+func _river_level(x: float, z: float) -> float:
+	return terrain.river_level_at(x, z)
+
+## Полоса клеток русла в столбце x (для ProtoLiquids.sloped).
+func _river_span(x: int) -> Vector2i:
+	var rz := terrain.river_z(x + 0.5)
+	return Vector2i(int(floor(rz - 7.0)), int(ceil(rz + 7.0)))
+
+func _river_area(x: float, z: float) -> bool:
+	return abs(z - terrain.river_z(x)) < 6.0 and x > terrain.lake_c.x + 2.0
+
+## Вода реки в точке: клетка русла, где гладь лежит на дне (не над дырой).
+func river_wet_at(x: float, z: float) -> bool:
+	var cx := int(floor(x))
+	var cz := int(floor(z))
+	if cx < 0 or cz < 0 or cx >= terrain.sx or cz >= terrain.sz or _river_wet.is_empty():
+		return false
+	return _river_wet[cx + cz * terrain.sx] == 1
+
+## Рельеф правили (бур, насыпь, загрузка): живые жидкости пересчитывают дно
+## в задетых клетках и перетекают в ямы; гладь реки пересобирается (не чаще
+## раза в LIQ_REBUILD с), чтобы не висеть над ямой.
+const LIQ_REBUILD := 0.4
+func liquids_edited(box: AABB) -> void:
+	if liquid_life != null:
+		for f in liquid_life.flows():
+			f.reground(box)
+	if _river_mi != null:
+		_liq_box = box if _liq_box.size == Vector3.ZERO else _liq_box.merge(box)
+
+func _liquids_rebuild(dt: float) -> void:
+	if _liq_box.size == Vector3.ZERO:
+		return
+	_liq_t -= dt
+	if _liq_t > 0.0:
+		return
+	_liq_t = LIQ_REBUILD
+	var box := _liq_box.grow(1.0)
+	_liq_box = AABB()
+	if is_instance_valid(_river_mi):
+		var zr := Rect2(Vector2(box.position.x, box.position.z), Vector2(box.size.x, box.size.z))
+		var near := false
+		for x in range(int(zr.position.x), int(zr.end.x) + 1):
+			if absf(terrain.river_z(x) - zr.get_center().y) < zr.size.y * 0.5 + 7.0:
+				near = true
+				break
+		if near:
+			var rs := ProtoLiquids.sloped(terrain, _river_level, _river_area, _river_in_lake, _river_mi.mesh, _river_span)
+			_river_wet = rs[1]
+			if is_instance_valid(_river_spray):
+				ProtoLiquids.set_spray(_river_spray, rs[2])
+			if liquid_life != null and liquid_life.lake != null:
+				liquid_life.lake.blocked = _river_wet.duplicate()
 
 ## Направление течения реки в точке (вниз по руслу, к озеру).
 func river_flow(x: float, _z: float) -> Vector3:
@@ -549,9 +625,15 @@ func _liquid_zone(s: Substance, level: Callable, area: Callable, mat: Material =
 		"mat": mat, "flow": flow})
 
 ## flow — живая жидкость (ProtoFlow): сетка — её, пересобирается на месте.
-func _liquid_surface(s: Substance, level: float, area: Callable, vpos: Vector3, vext: Vector3, flow: ProtoFlow = null) -> ShaderMaterial:
+## mesh — готовая сетка глади (круглая лужа), иначе — по клеткам области.
+func _liquid_surface(nm: String, s: Substance, level: float, area: Callable, vpos: Vector3, vext: Vector3,
+		flow: ProtoFlow = null, mesh: Mesh = null) -> ShaderMaterial:
 	var mi := MeshInstance3D.new()
-	mi.mesh = flow.mesh if flow != null else ProtoLiquids.surface_mesh(terrain, level, area)
+	mi.name = nm
+	if mesh != null:
+		mi.mesh = mesh
+	else:
+		mi.mesh = flow.mesh if flow != null else ProtoLiquids.surface_mesh(terrain, level, area)
 	var sm := ProtoLiquids.material(s, planet.ambient_temp)
 	if flow != null and flow.cool > 0.0:
 		sm.set_shader_parameter("vheat", true)
@@ -595,11 +677,11 @@ func _ice(s: Substance) -> void:
 	m.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 	m.roughness = 0.18
 	m.metallic = 0.1
+	var in_lake := func(x, z): return Vector2(x, z).distance_to(terrain.lake_c) < terrain.lake_r + 4.5
 	var parts := [
-		ProtoLiquids.sloped_mesh(terrain, func(x, z): return terrain.river_level_at(x, z) - 0.25,
-			func(x, z): return abs(z - terrain.river_z(x)) < 6.0 and x > terrain.lake_c.x + 2.0),
-		ProtoLiquids.surface_mesh(terrain, terrain.lake_level - 0.25,
-			func(x, z): return Vector2(x, z).distance_to(terrain.lake_c) < terrain.lake_r + 4.5)]
+		ProtoLiquids.sloped(terrain, func(x, z): return terrain.river_level_at(x, z) - 0.25, _river_area, in_lake,
+			null, _river_span)[0],
+		ProtoLiquids.surface_mesh(terrain, terrain.lake_level - 0.25, in_lake)]
 	for mesh in parts:
 		var mi := MeshInstance3D.new()
 		mi.name = "ice"
@@ -691,6 +773,7 @@ func terrain_changed(box: AABB) -> void:
 		var ch := get_node_or_null(n) as ProtoTerrainChunks
 		if ch != null:
 			ch.rebuild(box)
+	liquids_edited(box)
 	if climate != null and climate.flora != null:
 		climate.flora.terrain_changed(box.get_center(), box.size.x * 0.5)
 
@@ -1517,6 +1600,10 @@ func _robot_and_camera() -> void:
 			var right := fwd.cross(Vector3.UP).normalized()
 			cam.position = rp - fwd * 4.2 + right * 1.3 + Vector3(0, 2.6, 0)
 			cam.look_at(rp + fwd * 12.0 + Vector3(0, 0.2, 0))
+	if cam_at.size() >= 6:
+		# --cam=x,y,z,цель x,y,z: кадр с произвольной точки (проверка жидкостей и пр.).
+		cam.position = Vector3(cam_at[0], cam_at[1], cam_at[2])
+		cam.look_at(Vector3(cam_at[3], cam_at[4], cam_at[5]))
 	cam.current = true
 
 ## Где робот высаживается и собирается после поломки: у площадки завода, но не
@@ -1855,6 +1942,7 @@ func _controls_menu() -> void:
 func _process(dt: float) -> void:
 	_t += dt
 	_night_lights()
+	_liquids_rebuild(dt)
 	_map_t -= dt
 	if map_data != null and _map_t <= 0.0:
 		_map_t = 0.5

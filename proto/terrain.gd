@@ -306,6 +306,11 @@ func _site_h(x: float, z: float) -> float:
 	var b := bed_at(x)
 	if x > lake_c.x - 2.0:
 		h = min(h, b + max(0.0, dr - 1.6) * 0.8)
+		# Вал вдоль берега: где рельеф рядом с руслом ниже воды (река идёт по
+		# гребню), берег насыпан на 0,8 м выше глади и сходит на нет откосом —
+		# иначе вода стекала бы сбоку с обрыва.
+		if dr < 14.0:
+			h = max(h, min(b + max(0.0, dr - 1.6) * 0.8, b + 1.7) - max(0.0, dr - 4.0) * 0.8)
 	# Котловина озера — ниже воды у устья; к середине глубже (≈4 м): там робот
 	# уходит под воду с головой (ProtoSwim).
 	var dl := Vector2(x, z).distance_to(lake_c)
@@ -352,32 +357,43 @@ func _site_density(x: float, y: float, z: float, h := NAN) -> float:
 		if not fs[4].has_point(Vector2(x, z)):
 			continue
 		var dist := _seg_dist(Vector2(x, z), fs[0], fs[1])
-		if dist < 3.0 and y > h - fs[3] - 1.0:
+		if dist < 3.0 and y > h - fs[3] - 1.0 and y < river_roof(x, z):
 			var w: float = fs[2] * clampf((y - (h - fs[3])) / fs[3], 0.0, 1.0)
 			d = min(d, dist - w + noise.get_noise_2d(x * 4.0, z * 4.0) * 0.25)
+	var dpool := INF
+	var dtun := INF
 	# Зал, озерцо и ход — только рядом с ними: дальше они всё равно не ближе
 	# поверхности (до build_field коробки нет — считаем всегда).
 	if cave_near.size == Vector3.ZERO or cave_near.has_point(Vector3(x, y, z)):
 		# Пещерный зал — эллипсоид, форма по тегам.
-		d = min(d, cave_dist(Vector3(x, y, z)))
+		var dc := cave_dist(Vector3(x, y, z))
 		# Чаша подземного озерца в дальней части зала.
 		var pq := Vector3(x, y, z) - (_pool_c if cave_near.size != Vector3.ZERO else pool_c())
 		pq.y *= 2.6
-		d = min(d, pq.length() - pool_r)
-		# Ход от склона к залу: капсула с извилиной.
-		var a := cave_entry
-		var b := cave_c + Vector3(0, 1, 0)
-		var t: float = clamp((Vector3(x, y, z) - a).dot(b - a) / (b - a).length_squared(), 0.0, 1.0)
-		var p := a.lerp(b, t) + Vector3(sin(t * 6.0) * 2.0, 0, 0)
-		d = min(d, Vector3(x, y, z).distance_to(p) - 2.4)
-	# Редкие гладкие червоточины глубже поверхности — но не у пещеры.
-	if style.worms > 0.0 and y < h - 4.0 and not cave_box.has_point(Vector3(x, y, z)):
+		dpool = pq.length() - pool_r
+		dc = min(dc, dpool)
+		# Ход от склона к залу: капсула с извилиной; под руслом провисает ниже дна.
+		# (по плану: ось у реки провисает, и по наклонному отрезку t уехало бы).
+		var a := Vector2(cave_entry.x, cave_entry.z)
+		var ab := Vector2(cave_c.x, cave_c.z) - a
+		var t: float = clamp((Vector2(x, z) - a).dot(ab) / ab.length_squared(), 0.0, 1.0)
+		dtun = Vector3(x, y, z).distance_to(tunnel_point(t)) - TUN_R
+		dc = min(dc, dtun)
+		if dc < d:
+			# Свод у реки не выше river_roof(): река течёт над залом и ходом, а не
+			# проваливается в них.
+			dc = maxf(dc, y - river_roof(x, z))
+		d = min(d, dc)
+	# Редкие гладкие червоточины глубже поверхности — но не у пещеры и не под рекой.
+	if style.worms > 0.0 and y < h - 4.0 and not cave_box.has_point(Vector3(x, y, z)) \
+			and y < river_roof(x, z) - 1.0:
 		var w := absf(noise3.get_noise_3d(x, y * 1.4, z))
 		d = min(d, (w - style.worms) * 30.0)
 	if not edits.is_empty():
 		d = _apply_edits(x, y, z, d)
-	# Пол у края карты и дно — всегда порода.
-	if y < 1.5:
+	# Пол у края карты и дно — всегда порода (кроме чаши озерца: зал бывает
+	# на самом дне, и чаша тогда уходит ниже; и хода под низким руслом).
+	if y < 1.5 and not ((dpool < 0.0 or dtun < 0.0) and y > TUN_FLOOR):
 		d = max(d, 1.0)
 	return d
 
@@ -497,19 +513,115 @@ func cave_floor_rel(off: Vector2) -> float:
 		f = maxf(f, -cave_h * 0.6)
 	return f
 
+const TUN_R := 2.4            # радиус хода в пещеру, м
+const TUN_FLOOR := 0.3        # ниже пол хода не опускается (под рекой — ниже каменного дна)
+const TUN_SLOPE := 1.0        # круче ход к реке не ныряет (робот лезет и по 1,6)
+const ROOF := 1.8             # толща породы между дном русла и сводом под ним, м
+const ROOF_DZ := 6.5          # до скольки метров от оси русла свод держится под дном
+const ROOF_OUT := 10.0        # дальше от оси русла свод не ограничен
+
+## Выше этого у реки нельзя вырезать зал и ход: под руслом и берегами — толща
+## ROOF под дном (тоньше двух узлов поля — сетка теряет перемычку), дальше от
+## воды свод поднимается откосом. Прежде зал и ход пробивали дно и берег, и
+## река срывалась в квадратную дыру. Где русло почти на каменном дне, свод не
+## ниже роста робота над полом хода: там перемычка тоньше.
+func river_roof(x: float, z: float) -> float:
+	var dz := absf(z - river_z(x))
+	if x <= lake_c.x - 2.0 or dz > ROOF_OUT:
+		return INF
+	# Дно к озеру только понижается, но бывает уступом: свод — по дну на 1,5 м
+	# ниже по течению, чтобы и под уступом перемычка была не тоньше ROOF.
+	return maxf(bed_at(x - 1.5) - ROOF + maxf(0.0, dz - ROOF_DZ) * 1.5, TUN_FLOOR + 2.6)
+
+## Точка оси хода от входа (t = 0) к залу (t = 1). Под рекой ось опускается под
+## river_roof (свод срезан ровно, до пола — в рост робота), к ней — не круче
+## TUN_SLOPE; у входа — как было.
+func tunnel_point(t: float) -> Vector3:
+	var p := _tunnel_base(t)
+	if not _tun_cap.is_empty():
+		var f := t * (_tun_cap.size() - 1)
+		var i := mini(int(f), _tun_cap.size() - 2)
+		p.y = minf(p.y, lerpf(_tun_cap[i], _tun_cap[i + 1], f - i))
+	return p
+
+## Ось хода без провисания: прямая от входа к залу с извилиной поперёк (тогда
+## проекция точки на отрезок в плане даёт то же t).
+func _tunnel_base(t: float) -> Vector3:
+	var ab := Vector2(cave_c.x - cave_entry.x, cave_c.z - cave_entry.z).normalized()
+	return cave_entry.lerp(cave_c + Vector3(0, 1, 0), t) + Vector3(-ab.y, 0, ab.x) * sin(t * 6.0) * 2.0
+
+## Потолок оси хода по t: под рекой — river_roof − 0,2, от этих мест вверх
+## откосом TUN_SLOPE (по длине хода); пусто, если ход реку не задевает.
+var _tun_cap := PackedFloat32Array()
+
+func _tunnel_cap() -> void:
+	_tun_cap = PackedFloat32Array()
+	const N := 64
+	var need := PackedFloat32Array()
+	var any := false
+	for i in N + 1:
+		var p := _tunnel_base(float(i) / N)
+		var r := river_roof(p.x, p.z) - 0.2
+		need.append(maxf(r, TUN_R + TUN_FLOOR))
+		any = any or r < p.y
+	if not any:
+		return
+	var step := Vector2(cave_c.x - cave_entry.x, cave_c.z - cave_entry.z).length() / N * TUN_SLOPE
+	_tun_cap.resize(N + 1)
+	for i in N + 1:
+		var c := INF
+		for j in N + 1:
+			c = minf(c, need[j] + absi(i - j) * step)
+		_tun_cap[i] = c
+
 static func _seg_dist(p: Vector2, a: Vector2, b: Vector2) -> float:
 	var t := clampf((p - a).dot(b - a) / (b - a).length_squared(), 0.0, 1.0)
 	return p.distance_to(a.lerp(b, t))
 
 var pool_r := 3.0
 
-## Центр чаши озерца: у пола зала, дальше от входа.
-func pool_c() -> Vector3:
-	return cave_c + Vector3(2.6, cave_floor_rel(Vector2(2.6, -2.2)) + 0.9, -2.2)
+const POOL_OFF := Vector2(2.6, -2.2)   # чаша озерца от центра зала, м
 
-## Уровень воды в чаше — чуть ниже края (пола зала).
+## Центр чаши озерца: в полу зала, дальше от входа. Чаша сплюснута (полувысота
+## pool_r / 2,6 ≈ 1,15 м): центр чуть выше края — вода глубиной около 0,8 м.
+func pool_c() -> Vector3:
+	return Vector3(cave_c.x + POOL_OFF.x, pool_rim() + 0.1, cave_c.z + POOL_OFF.y)
+
+## Уровень воды в чаше — чуть ниже края (самого низкого места пола вокруг).
 func pool_level() -> float:
-	return pool_c().y + 0.35
+	return pool_rim() - 0.2
+
+## Радиус глади озерца: сечение сплюснутой чаши на уровне воды (с запасом
+## под стенку).
+func pool_surface_r() -> float:
+	var dy := (pool_level() - pool_c().y) * 2.6
+	return sqrt(maxf(0.0, pool_r * pool_r - dy * dy)) + 0.12
+
+## Край чаши: самое низкое место настоящего пола зала вокруг неё (по полю зала,
+## а не по эллипсоиду: у расщелин и ледяных залов пол неровный, у труб — плоский,
+## а ниже 1,5 м всегда порода). Прежде центр ставился на 0,9 м выше пола по
+## эллипсоиду, и вода висела над полом зала плоской плёнкой.
+func pool_rim() -> float:
+	if not is_nan(_pool_rim):
+		return _pool_rim
+	var rim := INF
+	for k in 16:
+		var a := TAU * k / 16.0
+		for rr: float in [pool_r + 0.3, pool_r + 0.8]:
+			var q := Vector3(cave_c.x + POOL_OFF.x + cos(a) * rr, cave_c.y, cave_c.z + POOL_OFF.y + sin(a) * rr)
+			q.y = minf(q.y, river_roof(q.x, q.z) - 0.1)   # под рекой свод срезан
+			if cave_dist(q) > 0.0:
+				continue            # стена зала — там край выше
+			var y := q.y
+			while y > 1.5 and cave_dist(Vector3(q.x, y - 0.05, q.z)) < 0.0:
+				y -= 0.05
+			rim = minf(rim, y)
+	if rim == INF:
+		rim = cave_c.y + cave_floor_rel(POOL_OFF)
+	_pool_rim = rim           # build_field сбрасывает, когда опускает зал
+	return rim
+
+var _pool_rim := NAN
 
 ## Коробка вокруг зала и хода: там сетка мельче, а червоточин нет.
 var cave_box := AABB()
@@ -526,11 +638,18 @@ func build_field() -> void:
 			minh = minf(minh, surface_h(cave_c.x + dx, cave_c.z + dz))
 	cave_c.y = clampf(minh - cave_h - 3.0, cave_h * 0.75 + 1.5, 12.0)
 	cave_entry.y = surface_h(cave_entry.x, cave_entry.z) - 1.0
+	_tunnel_cap()
+	_pool_rim = NAN
+	pool_rim()
 	var r := Vector3(cave_r + 2.5, cave_h + 2.5, cave_r + 2.5)
 	cave_box = AABB(cave_c - r, r * 2.0)
 	var tun := AABB(cave_entry, Vector3.ZERO).expand(cave_c + Vector3(0, 1, 0)).grow(3.5)
+	for i in 21:
+		tun = tun.expand(tunnel_point(i / 20.0) - Vector3(0, TUN_R + 1.0, 0))   # ход провисает под рекой
 	cave_box = cave_box.merge(tun)
-	cave_box.position.y = maxf(cave_box.position.y, 1.0)
+	# Дно коробки — над каменным дном карты, но под чашей озерца (она может
+	# уходить ниже 1,5 м, если пол зала лежит на каменном дне).
+	cave_box.position.y = maxf(cave_box.position.y, minf(1.0, pool_rim() - 1.3))
 	_pool_c = pool_c()
 	cave_near = cave_box.grow(6.0)
 	_fill = PackedFloat32Array()
