@@ -119,7 +119,7 @@ static func read(seed_value: int) -> Dictionary:
 	var p := path_for(seed_value)
 	if not FileAccess.file_exists(p):
 		return {}
-	var d = JSON.parse_string(FileAccess.get_file_as_string(p))
+	var d = _parse(FileAccess.get_file_as_string(p))
 	if typeof(d) != TYPE_DICTIONARY or int(d.get("version", 0)) != VERSION or int(d.get("seed", -1)) != seed_value:
 		return {}
 	return d
@@ -129,8 +129,13 @@ static func last_seed() -> int:
 	var p := DIR + "/last.json"
 	if not FileAccess.file_exists(p):
 		return -1
-	var d = JSON.parse_string(FileAccess.get_file_as_string(p))
+	var d = _parse(FileAccess.get_file_as_string(p))
 	return int(d.get("seed", -1)) if typeof(d) == TYPE_DICTIONARY else -1
+
+## JSON или null, без ошибки в консоль на битом файле.
+static func _parse(text: String) -> Variant:
+	var j := JSON.new()
+	return j.data if j.parse(text) == OK else null
 
 # ---------------------------------------------------------------- состояние
 
@@ -140,7 +145,7 @@ static func to_dict(r: Node3D) -> Dictionary:
 	var d := {"version": VERSION, "seed": int(r.seed_value), "time": Time.get_datetime_string_from_system(false, true)}
 	# На планете-шаре — место на планете (шар под роботом повёрнут), см. ProtoPlanetStream.
 	d.robot = {"pos": _v3(robot.get_meta("planet_pos", robot.position)), "yaw": robot.rotation.y}
-	var h = robot.get_meta("health", null)
+	var h = robot.get_meta("health") if robot.has_meta("health") else null
 	if h != null:
 		d.robot.hp = h.hp
 	var pl := r.get_node_or_null("player")
@@ -192,7 +197,7 @@ static func apply(r: Node3D, d: Dictionary) -> void:
 	if d.has("robot"):
 		robot.position = _to_v3(d.robot.pos)
 		robot.rotation.y = float(d.robot.yaw)
-		var h = robot.get_meta("health", null)
+		var h = robot.get_meta("health") if robot.has_meta("health") else null
 		if h != null and d.robot.has("hp"):
 			h.hp = clampf(float(d.robot.hp), 1.0, h.max_hp)
 	var pl := r.get_node_or_null("player")

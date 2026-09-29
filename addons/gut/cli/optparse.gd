@@ -135,7 +135,7 @@
 #
 # value will return the default when it has not been set.
 #-------------------------------------------------------------------------------
-class Option:
+class OptParseOption:
 	var _has_been_set = false
 	var _value = null
 	# REMEMBER that when this option is an array, you have to set the value
@@ -155,6 +155,7 @@ class Option:
 	var description = ''
 	var required = false
 	var aliases: Array[String] = []
+	var show_in_help = true
 
 
 	func _init(name,default_value,desc=''):
@@ -164,14 +165,51 @@ class Option:
 		_value = default
 
 
-	func to_s(min_space=0):
+	func wrap_text(text, left_indent, max_length, wiggle_room=15):
+		var line_indent = str("\n", " ".repeat(left_indent + 1))
+		var wrapped = ''
+		var position = 0
+		var split_length = max_length
+		while(position < text.length()):
+			if(position > 0):
+				wrapped += line_indent
+
+			var split_by = split_length
+			if(position + split_by + wiggle_room >= text.length()):
+				split_by = text.length() - position
+			else:
+				var min_space = text.rfind(' ', position + split_length)
+				var max_space = text.find(' ', position + split_length)
+				if(max_space <= position + split_length + wiggle_room):
+					split_by = max_space - position
+				else:
+					split_by = min_space - position
+
+			wrapped += text.substr(position, split_by).lstrip(' ')
+
+			if(position == 0):
+				split_length = max_length - left_indent
+
+			position += split_by
+
+
+		return wrapped
+
+
+
+	func to_s(min_space=0, wrap_length=100):
 		var line_indent = str("\n", " ".repeat(min_space + 1))
 		var subbed_desc = description
 		if not aliases.is_empty():
 			subbed_desc += "\naliases: " + ", ".join(aliases)
 		subbed_desc = subbed_desc.replace('[default]', str(default))
 		subbed_desc = subbed_desc.replace("\n", line_indent)
-		return str(option_name.rpad(min_space), ' ', subbed_desc)
+
+		var final = str(option_name.rpad(min_space), ' ', subbed_desc)
+		if(wrap_length != -1):
+			final = wrap_text(final, min_space, wrap_length)
+
+		return final
 
 
 	func has_been_set():
@@ -183,7 +221,7 @@ class Option:
 #-------------------------------------------------------------------------------
 # A struct for organizing options by a heading
 #-------------------------------------------------------------------------------
-class OptionHeading:
+class OptParseOptionHeading:
 	var options = []
 	var display = 'default'
 
@@ -194,11 +232,11 @@ class OptionHeading:
 # Organizes options by order, heading, position.  Also responsible for all
 # help related text generation.
 #-------------------------------------------------------------------------------
-class Options:
+class OptParseOptions:
 	var options = []
 	var positional = []
-	var default_heading = OptionHeading.new()
-	var script_option = Option.new('-s', '?', 'script option provided by Godot')
+	var default_heading = OptParseOptionHeading.new()
+	var script_option = OptParseOption.new('-s', '?', 'script option provided by Godot')
 
 	var _options_by_name = {"--script": script_option, "-s": script_option}
 	var _options_by_heading = [default_heading]
@@ -206,7 +244,7 @@ class Options:
 
 
 	func add_heading(display):
-		var heading = OptionHeading.new()
+		var heading = OptParseOptionHeading.new()
 		heading.display = display
 		_cur_heading = heading
 		_options_by_heading.append(heading)
@@ -247,7 +285,8 @@ class Options:
 			if(heading != default_heading):
 				text += str("\n", heading.display, "\n")
 			for option in heading.options:
-				text += str('  ', option.to_s(longest + 2).replace("\n", "\n  "), "\n")
+				if(option.show_in_help):
+					text += str('  ', option.to_s(longest + 2).replace("\n", "\n  "), "\n")
 
 		return text
 
@@ -308,7 +347,7 @@ class Options:
 #
 #-------------------------------------------------------------------------------
 ## @ignore
-var options := Options.new()
+var options := OptParseOptions.new()
 ## Set the banner property to any text you want to appear before the usage and
 ## options sections when printing the options help.
 var banner := ''
@@ -435,10 +474,10 @@ func is_option(arg) -> bool:
 ## If the option is not successfully added (e.g. a name collision with another
 ## option occurs), an error message will be printed and [code]null[/code]
 ## will be returned.
-func add(op_names, default, desc: String) -> Option:
+func add(op_names, default, desc: String) -> OptParseOption:
 	var op_name: String
 	var aliases: Array[String] = []
-	var new_op: Option = null
+	var new_op: OptParseOption = null
 
 	if(typeof(op_names) == TYPE_STRING):
 		op_name = op_names
@@ -455,7 +494,7 @@ func add(op_names, default, desc: String) -> Option:
 	elif bad_alias != -1:
 		push_error(str('Option [', aliases[bad_alias], '] already exists.'))
 	else:
-		new_op = Option.new(op_name, default, desc)
+		new_op = OptParseOption.new(op_name, default, desc)
 		options.add(new_op, aliases)
 
 	return new_op
@@ -475,7 +514,7 @@ func add(op_names, default, desc: String) -> Option:
 ## If the option is not successfully added (e.g. a name collision with another
 ## option occurs), an error message will be printed and [code]null[/code]
 ## will be returned.
-func add_required(op_names, default, desc: String) -> Option:
+func add_required(op_names, default, desc: String) -> OptParseOption:
 	var op := add(op_names, default, desc)
 	if(op != null):
 		op.required = true
@@ -496,12 +535,12 @@ func add_required(op_names, default, desc: String) -> Option:
 ## If the option is not successfully added (e.g. a name collision with another
 ## option occurs), an error message will be printed and [code]null[/code]
 ## will be returned.
-func add_positional(op_name, default, desc: String) -> Option:
+func add_positional(op_name, default, desc: String) -> OptParseOption:
 	var new_op = null
 	if(options.get_by_name(op_name) != null):
 		push_error(str('Positional option [', op_name, '] already exists.'))
 	else:
-		new_op = Option.new(op_name, default, desc)
+		new_op = OptParseOption.new(op_name, default, desc)
 		options.add_positional(new_op)
 	return new_op
 
@@ -522,7 +561,7 @@ func add_positional(op_name, default, desc: String) -> Option:
 ## If the option is not successfully added (e.g. a name collision with another
 ## option occurs), an error message will be printed and [code]null[/code]
 ## will be returned.
-func add_positional_required(op_name, default, desc: String) -> Option:
+func add_positional_required(op_name, default, desc: String) -> OptParseOption:
 	var op = add_positional(op_name, default, desc)
 	if(op != null):
 		op.required = true
@@ -543,7 +582,7 @@ func add_heading(display_text: String) -> void:
 ## If the option exists, the value assigned to it during parsing is returned.
 ## Otherwise, an error message is printed and [code]null[/code] is returned.
 func get_value(name: String):
-	var found_param: Option = options.get_by_name(name)
+	var found_param: OptParseOption = options.get_by_name(name)
 
 	if(found_param != null):
 		return found_param.value
@@ -563,7 +602,7 @@ func get_value(name: String):
 ## then you do not want to get the default value for a command line option or
 ## it will overwrite the value in a config file.
 func get_value_or_null(name: String):
-	var found_param: Option = options.get_by_name(name)
+	var found_param: OptParseOption = options.get_by_name(name)
 
 	if(found_param != null and found_param.has_been_set()):
 		return found_param.value

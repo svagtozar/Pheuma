@@ -127,7 +127,7 @@ func test_save_roundtrip():
 	var d := _desk_with_cargo(s, 3.0)
 	d.probe(s, "heat")
 	d.toggle_guess(s, "toxic")
-	var data := JSON.parse_string(JSON.stringify(d.save_dict()))
+	var data: Variant = JSON.parse_string(JSON.stringify(d.save_dict()))
 	var w2 := H.world()
 	w2.db.add(Substance.new(s.id, s.root, s.tags))
 	var d2 := ProtoLabDesk.new(w2)

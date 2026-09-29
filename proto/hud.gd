@@ -234,7 +234,7 @@ static func climate_line(run: Object) -> String:
 	return s
 
 func _health() -> Object:
-	return robot.get_meta("health", null) if robot != null else null
+	return robot.get_meta("health") if robot != null and robot.has_meta("health") else null
 
 func _cargo() -> Array:
 	if robot == null or not robot.has_meta("cargo"):

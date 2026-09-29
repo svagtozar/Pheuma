@@ -180,7 +180,7 @@ func test_save_roundtrip():
 	run.learn("g1")
 	run.goals.stage = 1
 	run.goals.choices = {"1": 0}
-	var d := JSON.parse_string(JSON.stringify(run.to_dict()))
+	var d: Variant = JSON.parse_string(JSON.stringify(run.to_dict()))
 	var fresh := ProtoRun.new(PlanetGen.generate(14), [steel])
 	fresh.attach(net, drill, body, crystal, Vector3.ZERO)
 	fresh.from_dict(d)
@@ -213,6 +213,7 @@ func test_run_window_waits_while_map_or_card_is_open():
 	ui.pause_game = false
 	ui.setup(run, body, null)
 	add_child_autofree(ui)
+	add_child(body)
 	ui._warm = 0.0
 	body.set_meta("ui_busy", true)
 	ui._process(0.1)
