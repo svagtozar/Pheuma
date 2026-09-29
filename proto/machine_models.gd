@@ -14,9 +14,9 @@ extends RefCounted
 ## Высота корпуса — meta "h" (над ней вид ставит порцию и подписи).
 
 const OUT_KINDS_NONE := ["pipe", "catch_net", "fabricator", "launch_silo", "macro", "sensor",
-	"gate_and", "gate_or", "gate_not", "dome", "beacon", "vent"]
+	"gate_and", "gate_or", "gate_not", "dome", "beacon", "vent", "splitter", "sorter", "relief", "lamp"]
 ## Без основания-салазок: мелочь, которая стоит прямо на земле.
-const NO_BASE := ["pipe", "sensor", "gate_and", "gate_or", "gate_not"]
+const NO_BASE := ["pipe", "sensor", "gate_and", "gate_or", "gate_not", "splitter", "sorter", "relief", "lamp"]
 
 static var _mats := {}
 
@@ -61,6 +61,11 @@ static func build(kind: String, body: Material) -> Node3D:
 		"dome": h = _dome(n, pnt)
 		"beacon": h = _beacon(n, pnt)
 		"vent": h = _vent(n, pnt)
+		"splitter": h = _splitter(n, pnt)
+		"sorter": h = _sorter(n, pnt)
+		"relief": h = _relief(n, pnt)
+		"buffer": h = _buffer(n, pnt)
+		"lamp": h = _lamp_post(n, pnt)
 		_:
 			_box(n, Vector3(1.6, 1.0, 1.6), pnt, Vector3(0, 0.5, 0))
 			h = 1.0
@@ -68,7 +73,9 @@ static func build(kind: String, body: Material) -> Node3D:
 	h += y0
 	if not kind in OUT_KINDS_NONE:
 		MachineKit.outlet(n, Vector3(0, y0 + 0.25, 0.84))
-	if kind != "pipe":
+	if kind == "splitter" or kind == "sorter" or kind == "relief":
+		MachineKit.lamp(n, Vector3(0, h + 0.05, 0))
+	elif kind != "pipe" and kind != "lamp":
 		MachineKit.lamp(n, Vector3(-0.62, h + 0.05, -0.62))
 	n.set_meta("h", h)
 	return n
@@ -559,3 +566,90 @@ static func _beacon(n: Node3D, body: Material) -> float:
 	var s := _spin(n, Vector3(0, 2.9, 0))
 	_box(s, Vector3(0.9, 0.04, 0.04), mat("cyan"), Vector3.ZERO)
 	return 3.1
+
+# ---------------------------------------------------------------- логистика линий
+# Мелкие детали на высоте труб (ProtoPneumaticsView.PIPE_Y = 0.55, модель ×0.9):
+# корпус по центру, патрубки к соседям рисует вид.
+
+## Разветвитель: восьмигранный узел с тремя фланцами-выходами (вперёд и вбок).
+static func _splitter(n: Node3D, body: Material) -> float:
+	_cyl(n, 0.08, 0.45, mat("dark"), Vector3(0, 0.22, 0))
+	_cyl(n, 0.42, 0.42, body, Vector3(0, 0.61, 0), -1.0, Vector3.ZERO, 8)
+	_ring(n, 0.43, 0.035, mat("stripe"), Vector3(0, 0.61, 0))
+	for a in [0.0, PI / 2.0, -PI / 2.0]:
+		var f := _cyl(n, 0.2, 0.1, mat("dark"), Vector3(sin(a) * 0.45, 0.61, cos(a) * 0.45), -1.0, Vector3(PI / 2.0, a, 0))
+		f.name = "flange"
+	var s := _spin(n, Vector3(0, 0.86, 0), 1.2)
+	_box(s, Vector3(0.5, 0.05, 0.08), mat("yellow"), Vector3.ZERO)
+	_box(s, Vector3(0.08, 0.05, 0.5), mat("yellow"), Vector3.ZERO)
+	return 0.9
+
+## Сортировщик: узел со смотровым окном — в нём диск цвета вещества, которое
+## идёт прямо ("filter", цвет задаёт вид), и стрелка «чужое — вбок».
+static func _sorter(n: Node3D, body: Material) -> float:
+	_cyl(n, 0.08, 0.45, mat("dark"), Vector3(0, 0.22, 0))
+	_box(n, Vector3(0.8, 0.5, 0.8), body, Vector3(0, 0.62, 0))
+	_box(n, Vector3(0.84, 0.06, 0.84), mat("dark"), Vector3(0, 0.9, 0))
+	_cyl(n, 0.26, 0.1, mat("glass"), Vector3(0, 0.95, 0))
+	var f := _cyl(n, 0.2, 0.04, mat("lamp_idle"), Vector3(0, 0.95, 0))
+	f.name = "filter"
+	_box(n, Vector3(0.1, 0.1, 0.5), mat("out"), Vector3(0.45, 0.62, 0.0))
+	return 1.0
+
+## Предохранительный клапан: отрезок трубы с пружинным клапаном и красным
+## колпаком; стравленный газ — струя ("plume", пока work).
+static func _relief(n: Node3D, body: Material) -> float:
+	_cyl(n, 0.08, 0.45, mat("dark"), Vector3(0, 0.22, 0))
+	_cyl(n, 0.22, 0.7, body, Vector3(0, 0.61, 0), -1.0, Vector3(PI / 2.0, 0, 0))
+	_cyl(n, 0.14, 0.45, body, Vector3(0, 0.95, 0))
+	for y in [0.85, 0.95, 1.05]:
+		_ring(n, 0.12, 0.02, mat("dark"), Vector3(0, y, 0))
+	_cyl(n, 0.18, 0.14, mat("magnet"), Vector3(0, 1.24, 0), 0.1)
+	var p := CPUParticles3D.new()
+	p.name = "plume"
+	p.position = Vector3(0, 1.3, 0)
+	p.amount = 24
+	p.lifetime = 1.2
+	p.emitting = false
+	p.direction = Vector3(0, 1, 0)
+	p.spread = 25.0
+	p.initial_velocity_min = 2.0
+	p.initial_velocity_max = 3.5
+	p.scale_amount_min = 0.3
+	p.scale_amount_max = 0.8
+	var sm := SphereMesh.new()
+	sm.radius = 0.1
+	sm.height = 0.2
+	p.mesh = sm
+	p.material_override = _flat(Color(0.9, 0.93, 0.97, 0.5))
+	n.add_child(p)
+	return 1.35
+
+## Буфер: три стеклянные колонны-магазина на общей раме; "fill" — сколько
+## капсул внутри.
+static func _buffer(n: Node3D, body: Material) -> float:
+	_box(n, Vector3(1.4, 0.2, 1.0), body, Vector3(0, 0.1, 0))
+	for x in [-0.42, 0.0, 0.42]:
+		_cyl(n, 0.17, 1.2, mat("glass"), Vector3(x, 0.8, 0))
+		_ring(n, 0.18, 0.03, mat("dark"), Vector3(x, 1.4, 0))
+	_box(n, Vector3(1.4, 0.12, 1.0), body, Vector3(0, 1.46, 0))
+	_fill(n, 0.55, 1.1, 0.22).scale = Vector3(1.0, 1.0, 0.3)
+	return 1.52
+
+## Фонарь: мачта с плафоном и светом ("light" — вид включает его ночью).
+static func _lamp_post(n: Node3D, body: Material) -> float:
+	_cyl(n, 0.28, 0.15, mat("dark"), Vector3(0, 0.075, 0), 0.22)
+	_cyl(n, 0.06, 2.4, body, Vector3(0, 1.3, 0), 0.045)
+	_box(n, Vector3(0.08, 0.08, 0.5), body, Vector3(0, 2.45, 0.22))
+	_cyl(n, 0.22, 0.14, mat("dark"), Vector3(0, 2.4, 0.45), 0.12)
+	var bulb := _sph(n, 0.13, ProtoMachines.glow(Color(1.0, 0.86, 0.6), 4.0), Vector3(0, 2.3, 0.45))
+	bulb.name = "bulb"
+	var l := OmniLight3D.new()
+	l.name = "light"
+	l.light_color = Color(1.0, 0.86, 0.62)
+	l.light_energy = 1.6
+	l.omni_range = 9.0
+	l.omni_attenuation = 1.3
+	l.position = Vector3(0, 2.1, 0.45)
+	n.add_child(l)
+	return 2.5

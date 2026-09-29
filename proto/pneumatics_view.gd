@@ -114,7 +114,7 @@ func _rebuild() -> void:
 		var g := n.find_child("gauge", true, false) as MeshInstance3D
 		if g:
 			_gauges[part.id] = g.material_override
-		if part.kind != "pipe":
+		if part.kind != "pipe" and part.kind != "lamp":
 			var l := Label3D.new()
 			l.billboard = BaseMaterial3D.BILLBOARD_ENABLED
 			l.pixel_size = 0.006
@@ -188,6 +188,16 @@ func _links(c: Vector2i) -> Array:
 	for i in 4:
 		var nc: Vector2i = c + ProtoPneumatics.DIRS[i]
 		var nb: Dictionary = net.parts.get(nc, {})
+		if part.kind == "lamp" or (not nb.is_empty() and nb.kind == "lamp"):
+			continue                              # фонарь к линии не подключён
+		if part.kind in ["splitter", "sorter"]:
+			# Выходы во все стороны, где есть сосед; вход сзади — всегда.
+			if not nb.is_empty() or i == (part.dir + 2) % 4:
+				out.append(i)
+			continue
+		if part.kind == "relief" and (i == part.dir or i == (part.dir + 2) % 4):
+			out.append(i)
+			continue
 		if i == part.dir:
 			if not nb.is_empty() or part.kind == "pipe":
 				out.append(i)
@@ -370,6 +380,24 @@ func _update_live(dt: float) -> void:
 					heap.scale = Vector3.ONE * clampf(0.4 + m / 20.0, 0.4, 1.1)
 			"tank":
 				_tank_fill(n, part)
+			"buffer":
+				var fill := n.find_child("fill", true, false) as Node3D
+				var k := float(part.items.size()) / ProtoPneumatics.BUFFER_N
+				fill.visible = k > 0.0
+				if fill.visible:
+					var fm := fill.get_node("fill_mesh") as MeshInstance3D
+					var sub: Substance = part.items[-1].substance
+					if fm.get_meta("sub", "") != sub.id:
+						fm.material_override = ProtoMachines.surface(sub)
+						fm.set_meta("sub", sub.id)
+					fill.scale = Vector3(1, maxf(0.001, k * float(fill.get_meta("h", 1.0))), 1)
+			"sorter":
+				var f := n.find_child("filter", true, false) as MeshInstance3D
+				var fs = part.get("filter")
+				var fid: String = fs.id if fs != null else ""
+				if f and f.get_meta("sub", "?") != fid:
+					f.material_override = ProtoMachines.glow(fs.color, 2.0) if fs != null else MachineModels.mat("lamp_idle")
+					f.set_meta("sub", fid)
 			"lab":
 				var busy: bool = part.busy != null
 				var smp := n.find_child("sample", true, false) as MeshInstance3D
@@ -438,7 +466,7 @@ func _update_caps() -> void:
 		var part: Dictionary = net.parts[cap.cell]
 		var ctr := net.at(origin, cap.cell) + Vector3(0, PIPE_Y, 0)
 		var a := edge(cap.cell, cap.from - cap.cell)
-		var b := edge(cap.cell, ProtoPneumatics.DIRS[part.dir])
+		var b := edge(cap.cell, ProtoPneumatics.DIRS[int(cap.get("out", part.dir))])
 		var t: float = cap.t
 		var pos: Vector3 = a.lerp(ctr, t * 2.0) if t < 0.5 else ctr.lerp(b, (t - 0.5) * 2.0)
 		mi.position = pos
@@ -500,6 +528,31 @@ func _play_events() -> void:
 				_puff(_ev_at(e) + Vector3(sd.x * 1.1, 1.8, sd.y * 1.1), Color(0.9, 0.95, 1.0), 24)
 	net.events.clear()
 
+## Стрелка выхода под призраком: куда деталь отдаёт капсулы.
+static func _arrow(dir: int, mat: Material) -> Node3D:
+	var a := Node3D.new()
+	a.name = "arrow"
+	a.rotation.y = _yaw(dir)
+	var shaft := MeshInstance3D.new()
+	var bm := BoxMesh.new()
+	bm.size = Vector3(0.12, 0.04, 0.6)
+	shaft.mesh = bm
+	shaft.material_override = mat
+	shaft.position = Vector3(0, 0.06, 0.55)
+	a.add_child(shaft)
+	var head := MeshInstance3D.new()
+	var cm := CylinderMesh.new()
+	cm.top_radius = 0.0
+	cm.bottom_radius = 0.26
+	cm.height = 0.36
+	cm.radial_segments = 3
+	head.mesh = cm
+	head.material_override = mat
+	head.position = Vector3(0, 0.06, 1.0)
+	head.rotation = Vector3(PI / 2.0, 0, 0)
+	a.add_child(head)
+	return a
+
 ## Где случилось событие: лопнувшей детали уже нет — её подъём в событии.
 func _ev_at(e: Dictionary) -> Vector3:
 	return ProtoPneumatics.cell_pos(origin, e.cell) + Vector3(0, float(e.get("lift", net.lift(e.cell))), 0)
@@ -557,6 +610,7 @@ func ghost(kind: String, c: Vector2i, dir: int, sub: Substance, ok: bool, lift :
 			gm.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 			gm.albedo_color = Color(0.35, 0.9, 1.0, 0.4) if ok else Color(1.0, 0.25, 0.15, 0.45)
 			_holo_all(_ghost, gm)
+			_ghost.add_child(_arrow(dir, gm))
 			add_child(_ghost)
 	if _ghost:
 		_ghost.position = ProtoPneumatics.cell_pos(origin, c) + Vector3(0, lift, 0)

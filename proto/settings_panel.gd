@@ -144,7 +144,7 @@ func is_capturing() -> bool:
 ## Строки таблицы кнопок: [подпись, клавиша, кнопка геймпада].
 static func binding_rows() -> Array:
 	var rows: Array = []
-	for h in ProtoHud.HINTS_WALK + ProtoHud.HINTS_BUILD.slice(0, 5):
+	for h in ProtoHud.HINTS_WALK + ProtoHud.HINTS_BUILD.slice(1):
 		var acts: Array = h.slice(1)
 		var k := ProtoHud.glyph(acts, false)
 		var p := ProtoHud.glyph(acts, true)
