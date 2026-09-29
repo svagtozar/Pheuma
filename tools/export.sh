@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Сборка релизов в build/: игра под Windows и Linux и сборки для проверки 3D
 # (сразу в 3D с геймпадом) под Windows и Steam Deck.
-# Нужны Godot 4.4.1 ($GODOT, по умолчанию godot в PATH) и шаблоны экспорта той же версии
+# Нужны Godot 4.7.2 ($GODOT, по умолчанию godot в PATH) и шаблоны экспорта той же версии
 # (Editor → Manage Export Templates, или см. .github/workflows/build.yml).
 set -euo pipefail
 cd "$(dirname "$0")/.."

@@ -2,11 +2,11 @@
 
 Игра про робота на процедурно сгенерированной планете. Материалы на планете не фиксированы: каждый собран из тегов. Производство построено на пневматике: насосы, давление газа, пневмопушки. Всё, что строится, сделано из какого-то материала и наследует его свойства.
 
-Прототип написан на Godot 4.4 (GDScript), 2D, вид сверху. В будущем планируется переход на low-poly. Концепция описана в [docs/concept.md](docs/concept.md).
+Прототип написан на Godot 4.7 (GDScript), 2D, вид сверху. В будущем планируется переход на low-poly. Концепция описана в [docs/concept.md](docs/concept.md).
 
 ## Запуск
 
-1. Установите [Godot 4.4](https://godotengine.org/download).
+1. Установите [Godot 4.7.2](https://godotengine.org/download).
 2. Откройте `project.godot` и нажмите F5.
 
 Из командной строки:
@@ -44,7 +44,7 @@ xvfb-run -a godot --path . --rendering-driver opengl3 --resolution 1280x800 -s t
 
 GitHub Actions (`.github/workflows/build.yml`) на каждый пуш и PR прогоняет тесты и автотест, затем собирает игру под Windows и Linux (x86_64). Готовые сборки лежат в артефактах запуска: `Pneuma-windows-x86_64` и `Pneuma-linux-x86_64`. При пуше тега вида `v0.1.0` создаётся GitHub Release с архивами.
 
-Локально: `GODOT=/путь/к/godot tools/export.sh` собирает в `build/`. Нужны шаблоны экспорта Godot 4.4.1 (Editor → Manage Export Templates).
+Локально: `GODOT=/путь/к/godot tools/export.sh` собирает в `build/`. Нужны шаблоны экспорта Godot 4.7.2 (Editor → Manage Export Templates).
 
 ## Проверка баланса
 
