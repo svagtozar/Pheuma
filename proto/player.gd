@@ -434,8 +434,9 @@ func auto_drill(prefix: String) -> void:
 				near = minf(near, ProtoMining.reach_dist(k, sh))
 			if near > ProtoMining.REACH - 0.1:
 				continue
-			# Крупная друза смотрится лучше мелкой.
-			cands.append([absf(h - 0.3) + off * 0.5 - float(c.get_meta("len")) * 0.8, sp, base])
+			# Крупная друза смотрится лучше мелкой; друза у самых ног — хуже: на неё
+			# перекрестье из-за плеча не опустить (упор камеры по наклону).
+			cands.append([absf(h - 0.3) + off * 0.5 - float(c.get_meta("len")) * 0.8 + (2.0 if h < 0.25 else 0.0), sp, base])
 			break
 	cands.sort_custom(func(x, y): return x[0] < y[0])
 	# Первая друза, к которой есть чистый ракурс камеры.
