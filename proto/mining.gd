@@ -18,9 +18,13 @@ extends Node3D
 ##   cmat здесь — вещество и материал того, что сейчас под прицелом.
 
 const REACH := 1.2           # м от плеча до оси кристалла (с наклоном корпуса)
+const AIM_TOL := 0.45        # луч прицела проходит мимо оси кристалла не дальше, м
 const BREAK_TIME := 1.1      # с на кристалл средней массы при равной твёрдости
 const ACTION := &"tool_work"   # то же имя, что в раскладке ProtoControls
 
+var aim_from := Vector3.INF  # луч прицела из камеры (ProtoPlayer); INF — без прицела
+var aim_dir := Vector3.ZERO
+var aim_hit := Vector3.INF   # порода под перекрестьем
 var sub: Substance           # вещество под прицелом (или последнее)
 var base_sub: Substance      # вещество друз по умолчанию
 var drill_hard := 2.5        # твёрдость бура (металл планеты)
@@ -157,17 +161,43 @@ static func mass_of(c: MeshInstance3D, s: Substance) -> float:
 	# кристалл друзы (по объёму до 200 кг) закрывает весь этап добычи (15–35 кг).
 	return m if m <= SOFT_KG else SOFT_KG + 4.0 * log(1.0 + (m - SOFT_KG) / SOFT_KG)
 
-## Кристалл под прицелом: в досягаемости от правого плеча и перед роботом.
+## Насколько луч прицела проходит мимо отрезка a–b, м (INF — прицела нет).
+func aim_off(a: Vector3, b: Vector3) -> float:
+	if aim_from == Vector3.INF:
+		return INF
+	var pts := Geometry3D.get_closest_points_between_segments(aim_from, aim_from + aim_dir * 30.0, a, b)
+	return pts[0].distance_to(pts[1])
+
+## Прицел выбирает цель: луч прошёл рядом с ней. Иначе, если порода под
+## перекрестьем близко, бур копает её (ProtoDigger), а не ближайший кристалл.
+static func aim_claims_ground(hit: Vector3, sh: Vector3) -> bool:
+	return hit != Vector3.INF and hit.distance_to(sh) <= ProtoDigger.AIM_REACH
+
+## Кристалл под прицелом: в досягаемости от правого плеча и перед роботом;
+## с перекрестьем — тот, мимо которого луч прошёл ближе всего.
 func pick(r: Node3D) -> MeshInstance3D:
 	var sh := r.to_global(Vector3(0.23, 1.4, 0.1))
 	var fwd := r.global_transform.basis.z.normalized()
 	var best: MeshInstance3D = null
 	var best_d := INF
+	var aimed := aim_from != Vector3.INF
+	var ground := aimed and aim_claims_ground(aim_hit, sh)
 	for c in crystals():
 		var q := nearest_on(c, sh)
 		var d := reach_dist(c, sh)
 		if d > REACH:
 			continue
+		if aimed:
+			var ab := axis(c)
+			var off := aim_off(ab[0], ab[1])
+			# Перекрестье на породе у самой друзы — тоже она (луч ушёл за кристалл).
+			if aim_hit != Vector3.INF:
+				off = minf(off, maxf(0.0, nearest_on(c, aim_hit).distance_to(aim_hit) - 0.6))
+			if off > AIM_TOL:
+				if ground:
+					continue
+			else:
+				d -= 1.0 - off      # под перекрестьем — в приоритете
 		var flat := Vector3(q.x - r.global_position.x, 0, q.z - r.global_position.z)
 		if flat.length() > 0.2 and flat.normalized().dot(fwd) < -0.1:
 			continue

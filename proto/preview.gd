@@ -121,6 +121,8 @@ var lab_panel: ProtoLabPanel
 var lab_demo := false        # --lab: карточка материала открыта с самого начала
 var map_data: ProtoMapData   # рельеф сверху, разведанное, метки — для радара и карты
 var map_view: ProtoMapView
+var inventory: ProtoInventory   # I / LB: груз, бункер грунта, бак рядом
+var inv_demo := false           # --inv: инвентарь открыт у бака завода (для кадра)
 var map_demo := ""           # --map / --map=all: карта открыта с самого начала
 var _map_meshes: Array = []  # сетки рельефа: карта рисует их же
 var _map_caves: Array = []
@@ -201,6 +203,7 @@ func _ready() -> void:
 			open_win = a.substr(7)
 			want_run = true
 		elif a == "--lab": lab_demo = true
+		elif a == "--inv": inv_demo = true
 		elif a == "--map": map_demo = "route"
 		elif a.begins_with("--map="): map_demo = a.substr(6)
 		elif a.begins_with("--bench="): bench_out = a.substr(8)
@@ -387,6 +390,7 @@ func _ready() -> void:
 	_tutorial()
 	if play and auto == "" and show_menu:
 		_controls_menu()
+	_inventory()
 	_map_view()
 	if play and auto == "":
 		saves = ProtoSave.new()
@@ -631,19 +635,20 @@ func _dig_demo() -> void:
 	var base := robot.global_position
 	for i in 6:
 		robot.global_position = base + f * (0.6 * i)
-		for k in 3:
-			d._t = 0.0
-			d.step(0.1, true, false)
+		for k in 36:
+			d.step(0.05, true, false)
+		d.step(0.05, false, false)
 	robot.global_position = base + Vector3(-f.z, 0, f.x) * 2.2
 	for i in 5:
 		robot.global_position += f * 0.6
-		d._t = 0.0
-		d.step(0.1, false, true)
+		for k in 12:
+			d.step(0.05, false, true)
+		d.step(0.05, false, false)
 	robot.global_position = base
 	d.flush()
 	for n in ["ground", "ground_cave"]:
 		(get_node(n) as ProtoTerrainChunks).flush()
-	print("Копка для кадра: приёмов %d, насыпано %d, в бункере %d %s" % [d.dug, d.filled, d.soil, d.status])
+	print("Копка для кадра: лунок %d, насыпей %d, в бункере %.1f %s" % [d.dug, d.filled, d.soil, d.status])
 
 ## Климат поменял, что жидкое (ProtoClimateView): жидкости — заново.
 func refresh_liquids() -> void:
@@ -1945,6 +1950,48 @@ func _map_mined() -> void:
 				m.kind = "mined"
 				m.color = ProtoMapData.KINDS.mined[1]
 
+## Инвентарь (I / LB) — после карточки материала: B закрывает его, а не трогает друзу.
+func _inventory() -> void:
+	if not (play or inv_demo):
+		return
+	inventory = ProtoInventory.new()
+	inventory.name = "inventory"
+	add_child(inventory)
+	inventory.setup(robot, pneu_view, digger)
+	inventory.desk = lab_desk
+	if hud_pad:
+		inventory.pad = true
+	if inv_demo:
+		_inv_demo.call_deferred()
+
+## Кадр инвентаря: робот у бака завода, в баке продукция, в грузе добыча, бункер почти полон.
+func _inv_demo() -> void:
+	var solids := _solid_mats()
+	if pneu != null:
+		var tank = null
+		for c in pneu.parts:
+			if pneu.parts[c].kind == "tank":
+				tank = c
+				break
+		if tank != null:
+			var items: Array = pneu.parts[tank].items
+			for i in mini(3, solids.size()):
+				items.append(Portion.new(solids[solids.size() - 1 - i], 3.0 - i, planet.ambient_temp))
+			var p := ProtoPneumatics.cell_pos(pneu_view.origin, tank) + Vector3(0.6, 0, 2.3)
+			p.y = terrain.floor_at(Vector3(p.x, p.y + 3.0, p.z))
+			robot.global_position = p
+			robot.look_at(Vector3(p.x - 0.6, p.y, p.z - 2.3), Vector3.UP, true)
+			var pl := get_node_or_null("player")
+			if pl != null:
+				pl.cam_yaw = robot.rotation.y + 0.6
+	var cargo: Array = []
+	for i in mini(3, solids.size()):
+		cargo.append(Portion.new(solids[i], 5.5 - i * 1.5, planet.ambient_temp))
+	robot.set_meta("cargo", cargo)
+	if digger != null:
+		digger.soil = ProtoDigger.SOIL_MAX - 3
+	inventory.show_inventory()
+
 ## Полноэкранная 3D-карта (M / View). Узел — последним: кнопки сначала ей.
 func _map_view() -> void:
 	if not (play or map_demo != ""):
@@ -2051,7 +2098,7 @@ func _run() -> void:
 	climate.name = "climate"
 	add_child(climate)
 	climate.setup(self, run.terra)
-	if terra_demo != "" or dig_demo:
+	if terra_demo != "" or dig_demo or inv_demo:
 		run.briefing_seen = true
 	if terra_demo != "":
 		_terra_demo()

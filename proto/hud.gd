@@ -41,6 +41,7 @@ const HINTS_WALK := [
 	["Бур", &"tool_work"],
 	["Кисть", &"fist_fire"],
 	["Стройка", &"build_mode"],
+	["Инвентарь", &"inventory"],
 	["Меню", &"run_menu"],
 	["Изучить", &"lab_touch"],
 	["Анализатор", &"lab_analyze"],
@@ -197,7 +198,7 @@ func refresh() -> void:
 	var hs := health_summary(_health())
 	fs.climate = climate_line(get_parent().get("run") if get_parent() != null else null)
 	var dg = get_parent().get("digger") if get_parent() != null else null
-	soil = int(dg.soil) if dg != null else 0
+	soil = ceili(dg.soil - 0.05) if dg != null else 0
 	if dg != null and dg.status != "" and note == "":
 		note = dg.status
 	var key := str([cg, fs, part, note, pad, building, kn, busy, hs, soil])

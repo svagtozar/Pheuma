@@ -84,6 +84,9 @@ var fist: RobotFist
 var mining: ProtoMining
 var digger: ProtoDigger        # бур без кристалла копает грунт, H / D-pad влево — насыпь
 var fill_auto := false         # проверки: насыпать без кнопки
+var aim_ui: ProtoAim           # перекрестье и шар-кисть (есть, когда играет человек)
+var aim_hit := Vector3.INF     # точка породы под перекрестьем (мир); INF — не видно
+var aim_goal := Vector3.INF    # скрипты (прогон, баланс): навести перекрестье на точку, как игрок
 var harvest: ProtoHarvest     # срез растений тем же буром (есть, если на планете жизнь)
 var health: ProtoHealth       # прочность корпуса: удар при приземлении, вязкость жидкости
 
@@ -332,6 +335,7 @@ func _process(dt: float) -> void:
 		anim.speed_ref = terrain.style.walk_mult()
 		anim.airborne = air and wet_f < 0.25    # плывёт — не поза прыжка
 		anim.vy = vy
+	_aim_goal_step(dt)
 	_mine(dt)
 	_underground(dt)
 	_camera(dt, sprint and vel.length() > top_speed * 0.6 / SPRINT_MULT)
@@ -343,6 +347,7 @@ func _mine(dt: float) -> void:
 		return
 	var tip_n := robot.find_child("drill_tip", true, false) as Node3D
 	var tip := tip_n.global_position if tip_n and anim.drill_out > 0.5 else Vector3.INF
+	_aim_tools()
 	mining.step(dt, robot, anim.work, anim.drill_out, tip)
 	# Нет кристалла под прицелом — бур срезает растения (ProtoHarvest).
 	if harvest:
@@ -357,12 +362,19 @@ func _mine(dt: float) -> void:
 		var free: bool = mining.target == null and (harvest == null or harvest.target < 0)
 		var digging := free and anim.work > 0.6 and anim.drill_out > 0.95
 		var fill := fill_auto or (not busy and not building and Input.is_action_pressed(ProtoDigger.FILL))
-		digger.step(dt, digging, fill)
-		if free and anim.work > 0.05:
-			anim.work_target = robot.to_local(digger.dig_point())
-			if digging:
-				mining.sparks.global_position = digger.dig_point()
-				mining.crumbs.global_position = digger.dig_point()
+		digger.src = tip if tip != Vector3.INF else robot.to_global(Vector3(0.3, 1.2, 0.5))
+		var dug := digger.step(dt, digging, fill)
+		_aim_show(dt, free, building or busy, fill)
+		if free and (anim.work > 0.05 or digger.working):
+			var at := digger.dig_point()
+			anim.work_target = robot.to_local(at)
+			# Доворот плечом к точке прицела (бур в правой руке), пока стоит.
+			var to := at - robot.position
+			if vel.length() < 0.1 and Vector2(to.x, to.z).length() > 0.5:
+				robot.rotation.y = lerp_angle(robot.rotation.y, atan2(to.x, to.z) - 0.25, minf(1.0, dt * 5.0))
+			if dug:
+				mining.sparks.global_position = at
+				mining.crumbs.global_position = at
 				mining.crumbs.emitting = true
 			return
 	var contact := Vector3.INF
@@ -1038,6 +1050,85 @@ func aim_point() -> Vector3:
 		t += 0.25
 	return Vector3.INF
 
+## Точка прицела: луч из камеры до породы (не дальше 14 м), край уточнён
+## делением пополам — точка не скачет шагами луча.
+func _aim_point() -> Vector3:
+	var from := cam.global_position
+	var dir := -cam.global_transform.basis.z
+	var t := 1.0
+	while t < 14.0:
+		var q := from + dir * t
+		if terrain.solid(q.x, q.y, q.z):
+			var a := t - 0.2
+			var b := t
+			for i in 5:
+				var m := (a + b) * 0.5
+				var qm := from + dir * m
+				if terrain.solid(qm.x, qm.y, qm.z):
+					b = m
+				else:
+					a = m
+			return from + dir * (a - 0.05)
+		t += 0.2
+	return Vector3.INF
+
+## Прицел для инструментов: играет человек — бур, срез и кисть берут цель под
+## перекрестьем; скрипты (маршрут, --auto=drill) — как раньше, перед роботом.
+func _aim_tools() -> void:
+	var on := route.is_empty() and not drill_auto and cam != null
+	aim_hit = _aim_point() if on else Vector3.INF
+	var from := cam.global_position if on else Vector3.INF
+	var dir := -cam.global_transform.basis.z if on else Vector3.ZERO
+	mining.aim_from = from
+	mining.aim_dir = dir
+	mining.aim_hit = aim_hit
+	if harvest:
+		harvest.aim_from = from
+		harvest.aim_dir = dir
+		harvest.aim_hit = aim_hit
+	if digger != null:
+		digger.aim = aim_hit
+		digger.aim_dir = dir
+
+## Скрипт навёл прицел на aim_goal: камера плавно доворачивает туда перекрестье.
+func _aim_goal_step(dt: float) -> void:
+	if aim_goal == Vector3.INF or cam == null:
+		return
+	var d := (aim_goal - cam.global_position).normalized()
+	var f := -cam.global_transform.basis.z
+	var k := minf(1.0, dt * 8.0)
+	cam_yaw += wrapf(atan2(d.x, d.z) - atan2(f.x, f.z), -PI, PI) * k
+	cam_pitch = clampf(cam_pitch + (f.y - d.y) * k, PITCH_MIN, PITCH_MAX)
+
+## Перекрестье и шар-кисть: что будет, если нажать бур или кисть.
+func _aim_show(dt: float, free: bool, hide: bool, fill: bool) -> void:
+	var on := route.is_empty() and not drill_auto
+	if not on:
+		if aim_ui != null:
+			aim_ui.set_hidden(true)
+		return
+	if aim_ui == null:
+		aim_ui = ProtoAim.new()
+		aim_ui.name = "aim"
+		add_child(aim_ui)
+		aim_ui.make_marker(robot.get_parent())
+	aim_ui.set_hidden(hide)
+	if hide:
+		return
+	var st := ProtoAim.IDLE
+	var brush := Vector3.INF
+	var r := ProtoDigger.BITE_R
+	if not free:
+		st = ProtoAim.TARGET
+	elif aim_hit != Vector3.INF:
+		st = ProtoAim.READY if digger.in_reach() else ProtoAim.FAR
+		if st == ProtoAim.READY and (anim.drill_out > 0.3 or fill or digger.working):
+			brush = aim_hit
+			if digger.working and digger._bite >= 0:
+				brush = digger._bite_c
+				r = maxf(digger._bite_r, 0.4)
+	aim_ui.show_state(st, brush, r, fill, dt)
+
 ## Камера на пружинной штанге: не заходит в породу. Точка у робота сглажена
 ## (стопы на неровном полу пещеры качают корпус), штанга при упоре в свод
 ## укорачивается сразу, а отрастает плавно — не щёлкает туда-сюда у стены.
@@ -1068,7 +1159,9 @@ func _camera(dt := 1.0 / 60.0, running := false) -> void:
 	# уходит за них (изнутри порода чёрная), тут без сглаживания.
 	boom = minf(boom, hard)
 	cam.position = pivot + d.normalized() * boom
-	cam.look_at(pivot + Basis(Vector3.UP, cam_yaw) * Vector3(0, -0.2, 1.5) if cam_focus == Vector3.INF else pivot)
+	# Взгляд — мимо правого плеча (как в Astroneer): робот левее центра и не
+	# заслоняет перекрестье, прицел смотрит туда, куда робот повернётся.
+	cam.look_at(pivot + Basis(Vector3.UP, cam_yaw) * Vector3(-0.6, -0.1, 1.5) if cam_focus == Vector3.INF else pivot)
 	# Бег — угол чуть шире.
 	if fov_base < 0.0:
 		fov_base = cam.fov

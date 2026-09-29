@@ -574,7 +574,7 @@ func _event_active(dt: float) -> void:
 					var wp: Vector3 = ProtoPneumatics.cell_pos(pneu_origin(), c)
 					if in_zone(wp):
 						# Бесплатный насос: доливает до того же запаса, что насосы, а не рвёт сеть.
-						if pneu.pressure(c) < pneu.max_p(c) * ProtoPneumatics.PUMP_SAFE:
+						if pneu.pressure(c) < pneu.net_max_p(c) * ProtoPneumatics.PUMP_SAFE:
 							pneu.gas.add_gas(pneu.parts[c].id, 0.6 * dt)
 						break
 		"acid":
