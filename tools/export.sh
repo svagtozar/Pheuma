@@ -2,7 +2,8 @@
 # Сборка релизов в build/: игра под Windows и Linux и сборки для проверки 3D
 # (сразу в 3D с геймпадом) под Windows и Steam Deck.
 # Нужны Godot 4.7.2 ($GODOT, по умолчанию godot в PATH) и шаблоны экспорта той же версии
-# (Editor → Manage Export Templates, или см. .github/workflows/build.yml).
+# (Editor → Manage Export Templates, или см. .github/workflows/build.yml), а для
+# рельефа на вокселях — библиотеки Voxel Tools (tools/get_voxel.sh).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 GODOT="${GODOT:-godot}"
@@ -29,6 +30,8 @@ update_files() {  # папка сборки, префикс, файлы
 	(cd "$dir" && sha256sum "$@") > "build/update/$prefix-manifest.txt"
 	for f in "$@"; do cp "$dir/$f" "build/update/$prefix.$f"; done
 }
-update_files build/steamdeck deck Pneuma.pck Pneuma.x86_64 pneuma.sh version.txt README.md
-update_files build/windows3d win Pneuma3D.pck Pneuma3D.exe update.ps1 version.txt README.md
+# Библиотеки Voxel Tools (рельеф) экспорт кладёт рядом с игрой — их тоже обновляем.
+libs() { (cd "$1" && ls libvoxel.* 2>/dev/null) || true; }
+update_files build/steamdeck deck Pneuma.pck Pneuma.x86_64 $(libs build/steamdeck) pneuma.sh version.txt README.md
+update_files build/windows3d win Pneuma3D.pck Pneuma3D.exe $(libs build/windows3d) update.ps1 version.txt README.md
 ls -la build/windows build/linux build/windows3d build/steamdeck build/update

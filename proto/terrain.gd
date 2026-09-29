@@ -659,6 +659,19 @@ func build_field() -> void:
 	_fill = PackedFloat32Array()
 	lake_level = lake_level_base()
 
+## Поле в узлах области: origin — угол, n — клеток, шаг cell (x быстрее всех).
+## Точная density() у поверхности (по полю 1 м ближе FINE_NEAR), глубже и выше —
+## трилинейно по полю 1 м (там всё равно нет сетки). В потоках.
+const FINE_NEAR := 2.5
+
+func fine_field(origin: Vector3, n: Vector3i, cell: float) -> PackedFloat32Array:
+	_fill = PackedFloat32Array()
+	_fill.resize((n.x + 1) * (n.y + 1) * (n.z + 1))
+	_parallel(_fine_slice.bind(origin, n, cell), n.z + 1)
+	var f := _fill
+	_fill = PackedFloat32Array()
+	return f
+
 ## Узлы области из готового поля (шаг 1 м): origin — угол в узлах.
 func _copy_field(o: Vector3i, n: Vector3i) -> PackedFloat32Array:
 	var out := PackedFloat32Array()
@@ -687,6 +700,22 @@ func _fill_slice(z: int, origin: Vector3, n: Vector3i, cell: float) -> void:
 		var h := surface_h(px, pz)
 		for y in n.y + 1:
 			_fill[base + x + (n.x + 1) * y] = density(px, origin.y + y * cell, pz, h)
+
+func _fine_slice(z: int, origin: Vector3, n: Vector3i, cell: float) -> void:
+	var base := (n.x + 1) * (n.y + 1) * z
+	var pz := origin.z + z * cell
+	for x in n.x + 1:
+		var px := origin.x + x * cell
+		var h := NAN
+		for y in n.y + 1:
+			var p := Vector3(px, origin.y + y * cell, pz)
+			var f := field_at(p)
+			if absf(f) > FINE_NEAR:
+				_fill[base + x + (n.x + 1) * y] = f
+				continue
+			if is_nan(h):
+				h = surface_h(px, pz)
+			_fill[base + x + (n.x + 1) * y] = density(px, p.y, pz, h)
 
 ## count задач task(i) на пуле потоков; ждём все. Генерация читает только
 ## шум и списки особых мест — это безопасно из нескольких потоков.
