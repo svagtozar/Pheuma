@@ -103,6 +103,7 @@ var launched_subs := {}         # id вещества → кг, улетевши
 var vented := 0.0               # газа выпущено в небо газоотводами за всё время
 var launches: Array = []        # [Substance, кг] — старты шахты с прошлого забора (ProtoRun → зеркала)
 var _next_id := 1
+var _net_cap := {}              # id детали → самый слабый предел её сети (сброс при стройке)
 
 func _init(p: Planet) -> void:
 	planet = p
@@ -129,6 +130,7 @@ func place(kind: String, c: Vector2i, dir: int, sub: Substance) -> Dictionary:
 	placed += 1
 	parts[c] = part
 	by_id[part.id] = c
+	_net_cap.clear()
 	gas.add_node(part.id, info.vol, stats.max_p)
 	for d in DIRS:
 		var n: Dictionary = parts.get(c + d, {})
@@ -148,6 +150,7 @@ func remove(c: Vector2i) -> Array:
 		back.append(part.cap.p)
 	back.append_array(part.get("out_q", []))
 	gas.remove_node(part.id)
+	_net_cap.clear()
 	by_id.erase(part.id)
 	parts.erase(c)
 	return back
@@ -173,6 +176,28 @@ func pressure(c: Vector2i) -> float:
 
 func max_p(c: Vector2i) -> float:
 	return parts[c].stats.max_p if parts.has(c) else 0.0
+
+## Предел самой слабой детали в сети клетки c. Насосы держат запас от него, а не
+## от своего материала: иначе прочный насос, соединённый трубой со слабой частью
+## завода, догонял её до своего давления и рвал.
+func net_max_p(c: Vector2i) -> float:
+	if not parts.has(c):
+		return 0.0
+	var id: int = parts[c].id
+	if not _net_cap.has(id):
+		var seen := {id: true}
+		var todo := [id]
+		var lo := INF
+		while not todo.is_empty():
+			var cur: int = todo.pop_back()
+			lo = minf(lo, float(gas.nodes[cur].max_p))
+			for nb in gas.neighbors(cur):
+				if not seen.has(nb):
+					seen[nb] = true
+					todo.append(nb)
+		for k in seen:
+			_net_cap[k] = lo
+	return _net_cap[id]
 
 func mass_in(c: Vector2i) -> float:
 	var part: Dictionary = parts.get(c, {})
@@ -214,10 +239,11 @@ func step(dt: float) -> void:
 		_burst(by_id.get(id, Vector2i(-9999, -9999)))
 
 func _pump(part: Dictionary, dt: float) -> void:
-	var limit: float = part.stats.max_p * PUMP_SAFE
+	var cap := net_max_p(part.cell)
+	var limit: float = cap * PUMP_SAFE
 	var p := gas.pressure(part.id)
 	if p >= limit:
-		part.status = "держит %.1f атм (предел материала %.1f)" % [p, part.stats.max_p]
+		part.status = "держит %.1f атм (предел сети %.1f)" % [p, cap]
 		part.hot = false
 		return
 	# Насос забирает воздух снаружи: чем он реже, тем меньше за такт.

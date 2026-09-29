@@ -41,6 +41,7 @@ const HINTS_WALK := [
 	["Бур", &"tool_work"],
 	["Кисть", &"fist_fire"],
 	["Стройка", &"build_mode"],
+	["Инвентарь", &"inventory"],
 	["Меню", &"run_menu"],
 	["Изучить", &"lab_touch"],
 	["Анализатор", &"lab_analyze"],

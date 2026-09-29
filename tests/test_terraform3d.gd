@@ -228,3 +228,22 @@ func test_digger_digs_ahead_and_fills_back():
 	d.step(0.1, false, true)
 	assert_string_contains(d.status, "грунта нет")
 	assert_true(InputMap.has_action(ProtoDigger.FILL))
+
+func test_digger_keeps_digging_with_full_bunker():
+	var t := _terrain()
+	var root: Node3D = add_child_autofree(Node3D.new())
+	var robot := Node3D.new()
+	root.add_child(robot)
+	var x := 59.0
+	var z := 30.0
+	robot.position = Vector3(x, t.surface_h(x, z), z)
+	var d: ProtoDigger = add_child_autofree(ProtoDigger.new())
+	d.setup(t, [], robot)
+	d.soil = ProtoDigger.SOIL_MAX
+	var at := d.dig_point()
+	var before := t.floor_at(at + Vector3(0, 3, 0))
+	assert_true(d.step(0.1, true, false), "полный бункер копать не мешает")
+	assert_eq(d.soil, ProtoDigger.SOIL_MAX)
+	assert_eq(d.spilled, 1, "лишний грунт ссыпался")
+	assert_string_contains(d.status, "полон")
+	assert_lt(t.floor_at(at + Vector3(0, 3, 0)), before - 0.4)
