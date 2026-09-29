@@ -15,13 +15,20 @@ mkdir -p build/windows build/linux build/windows3d build/steamdeck
 cp docs/steamdeck.md build/steamdeck/README.md
 cp tools/steamdeck/pneuma.sh build/steamdeck/pneuma.sh
 chmod +x build/steamdeck/pneuma.sh
-# Версия сборки (видна в меню) и файлы для автообновления на Deck: манифест
-# с sha256 и те же файлы с префиксом deck. — так они лежат в релизе на GitHub.
+cp docs/windows3d.md build/windows3d/README.md
+cp tools/windows/Pneuma3D.cmd tools/windows/update.ps1 build/windows3d/
+# Версия сборки (видна в меню) и файлы автообновления 3D-сборок: манифест с sha256
+# и сами файлы с префиксом deck./win. — так они лежат в релизе на GitHub.
 VERSION="${PNEUMA_VERSION:-$(git describe --tags --always 2>/dev/null || echo dev)}"
-echo "$VERSION · $(date -u '+%d.%m.%Y %H:%M') UTC" > build/steamdeck/version.txt
-rm -rf build/steamdeck-update
-mkdir -p build/steamdeck-update
-DECK_FILES="Pneuma.pck Pneuma.x86_64 pneuma.sh version.txt README.md"
-(cd build/steamdeck && sha256sum $DECK_FILES) > build/steamdeck-update/deck-manifest.txt
-for f in $DECK_FILES; do cp build/steamdeck/$f build/steamdeck-update/deck.$f; done
-ls -la build/windows build/linux build/windows3d build/steamdeck build/steamdeck-update
+rm -rf build/update
+mkdir -p build/update
+update_files() {  # папка сборки, префикс, файлы
+	local dir=$1 prefix=$2
+	shift 2
+	echo "$VERSION, $(date -u '+%d.%m.%Y %H:%M') UTC" > "$dir/version.txt"
+	(cd "$dir" && sha256sum "$@") > "build/update/$prefix-manifest.txt"
+	for f in "$@"; do cp "$dir/$f" "build/update/$prefix.$f"; done
+}
+update_files build/steamdeck deck Pneuma.pck Pneuma.x86_64 pneuma.sh version.txt README.md
+update_files build/windows3d win Pneuma3D.pck Pneuma3D.exe update.ps1 version.txt README.md
+ls -la build/windows build/linux build/windows3d build/steamdeck build/update

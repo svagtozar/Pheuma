@@ -143,31 +143,32 @@ jobs:
           name: Pneuma ${{ env.RELEASE_TAG }}
           files: |
             dist/*
-            build/steamdeck-update/*
+            build/update/*
           body_path: docs/releases/${{ env.RELEASE_TAG }}.md
 
-      # Канал автообновления Deck (nightly): пререлиз deck-nightly, который
-      # переписывается каждой сборкой main. pneuma.sh на Deck сверяет с ним
-      # deck-manifest.txt и докачивает только изменившиеся файлы.
-      - name: Move deck-nightly tag
+      # Канал автообновления 3D-сборок (nightly): пререлиз nightly, который
+      # переписывается каждой сборкой main. pneuma.sh на Deck и update.ps1 на
+      # Windows сверяют с ним манифест и докачивают только изменившиеся файлы.
+      - name: Move nightly tag
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         run: |
-          git tag -f deck-nightly "$GITHUB_SHA"
-          git push -f origin refs/tags/deck-nightly
+          git tag -f nightly "$GITHUB_SHA"
+          git push -f origin refs/tags/nightly
 
-      - name: Steam Deck nightly (auto-update channel)
+      - name: Nightly release (auto-update channel)
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: deck-nightly
-          name: Steam Deck — последняя сборка main
+          tag_name: nightly
+          name: Nightly — последняя сборка main
           prerelease: true
           make_latest: false
           overwrite_files: true
-          files: build/steamdeck-update/*
+          files: build/update/*
           body: |
-            Файлы для автообновления Steam Deck: их сам скачивает `pneuma.sh`.
-            Ставить отсюда вручную не нужно — см. docs/steamdeck.md.
+            Файлы автообновления 3D-сборок: их сами скачивают `pneuma.sh` (Steam Deck)
+            и `Pneuma3D.cmd` (Windows). Ставить отсюда вручную не нужно —
+            см. docs/steamdeck.md и docs/windows3d.md.
             Сборка ${{ github.sha }}.
 
       - uses: actions/upload-artifact@v4

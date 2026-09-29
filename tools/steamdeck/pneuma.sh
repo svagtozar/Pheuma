@@ -18,7 +18,7 @@ channel="$({ tr -d "[:space:]" < channel.txt; } 2>/dev/null)"
 case "${channel:-nightly}" in
 	off) base="" ;;
 	stable) base="https://github.com/$REPO/releases/latest/download" ;;
-	*) base="https://github.com/$REPO/releases/download/deck-nightly" ;;
+	*) base="https://github.com/$REPO/releases/download/nightly" ;;
 esac
 base="${PNEUMA_UPDATE_URL-$base}"  # для проверки со своего сервера
 
