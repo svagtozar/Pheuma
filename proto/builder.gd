@@ -22,9 +22,19 @@ const BUILD_PLACE := &"build_place"
 const BUILD_REMOVE := &"build_remove"
 const UNLOAD := &"cargo_unload"
 const UNLOAD_R := 3.5
+## Стройка вне площадки: деталь встаёт на грунт своей клетки — посередине
+## между самым низким и самым высоким местом клетки: с верхней стороны она
+## врезана в склон, под нижней — фундамент. Перепад больше MAX_STEP — круто
+## (у холма площадки обычный перепад в клетке 1–2 м).
+const MAX_STEP := 2.5
+const SNAP_DOWN := 0.3       # к соседней детали: ниже грунта не больше (врастает)
+const SNAP_UP := 0.6         # ... и выше (на фундаменте) — трубы идут ровно
 
 var view: ProtoPneumaticsView
 var robot: Node3D
+var terrain: ProtoTerrain = null   # null — всё на высоте площадки (кадры без рельефа)
+var liquid_at := Callable()        # мир → {} или жидкость (ProtoHealth.liquid_at)
+var _ground := {}                  # клетка → [время, ground()]: грунт не щупаем каждый кадр
 var mats: Array = []          # Substance — из чего можно строить
 var active := false
 var kind_i := 0
@@ -57,9 +67,10 @@ static func ensure_actions() -> void:
 		for e in lay[a]:
 			InputMap.action_add_event(a, e)
 
-func setup(v: ProtoPneumaticsView, r: Node3D, materials: Array) -> void:
+func setup(v: ProtoPneumaticsView, r: Node3D, materials: Array, t: ProtoTerrain = null) -> void:
 	view = v
 	robot = r
+	terrain = t
 	# Прочнее — первым: насос и трубы из него держат больше давления.
 	mats = materials.duplicate()
 	mats.sort_custom(func(a, b): return ComponentStats.compute("pipe", a).max_p > ComponentStats.compute("pipe", b).max_p)
@@ -88,13 +99,58 @@ func cargo() -> Array:
 		robot.set_meta("cargo", [])
 	return robot.get_meta("cargo")
 
-## Клетка перед роботом и направление выхода.
+## Клетка перед роботом и направление выхода (в системе завода: на шаре
+## площадка повёрнута под роботом, см. ProtoPlanetStream).
 func target() -> Array:
-	var fwd := robot.global_transform.basis.z
+	var fwd := view.global_transform.basis.inverse() * robot.global_transform.basis.z
 	fwd.y = 0.0
 	fwd = fwd.normalized()
-	var c := ProtoPneumatics.cell_at(view.origin, robot.global_position + fwd * ProtoPneumatics.CELL * 1.1)
+	var c := ProtoPneumatics.cell_at(view.origin, view.to_local(robot.global_position) + fwd * ProtoPneumatics.CELL * 1.1)
 	return [c, (ProtoPneumatics.dir_of(fwd) + rot) % 4]
+
+## Грунт клетки: {ok, lift, foot, why}. lift — подъём над площадкой (на ней 0),
+## foot — высота фундамента до самого низкого места клетки.
+func ground(c: Vector2i) -> Dictionary:
+	var now := Time.get_ticks_msec() / 1000.0
+	var hit: Array = _ground.get(c, [])
+	if not hit.is_empty() and now - float(hit[0]) < 0.4:
+		return hit[1]
+	var g := _probe(c)
+	_ground[c] = [now, g]
+	return g
+
+func _probe(c: Vector2i) -> Dictionary:
+	if terrain == null:
+		return {"ok": true, "lift": 0.0, "foot": 0.0, "why": ""}
+	var ctr := ProtoPneumatics.cell_pos(view.origin, c)
+	var lo := INF
+	var hi := -INF
+	for o in [Vector2(0, 0), Vector2(-0.8, -0.8), Vector2(0.8, -0.8), Vector2(-0.8, 0.8), Vector2(0.8, 0.8)]:
+		var w := view.to_global(ctr + Vector3(o.x, 40.0, o.y))
+		var y := view.to_local(Vector3(w.x, terrain.floor_at(w), w.z)).y
+		lo = minf(lo, y)
+		hi = maxf(hi, y)
+	# На площадке lo == hi — ровно её высота (origin на 0.1 выше грунта).
+	var lift := (lo + hi) / 2.0 + 0.1 - view.origin.y
+	var best := INF
+	for d in ProtoPneumatics.DIRS:
+		if not view.net.parts.has(c + d):
+			continue
+		var ln := view.net.lift(c + d)
+		if ln >= lift - SNAP_DOWN and ln <= lift + SNAP_UP and absf(ln - lift) < absf(best - lift):
+			best = ln
+	if best != INF:
+		lift = best
+	if absf(lift) < 0.12:
+		lift = 0.0
+	var g := {"ok": true, "lift": lift, "foot": view.origin.y + lift - lo, "why": ""}
+	if hi - lo > MAX_STEP:
+		g.ok = false
+		g.why = "Слишком круто: нужно ровнее"
+	elif liquid_at.is_valid() and not liquid_at.call(view.to_global(ctr + Vector3(0, lift + 0.3, 0))).is_empty():
+		g.ok = false
+		g.why = "Здесь жидкость"
+	return g
 
 func _process(dt: float) -> void:
 	_note_t = maxf(0.0, _note_t - dt)
@@ -113,7 +169,8 @@ func _process(dt: float) -> void:
 		if Input.is_action_just_pressed(BUILD_PLACE): place()
 		if Input.is_action_just_pressed(BUILD_REMOVE): dismantle()
 	var t := target()
-	view.ghost(kind() if active else "", t[0], t[1], material(), view.net.can_place(t[0]))
+	var g := ground(t[0]) if active else {"ok": true, "lift": 0.0}
+	view.ghost(kind() if active else "", t[0], t[1], material(), view.net.can_place(t[0]) and g.ok, g.lift)
 	_hud()
 
 func place() -> bool:
@@ -121,13 +178,21 @@ func place() -> bool:
 	if not view.net.can_place(t[0]):
 		_say("Клетка занята")
 		return false
-	view.net.place(kind(), t[0], t[1], material())
+	var g := ground(t[0])
+	if not g.ok:
+		_say(g.why)
+		return false
+	var part := view.net.place(kind(), t[0], t[1], material())
+	part.lift = g.lift
+	part.foot = g.foot
+	_ground.clear()          # соседи теперь тянутся к высоте этой детали
 	return true
 
 func dismantle() -> void:
 	var t := target()
 	var back := view.net.remove(t[0])
 	cargo().append_array(back)
+	_ground.clear()
 
 ## Весь груз робота — в ближайший приёмник в пределах UNLOAD_R.
 func unload() -> bool:
@@ -136,7 +201,7 @@ func unload() -> bool:
 	for c in view.net.parts:
 		if view.net.parts[c].kind != "intake":
 			continue
-		var d := ProtoPneumatics.cell_pos(view.origin, c).distance_to(robot.global_position)
+		var d := view.to_global(view.net.at(view.origin, c)).distance_to(robot.global_position)
 		if d < bd:
 			bd = d
 			best = c
@@ -170,6 +235,9 @@ func _hud() -> void:
 		var st := ComponentStats.compute(ProtoPneumatics.KINDS[kind()].stat, sub)
 		lines.append("СТРОЙКА: %s  из «%s» (предел %.1f атм)" % [ProtoPneumatics.KINDS[kind()].n, sub.name, st.max_p])
 		lines.append("T/D-pad — деталь · R/RB — повернуть · M/LB — материал · Пробел/A — поставить · X/B — разобрать")
+		var g := ground(target()[0])
+		if not g.ok:
+			lines.append(g.why)
 	else:
 		lines.append("B/Y — стройка")
 	lines.append("Груз: %.1f кг · C/X — выгрузить в приёмник" % m)
