@@ -97,7 +97,7 @@ jobs:
           done
 
       - name: Export
-        run: GODOT=~/godot/godot tools/export.sh
+        run: GODOT=~/godot/godot PNEUMA_VERSION="${RELEASE_TAG:-${GITHUB_SHA::7}}" tools/export.sh
 
       - name: Smoke-test Linux build
         if: ${{ !inputs.skip_tests }}
@@ -141,8 +141,34 @@ jobs:
           tag_name: ${{ env.RELEASE_TAG }}
           target_commitish: ${{ github.sha }}
           name: Pneuma ${{ env.RELEASE_TAG }}
-          files: dist/*
+          files: |
+            dist/*
+            build/steamdeck-update/*
           body_path: docs/releases/${{ env.RELEASE_TAG }}.md
+
+      # Канал автообновления Deck (nightly): пререлиз deck-nightly, который
+      # переписывается каждой сборкой main. pneuma.sh на Deck сверяет с ним
+      # deck-manifest.txt и докачивает только изменившиеся файлы.
+      - name: Move deck-nightly tag
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          git tag -f deck-nightly "$GITHUB_SHA"
+          git push -f origin refs/tags/deck-nightly
+
+      - name: Steam Deck nightly (auto-update channel)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: deck-nightly
+          name: Steam Deck — последняя сборка main
+          prerelease: true
+          make_latest: false
+          overwrite_files: true
+          files: build/steamdeck-update/*
+          body: |
+            Файлы для автообновления Steam Deck: их сам скачивает `pneuma.sh`.
+            Ставить отсюда вручную не нужно — см. docs/steamdeck.md.
+            Сборка ${{ github.sha }}.
 
       - uses: actions/upload-artifact@v4
         with:
