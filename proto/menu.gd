@@ -170,6 +170,9 @@ func _build_main() -> void:
 	title.add_theme_constant_override("outline_size", 0)
 	box.add_child(title)
 	box.add_child(ProtoUi.label("робот, пещеры и пневматика", ProtoUi.FONT, ProtoUi.DIM))
+	var build := build_version()
+	if build != "":
+		box.add_child(ProtoUi.label("сборка " + build, ProtoUi.FONT_SMALL, ProtoUi.DIM))
 	var gap := Control.new()
 	gap.custom_minimum_size.y = 30
 	box.add_child(gap)
@@ -193,6 +196,14 @@ func _build_main() -> void:
 	hint.position = Vector2(96, 740)
 	_pages.main_hint = hint
 	_ui.add_child(hint)
+
+# Версия из version.txt рядом с игрой (его пишет tools/export.sh, а на Deck
+# обновляет pneuma.sh); в редакторе файла нет — пусто.
+static func build_version() -> String:
+	var path := OS.get_executable_path().get_base_dir().path_join("version.txt")
+	if not OS.has_feature("template") or not FileAccess.file_exists(path):
+		return ""
+	return FileAccess.get_file_as_string(path).strip_edges()
 
 func _sub_label(t: String) -> Label:
 	var l := ProtoUi.label(t, ProtoUi.FONT_SMALL, ProtoUi.DIM)
