@@ -101,7 +101,7 @@ jobs:
 
       - name: Smoke-test Linux build
         if: ${{ !inputs.skip_tests }}
-        run: build/linux/Pneuma.x86_64 --headless -- --autotest --seed=7
+        run: timeout 300 build/linux/Pneuma.x86_64 --headless -- --autotest --seed=7
 
       - name: Smoke-test Steam Deck build (starts in 3D at 1280x800)
         if: ${{ !inputs.skip_tests }}
