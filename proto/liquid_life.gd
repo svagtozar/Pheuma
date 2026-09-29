@@ -189,8 +189,8 @@ func _process(dt: float) -> void:
 				print("Rapier off: физика в кадре %.2f мс (среднее за 5 с)" % (_phys_sum / maxf(_phys_n, 1)))
 			for fx in [lava_fx, lake_fx]:
 				if fx != null:
-					print("Rapier %s: частиц %d, в сетку сдано %.1f м³, физика в кадре %.2f мс (среднее за 5 с), из них скрипт %.2f мс/шаг" % [fx.name,
-						fx.count(), fx.handed, _phys_sum / maxf(_phys_n, 1), fx.script_us / 1000.0 / maxf(fx.script_n, 1)])
+					print("Rapier %s: частиц %d, в сетку сдано %.1f м³, физика в кадре %.2f мс (среднее за 5 с), из них скрипт %.2f мс/шаг, поверхность %.1f мс" % [fx.name,
+						fx.count(), fx.handed, _phys_sum / maxf(_phys_n, 1), fx.script_us / 1000.0 / maxf(fx.script_n, 1), fx.skin_ms])
 					print("  ушли: упали %d, лимит %d, возраст %d; провалились %d, пропали в движке %d" % [fx.lost_fall, fx.lost_cap, fx.lost_age, fx.fell_through, fx.lost_engine])
 					fx.script_us = 0
 					fx.script_n = 0

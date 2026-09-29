@@ -48,6 +48,9 @@ var _age := PackedFloat32Array()
 var _rng := RandomNumberGenerator.new()
 var _t := 0.0
 var _glow := 0.0
+var skin: MeshInstance3D      # единая поверхность жидкости (или null — шарики)
+var skin_ms := 0.0            # сколько заняла вся поверхность за последний круг, мс
+var _mesher: Object           # VoxelMesherTransvoxel
 var _hot := Color.WHITE
 var _cold := Color.BLACK
 var _world: SubViewport      # свой мир физики для частиц
@@ -124,6 +127,18 @@ func setup(s: Substance, ambient: float, grid: ProtoFlow, hybrid_ := false) -> v
 	mm.material_override = mat
 	mm.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	add_child(mm)
+	if ClassDB.class_exists("VoxelMesherTransvoxel"):
+		# Единая поверхность: частицы — шары в поле расстояний (SDF), по нему
+		# Transvoxel (Voxel Tools, уже есть для рельефа) строит одну сетку.
+		_mesher = ClassDB.instantiate("VoxelMesherTransvoxel")
+		skin = MeshInstance3D.new()
+		skin.name = "surface"
+		var lm := ProtoLiquids.material(s, ambient)
+		lm.set_shader_parameter("vheat", false)
+		skin.material_override = lm
+		skin.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		add_child(skin)
+		mm.visible = false
 
 ## Сетка высот дна вокруг c (±half клеток по 1 м): только она и сталкивается с частицами.
 func set_ground(c: Vector2, half := 14) -> void:
@@ -297,8 +312,14 @@ func _retire() -> void:
 		k += 1
 	_age = keep
 
+const SKIN_VOXEL := 0.3     # шаг поля поверхности, м
+const SKIN_R := 0.5          # радиус шара частицы в поле (шаг частиц 0,4 — шары сливаются)
+
 func _process(_dt: float) -> void:
 	if fluid == null:
+		return
+	if skin != null:
+		_build_skin(fluid.get("points"))
 		return
 	var p: PackedVector3Array = fluid.get("points")
 	var m := mm.multimesh
@@ -320,3 +341,81 @@ func _process(_dt: float) -> void:
 		var col := _cold.lerp(_hot, heat) if cool_time > 0.0 else _hot
 		col.a = heat
 		m.set_instance_color(i, col)
+
+## Поверхность по частицам: поле расстояний (шары радиуса SKIN_R объединены),
+## сетка — Transvoxel. Поле режем на кубы по SKIN_CHUNK клеток, выровненные по
+## миру (как блоки рельефа): считаются только кубы с частицами. У каждого куба
+## своя сетка; за кадр пересобираем кубы, пока не выйдет SKIN_BUDGET мс, —
+## поверхность обновляется волной по кругу, кадр не проседает. (Поток
+## WorkerThreadPool выходил в 20 раз медленнее: Voxel Tools делит потоки с
+## рельефом; склейка кубов в одну сетку стоила ещё 4 мс.)
+const SKIN_CHUNK := 16
+const SKIN_BUDGET := 3.0
+
+var _skin_us := 0
+var _buckets := {}              # куб → частицы в нём (снимок на круг)
+var _queue: Array = []          # кубы, ждущие пересборки в этом круге
+var _chunks := {}               # куб → MeshInstance3D
+var _round_us := 0
+
+func _build_skin(p: PackedVector3Array) -> void:
+	var t0 := Time.get_ticks_usec()
+	if _queue.is_empty():
+		# Новый круг: снимок частиц по кубам; пустые теперь кубы тоже в очередь (гасить).
+		skin_ms = _round_us / 1000.0
+		_round_us = 0
+		_buckets = _bucket(p)
+		_queue = _buckets.keys()
+		for k in _chunks:
+			if not _buckets.has(k) and _chunks[k].visible:
+				_queue.append(k)
+	while not _queue.is_empty() and (Time.get_ticks_usec() - t0) < SKIN_BUDGET * 1000.0:
+		var k: Vector3i = _queue.pop_back()
+		_build_chunk(k, _buckets.get(k, PackedVector3Array()))
+	_round_us += Time.get_ticks_usec() - t0
+
+func _bucket(p: PackedVector3Array) -> Dictionary:
+	var vs := SKIN_VOXEL
+	var cw := SKIN_CHUNK * vs
+	var buckets := {}
+	for q in p:
+		# Шар задевает соседние кубы — кладём частицу во все, куда достаёт.
+		var a := Vector3i(((q - Vector3.ONE * (SKIN_R + 2.0 * vs)) / cw).floor())
+		var b := Vector3i(((q + Vector3.ONE * (SKIN_R + 1.0 * vs)) / cw).floor())
+		for x in range(a.x, b.x + 1):
+			for y in range(a.y, b.y + 1):
+				for z in range(a.z, b.z + 1):
+					var k := Vector3i(x, y, z)
+					if not buckets.has(k):
+						buckets[k] = PackedVector3Array()
+					buckets[k].append(q)
+	return buckets
+
+func _build_chunk(k: Vector3i, pts: PackedVector3Array) -> void:
+	var mi: MeshInstance3D = _chunks.get(k)
+	if pts.is_empty():
+		if mi != null:
+			mi.visible = false
+		return
+	var vs := SKIN_VOXEL
+	var org := Vector3(k) * SKIN_CHUNK * vs - Vector3.ONE * vs
+	var n := SKIN_CHUNK + 3                   # клетка до и две после (Transvoxel)
+	var buf: Object = ClassDB.instantiate("VoxelBuffer")
+	buf.call("set_channel_depth", 1, 1)       # CHANNEL_SDF, DEPTH_16_BIT
+	buf.call("create", n, n, n)
+	buf.call("fill_f", 1.0, 1)
+	var vt: Object = buf.call("get_voxel_tool")
+	vt.set("channel", 1)
+	vt.set("mode", 0)                         # MODE_ADD: объединение шаров
+	for q in pts:
+		vt.call("do_sphere", (q - org) / vs, SKIN_R / vs)
+	var m: Mesh = _mesher.call("build_mesh", buf, [])
+	if mi == null:
+		mi = MeshInstance3D.new()
+		mi.material_override = skin.material_override
+		mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		skin.add_child(mi)
+		_chunks[k] = mi
+	mi.mesh = m
+	mi.visible = m != null and m.get_surface_count() > 0
+	mi.transform = Transform3D(Basis.from_scale(Vector3.ONE * vs), org - global_position)
