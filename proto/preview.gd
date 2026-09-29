@@ -627,19 +627,20 @@ func _dig_demo() -> void:
 	var base := robot.global_position
 	for i in 6:
 		robot.global_position = base + f * (0.6 * i)
-		for k in 3:
-			d._t = 0.0
-			d.step(0.1, true, false)
+		for k in 36:
+			d.step(0.05, true, false)
+		d.step(0.05, false, false)
 	robot.global_position = base + Vector3(-f.z, 0, f.x) * 2.2
 	for i in 5:
 		robot.global_position += f * 0.6
-		d._t = 0.0
-		d.step(0.1, false, true)
+		for k in 12:
+			d.step(0.05, false, true)
+		d.step(0.05, false, false)
 	robot.global_position = base
 	d.flush()
 	for n in ["ground", "ground_cave"]:
 		(get_node(n) as ProtoTerrainChunks).flush()
-	print("Копка для кадра: приёмов %d, насыпано %d, в бункере %d %s" % [d.dug, d.filled, d.soil, d.status])
+	print("Копка для кадра: лунок %d, насыпей %d, в бункере %.1f %s" % [d.dug, d.filled, d.soil, d.status])
 
 ## Климат поменял, что жидкое (ProtoClimateView): жидкости — заново.
 func refresh_liquids() -> void:

@@ -90,7 +90,7 @@ func test_panel_moves_rows_and_drops_soil():
 	inv.act(["box", 0], ProtoInventory.CHUNK_KG)
 	assert_almost_eq((robot.get_meta("cargo") as Array)[0].mass, 1.0, 0.001, "взят 1 кг")
 	inv.drop(["soil", 0])
-	assert_eq(dg.soil, 0, "бункер высыпан")
+	assert_almost_eq(dg.soil, 0.0, 0.001, "бункер высыпан")
 	inv.drop(["cargo", 0])
 	assert_true((robot.get_meta("cargo") as Array).is_empty(), "выброшено")
 	inv.close()

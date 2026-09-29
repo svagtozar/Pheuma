@@ -248,6 +248,19 @@ func stand(p: Vector3, face: Vector3) -> void:
 	pl().air = false
 	await frames(4)
 
+## Середина ближайшего к плечу робота кристалла (куда навести прицел).
+func nearest_crystal() -> Vector3:
+	var sh: Vector3 = robot().to_global(Vector3(0.23, 1.4, 0.1))
+	var best := Vector3.INF
+	var bd := INF
+	for c in game.mining.crystals():
+		var d := ProtoMining.reach_dist(c, sh)
+		if d < bd:
+			bd = d
+			var ax := ProtoMining.axis(c)
+			best = (ax[0] + ax[1]) * 0.5
+	return best
+
 # ---------------------------------------------------------------- прогон
 
 func _play() -> void:
@@ -310,7 +323,11 @@ func _planet(seed_v: int, full: bool) -> void:
 	pl().drill_auto = false
 	pl().cam_focus = Vector3.INF
 	await stand(pl().drill_stand, pl().drill_face)
+	# Как игрок: навести перекрестье на ближайший кристалл друзы.
+	pl().aim_goal = nearest_crystal()
+	await frames(20)
 	await hold(ProtoControls.WORK, 20.0, func(): return cargo_kg() > 0.0 and game.mining.falling.is_empty())
+	pl().aim_goal = Vector3.INF
 	check(cargo_kg() > 0.0, "бур: в грузе %.1f кг" % cargo_kg())
 	await shot("drilled")
 	await secs(1.6)

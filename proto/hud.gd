@@ -198,7 +198,7 @@ func refresh() -> void:
 	var hs := health_summary(_health())
 	fs.climate = climate_line(get_parent().get("run") if get_parent() != null else null)
 	var dg = get_parent().get("digger") if get_parent() != null else null
-	soil = int(dg.soil) if dg != null else 0
+	soil = ceili(dg.soil - 0.05) if dg != null else 0
 	if dg != null and dg.status != "" and note == "":
 		note = dg.status
 	var m = builder.get("menu") if builder != null else null
