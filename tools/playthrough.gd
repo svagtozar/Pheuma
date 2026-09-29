@@ -310,10 +310,28 @@ func _planet(seed_v: int, full: bool) -> void:
 	await secs(1.6)
 	# Идём прочь от завода: камера (а с ней «вперёд») — от его середины.
 	var off: Vector3 = robot().global_position - game.pneu_view.origin
-	pl().cam_yaw = atan2(off.x, off.z)
-	# До 40 с: под программной отрисовкой CI (2–3 кадра/с) шаг урезан, а
-	# ожидание кончается сразу, как шаг засчитан.
-	await hold(ProtoControls.MOVE_FORWARD, 40.0, func(): return tut.step >= 2)
+	var yaw0 := atan2(off.x, off.z)
+	# До 60 с: под программной отрисовкой CI (2–3 кадра/с) шаг урезан, а
+	# ожидание кончается сразу, как шаг засчитан. Если за 6 с робот не отошёл
+	# от старта шага дальше (упёрся в гребень) — поворачиваем вбок и назад.
+	var turns := [0.0, PI / 2.0, -PI / 2.0, PI]
+	var k := 0
+	var far := 0.0
+	var walk_end := Time.get_ticks_msec() + 60000
+	pl().cam_yaw = yaw0
+	send(ev(ProtoControls.MOVE_FORWARD, true))
+	while tut.step < 2 and Time.get_ticks_msec() < walk_end:
+		var check_at := Time.get_ticks_msec() + 6000
+		while tut.step < 2 and Time.get_ticks_msec() < check_at:
+			await process_frame
+		var d: Vector3 = robot().global_position - tut._base.pos
+		var now := Vector2(d.x, d.z).length()
+		if now < far + 0.5 and k + 1 < turns.size():
+			k += 1
+			pl().cam_yaw = yaw0 + turns[k]
+		far = maxf(far, now)
+	send(ev(ProtoControls.MOVE_FORWARD, false))
+	await frames(3)
 	await secs(1.6)
 	check(tut.step >= 2, "обучение: осмотрелся и прошёлся (шаг %d)" % tut.step)
 	await shot("tutorial_walk")
