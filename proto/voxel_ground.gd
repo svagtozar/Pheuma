@@ -14,7 +14,7 @@ extends Node3D
 const VOXEL := 0.5              # м на воксель LOD 0 (ProtoVoxelGen.VOXEL)
 const GEN := "res://proto/voxel_gen.gd"
 const LOD_COUNT := 4
-const LOD_DIST := 24.0          # м: LOD 0 (0,5 м) — ближе стольких метров от наблюдателя
+const LOD_DIST := 16.0          # м: LOD 0 (0,5 м) — ближе стольких метров от наблюдателя
 const VIEW := 160.0             # м: видно весь участок с любого его края
 
 var terrain: ProtoTerrain
@@ -69,7 +69,7 @@ func build(t: ProtoTerrain, base: ShaderMaterial = null) -> void:
 	vt.set("lod_count", LOD_COUNT)
 	vt.set("lod_distance", LOD_DIST / VOXEL)
 	vt.set("view_distance", int(VIEW / VOXEL))
-	vt.set("mesh_block_size", 16)
+	vt.set("mesh_block_size", 32)   # меньше кусков — меньше вызовов отрисовки
 	vt.set("generate_collisions", true)
 	vt.set("collision_lod_count", 1)
 	vt.set("collision_layer", RobotGround.LAYER)
