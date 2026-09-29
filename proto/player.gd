@@ -118,11 +118,8 @@ func auto_cave(prefix: String) -> void:
 	shot_prefix = prefix
 	var pc := terrain.plateau()
 	route = [Vector3(pc.x + 5.0, 0, pc.z + 4.0), Vector3(terrain.cave_entry.x, 0, terrain.cave_entry.z + 3.0)]
-	var a := terrain.cave_entry
-	var b := terrain.cave_c + Vector3(0, 1, 0)
 	for i in range(1, 11):
-		var tt := i / 10.0
-		route.append(a.lerp(b, tt) + Vector3(sin(tt * 6.0) * 2.0, 0, 0))
+		route.append(terrain.tunnel_point(i / 10.0))
 	# Конец — у края зала, где нет натёков и друз (то же место, что у вида cave).
 	route.append(terrain.cave_c + Vector3(-4.0, 0, 3.0))
 	var p0: Vector3 = route[0]

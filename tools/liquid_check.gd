@@ -68,21 +68,32 @@ func _check(s: int) -> void:
 	await process_frame
 
 ## Свободные рёбра глади: [a, b, третья вершина треугольника]. Ребро, к которому
-## примыкает завеса (водопад с края вниз), не свободно; рёбра самих завес не
-## проверяем.
+## примыкает завеса (водопад с края вниз), не свободно; рёбра самих завес (UV2.x = 1,
+## и крутые, и изогнутые у кромки) не проверяем.
 func _free_edges(m: Mesh) -> Array:
-	var f := m.get_faces()
 	var cnt := {}
 	var info := {}
-	for i in range(0, f.size(), 3):
-		var flat := absf((f[i + 1] - f[i]).cross(f[i + 2] - f[i]).normalized().y) >= 0.5
-		for k in 3:
-			var a := f[i + k]
-			var b := f[i + (k + 1) % 3]
-			var key := _key(a, b)
-			cnt[key] = cnt.get(key, 0) + 1
-			if flat:
-				info[key] = [a, b, f[i + (k + 2) % 3]]
+	for si in m.get_surface_count():
+		var arr := m.surface_get_arrays(si)
+		var v: PackedVector3Array = arr[Mesh.ARRAY_VERTEX]
+		var uv2 = arr[Mesh.ARRAY_TEX_UV2]
+		var idx = arr[Mesh.ARRAY_INDEX]
+		var n: int = idx.size() if idx != null and idx.size() > 0 else v.size()
+		for i in range(0, n, 3):
+			var ids := [i, i + 1, i + 2]
+			if idx != null and idx.size() > 0:
+				ids = [idx[i], idx[i + 1], idx[i + 2]]
+			var tri := [v[ids[0]], v[ids[1]], v[ids[2]]]
+			var flat := absf((tri[1] - tri[0]).cross(tri[2] - tri[0]).normalized().y) >= 0.5
+			if uv2 != null and uv2.size() == v.size() and (uv2[ids[0]].x > 0.5 or uv2[ids[1]].x > 0.5 or uv2[ids[2]].x > 0.5):
+				flat = false
+			for k in 3:
+				var a: Vector3 = tri[k]
+				var b: Vector3 = tri[(k + 1) % 3]
+				var key := _key(a, b)
+				cnt[key] = cnt.get(key, 0) + 1
+				if flat:
+					info[key] = [a, b, tri[(k + 2) % 3]]
 	var res := []
 	for key in info:
 		if cnt[key] == 1:

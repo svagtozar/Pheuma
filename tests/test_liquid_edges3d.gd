@@ -1,6 +1,7 @@
 extends GutTest
-## Жидкости не висят в воздухе: пещерная лужа ниже пола зала, река не рисуется
-## над дырой (ход в пещеру) и опускает завесу, озеро стекает в выкопанную яму.
+## Жидкости не висят в воздухе: пещерная лужа ниже пола зала, дно реки над
+## пещерой цело, над выкопанной дырой река не рисуется и опускает завесу, озеро
+## стекает в выкопанную яму.
 
 var _t := {}
 
@@ -36,29 +37,53 @@ func test_cave_pool_sits_below_hall_floor():
 		var mesh := ProtoLiquids.surface_mesh(t, lv, func(x, z): return Vector2(x, z).distance_to(Vector2(pc.x, pc.z)) < t.pool_r + 1.0)
 		assert_gt(mesh.get_surface_count(), 0, "seed %d: гладь лужи есть" % sv)
 
-func test_river_skips_hole_and_hangs_curtain():
-	var t := _terrain(1)
-	var level := func(x, z): return t.river_level_at(x, z)
-	var area := func(x, z): return absf(z - t.river_z(x)) < 6.0 and x > t.lake_c.x + 2.0
-	var r := ProtoLiquids.sloped(t, level, area)
+func test_river_bed_stays_whole_over_cave():
+	# Ход в пещеру и зал проходят под руслом, но дно цело: река не срывается в дыру.
+	for sv in [1, 2, 5, 16, 53, 58, 115]:
+		var t := _terrain(sv)
+		var r := ProtoLiquids.sloped(t, func(x, z): return t.river_level_at(x, z), _river_area(t))
+		var deep := 0
+		for f: Vector3 in r[2]:
+			if t.river_level_at(f.x) - f.y > 2.5:
+				deep += 1
+		assert_eq(deep, 0, "seed %d: под рекой нет провала" % sv)
+		# А ход под ней — в рост робота.
+		for i in range(4, 97, 4):
+			var p := t.tunnel_point(i / 100.0)
+			assert_false(t.solid(p.x, p.y - ProtoTerrain.TUN_R + 0.3, p.z), "seed %d: ход открыт (t %.2f)" % [sv, i / 100.0])
+			assert_false(t.solid(p.x, p.y - ProtoTerrain.TUN_R + 2.2, p.z), "seed %d: свод хода не ниже 2 м (t %.2f)" % [sv, i / 100.0])
+
+func test_river_skips_dug_hole_and_hangs_curtain():
+	var t := ProtoTerrain.new(1, ProtoWorldStyle.for_planet(PlanetGen.generate(1)))
+	t.build_field()
+	# Пробить дно русла до пустоты под ним.
+	var x := 30.0
+	var c := Vector3(x, t.bed_at(x) - 1.5, t.river_z(x))
+	for k in 4:
+		t.edit(c - Vector3(0, k * 1.5, 0), 1.6, false)
+	var area := _river_area(t)
+	var r := ProtoLiquids.sloped(t, func(x, z): return t.river_level_at(x, z), area)
 	var wet: PackedByteArray = r[1]
 	var mesh: ArrayMesh = r[0]
 	var holes := 0
 	for z in t.sz:
-		for x in t.sx:
-			if wet[x + z * t.sx] == 1:
-				var y0: float = t.river_level_at(x + 0.5)
-				assert_true(y0 - t.floor_at(Vector3(x + 0.5, y0 + 0.2, z + 0.5)) <= ProtoLiquids.VOID + 0.01,
-					"мокрая клетка (%d, %d) лежит на дне" % [x, z])
-			elif area.call(x + 0.5, z + 0.5) and not t.solid(x + 0.5, t.river_level_at(x + 0.5) + 0.2, z + 0.5):
+		for xx in t.sx:
+			if wet[xx + z * t.sx] == 1:
+				var y0: float = t.river_level_at(xx + 0.5)
+				assert_true(y0 - t.floor_at(Vector3(xx + 0.5, y0 + 0.2, z + 0.5)) <= ProtoLiquids.VOID + 0.01,
+					"мокрая клетка (%d, %d) лежит на дне" % [xx, z])
+			elif area.call(xx + 0.5, z + 0.5) and not t.solid(xx + 0.5, t.river_level_at(xx + 0.5) + 0.2, z + 0.5):
 				holes += 1
-	assert_gt(holes, 0, "на seed 1 ход в пещеру проходит под руслом — там дыра без глади")
+	assert_gt(holes, 0, "в пробитом дне — дыра без глади")
 	var vertical := 0
 	var f := mesh.get_faces()
 	for i in range(0, f.size(), 3):
 		if absf((f[i + 1] - f[i]).cross(f[i + 2] - f[i]).normalized().y) < 0.5:
 			vertical += 1
 	assert_gt(vertical, 0, "с края над дырой опущена завеса")
+
+func _river_area(t: ProtoTerrain) -> Callable:
+	return func(x, z): return absf(z - t.river_z(x)) < 6.0 and x > t.lake_c.x + 2.0
 
 func test_lake_flows_into_dug_pit():
 	var t := ProtoTerrain.new(32, ProtoWorldStyle.for_planet(PlanetGen.generate(32)))

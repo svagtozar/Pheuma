@@ -137,6 +137,7 @@ var liquid_zones: Array = [] # жидкости для урона: {sub, temp, l
 var cam_at: Array = []           # --cam=x,y,z,tx,ty,tz
 var _river_mi: MeshInstance3D    # гладь реки (пересобирается после правки рельефа)
 var _river_wet := PackedByteArray()   # мокрые клетки русла (ProtoLiquids.sloped)
+var _river_spray: CPUParticles3D # брызги внизу водопадов реки (в дыру, в яму)
 var _river_in_lake: Callable
 var _liq_box := AABB()           # правки рельефа, ещё не учтённые жидкостями
 var _liq_t := 0.0
@@ -502,7 +503,10 @@ func _liquids() -> void:
 	rv.name = "river"
 	rv.mesh = ArrayMesh.new()
 	_river_in_lake = in_lake
-	_river_wet = ProtoLiquids.sloped(terrain, _river_level, _river_area, in_lake, rv.mesh, _river_span)[1]
+	var rs := ProtoLiquids.sloped(terrain, _river_level, _river_area, in_lake, rv.mesh, _river_span)
+	_river_wet = rs[1]
+	_river_spray = ProtoLiquids.spray(rs[2], river_mat.color)
+	_liq_root.add_child(_river_spray)
 	var river_sm := ProtoLiquids.material(river_mat, planet.ambient_temp)
 	# Течение к озеру (дно русла понижается к нему): полосы пены сносятся, робота сносит.
 	river_sm.set_shader_parameter("flow", Vector2(-1, 0) * ProtoSwim.flow_speed(ProtoSwim.viscosity(river_mat)))
@@ -590,7 +594,10 @@ func _liquids_rebuild(dt: float) -> void:
 				near = true
 				break
 		if near:
-			_river_wet = ProtoLiquids.sloped(terrain, _river_level, _river_area, _river_in_lake, _river_mi.mesh, _river_span)[1]
+			var rs := ProtoLiquids.sloped(terrain, _river_level, _river_area, _river_in_lake, _river_mi.mesh, _river_span)
+			_river_wet = rs[1]
+			if is_instance_valid(_river_spray):
+				ProtoLiquids.set_spray(_river_spray, rs[2])
 			if liquid_life != null and liquid_life.lake != null:
 				liquid_life.lake.blocked = _river_wet.duplicate()
 
