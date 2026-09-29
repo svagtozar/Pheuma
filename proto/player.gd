@@ -1094,6 +1094,10 @@ func _aim_tools() -> void:
 func _aim_goal_step(dt: float) -> void:
 	if aim_goal == Vector3.INF or cam == null:
 		return
+	# Перекрестье уже на кристалле — держать, как игрок: при крутом взгляде вниз
+	# (упор по наклону) доворот по курсу иначе кружит камеру вокруг цели.
+	if mining != null and mining.target != null:
+		return
 	var d := (aim_goal - cam.global_position).normalized()
 	var f := -cam.global_transform.basis.z
 	var k := minf(1.0, dt * 8.0)
