@@ -10,6 +10,7 @@ extends RefCounted
 ##   LT / G — выстрелить кистью и подтянуться, ещё раз — отпустить
 ##   D-pad вверх-вниз / колесо мыши — дистанция камеры
 ##   B / Z — коснуться того, что рядом (карточка материала, ProtoLabPanel)
+##   LB / I — инвентарь: груз, бункер грунта, бак рядом (ProtoInventory)
 ##   Мышь — камера (курсор захвачен; клик — захватить)
 ##   Start / Esc — меню рана (цель, прокачка, итоги, «Управление»); K — прокачка
 ## Окна (ensure_ui): A — нажать кнопку, B — назад, D-pad и левый стик — выбор.
@@ -56,6 +57,7 @@ const REBIND := [
 	[&"build_mode", "Стройка вкл/выкл"], [&"build_next", "Следующая деталь"], [&"build_prev", "Предыдущая деталь"],
 	[&"build_rotate", "Повернуть деталь"], [&"build_material", "Материал детали"],
 	[&"build_place", "Поставить"], [&"build_remove", "Разобрать"], [&"cargo_unload", "Выгрузить груз"],
+	[&"inventory", "Инвентарь"],
 	[&"lab_touch", "Коснуться (карточка материала)"], [&"lab_analyze", "Анализатор"],
 	[&"lab_prev", "Карточка: предыдущий образец"], [&"lab_next", "Карточка: следующий образец"],
 	[&"lab_close", "Карточка: закрыть"],
@@ -97,6 +99,7 @@ static func ensure() -> void:
 	ProtoBuilder.ensure_actions()
 	ProtoLabPanel.ensure_actions()
 	ProtoMapView.ensure_actions()
+	ProtoInventory.ensure_actions()
 	if not _loaded:
 		_loaded = true
 		load_settings()
@@ -139,7 +142,7 @@ static func _normalize(e: InputEvent) -> InputEvent:
 
 ## Всё как по умолчанию: раскладка, чувствительность, инверсия.
 static func reset_defaults() -> void:
-	for lay: Dictionary in [_layout(), ProtoBuilder.layout(), ProtoLabPanel.layout(), ProtoMapView.layout()]:
+	for lay: Dictionary in [_layout(), ProtoBuilder.layout(), ProtoLabPanel.layout(), ProtoMapView.layout(), ProtoInventory.layout()]:
 		for a in lay:
 			if InputMap.has_action(a):
 				InputMap.erase_action(a)

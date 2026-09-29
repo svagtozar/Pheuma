@@ -2,7 +2,9 @@ class_name ProtoDigger
 extends Node
 ## Правка рельефа роботом: бур без кристалла под прицелом копает грунт перед
 ## собой, а вынутый грунт можно насыпать обратно (H / D-pad влево). Грунт —
-## не груз: робот держит до SOIL_MAX «вёдер» в бункере.
+## не груз: робот держит до SOIL_MAX «вёдер» в бункере. Полный бункер копать
+## не мешает: лишний грунт ссыпается под ноги (как в Astroneer без канистры),
+## высыпать бункер можно и из инвентаря (ProtoInventory).
 ## Рельеф меняет ProtoTerrain.edit, сетки перестраивает ProtoTerrainChunks —
 ## не чаще раза в REBUILD_EVERY, задетое копится.
 
@@ -20,6 +22,7 @@ var robot: Node3D
 var soil := 0                  # вёдер грунта в бункере
 var dug := 0                   # приёмов копания за всё время
 var filled := 0
+var spilled := 0               # приёмов, когда бункер был полон и грунт ссыпался
 var status := ""               # подсказка для HUD ("" — нечего сказать)
 var speed_mult := 1.0
 var _t := 0.0
@@ -59,16 +62,20 @@ func step(dt: float, drilling: bool, fill: bool) -> bool:
 	var did := false
 	if drilling:
 		var at := dig_point()
-		if soil >= SOIL_MAX:
-			status = "бункер грунта полон — насыпьте (%s)" % "H"
-		elif not terrain.can_edit(at):
+		if not terrain.can_edit(at):
 			status = "площадка завода укреплена — копать нельзя"
-		elif _t <= 0.0:
-			_edit(at, DIG_R, false)
-			soil += 1
-			dug += 1
-			_t = DIG_EVERY / maxf(0.2, speed_mult)
-			did = true
+		else:
+			if soil >= SOIL_MAX:
+				status = "бункер грунта полон — лишний ссыпается"
+			if _t <= 0.0:
+				_edit(at, DIG_R, false)
+				if soil < SOIL_MAX:
+					soil += 1
+				else:
+					spilled += 1
+				dug += 1
+				_t = DIG_EVERY / maxf(0.2, speed_mult)
+				did = true
 	elif fill:
 		var at := fill_point()
 		if soil <= 0:
