@@ -64,6 +64,15 @@ jobs:
             -d "$TPL"
           rm /tmp/templates.tpz
 
+      - name: Cache Voxel Tools
+        uses: actions/cache@v4
+        with:
+          path: addons/zylann.voxel/bin
+          key: voxel-${{ hashFiles('tools/get_voxel.sh') }}
+
+      - name: Voxel Tools (terrain GDExtension)
+        run: tools/get_voxel.sh
+
       - name: Import project
         run: ~/godot/godot --headless --path . --import || true
 

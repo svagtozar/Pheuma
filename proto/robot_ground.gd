@@ -89,7 +89,7 @@ func place(fallback: float) -> void:
 	var hz1 := probe(top + Vector3(0, 0, r))
 	if not (hx0.is_empty() or hx1.is_empty() or hz0.is_empty() or hz1.is_empty()):
 		n = Vector3(hx0.position.y - hx1.position.y, 2.0 * r, hz0.position.y - hz1.position.y).normalized()
-	normal = normal.slerp(n, 1.0 - exp(-dt * 5.0)).normalized()
+	normal = normal.lerp(n, 1.0 - exp(-dt * 5.0)).normalized()
 	# Наклон в осях робота (поворот — YXZ: курс, затем тангаж и крен).
 	var yaw := root.rotation.y
 	var nl := Basis(Vector3.UP, yaw).inverse() * normal

@@ -10,7 +10,7 @@ $ProgressPreference = 'SilentlyContinue'  # без этого Invoke-WebRequest 
 Set-Location $PSScriptRoot
 $Repo = 'svagtozar/Pheuma'
 # Pneuma3D.cmd не обновляем: cmd дочитывает бат-файл по ходу, подмена его сломает.
-$Files = @('Pneuma3D.pck', 'Pneuma3D.exe', 'update.ps1', 'version.txt', 'README.md')
+$Files = @('Pneuma3D.pck', 'Pneuma3D.exe', 'libvoxel.windows.template_release.x86_64.dll', 'update.ps1', 'version.txt', 'README.md')
 
 function Log($m) {
 	Write-Host $m
@@ -53,6 +53,12 @@ try {
 	}
 	foreach ($name in $need) { Move-Item -Force "$tmp\$name" $name }
 	Log "Готово: $(Get-Content version.txt -ErrorAction SilentlyContinue)"
+	# Пришёл новый update.ps1 — он может знать о новых файлах (библиотеках):
+	# сверяемся ещё раз уже им.
+	if ($need -contains 'update.ps1' -and -not $env:PNEUMA_RERUN) {
+		$env:PNEUMA_RERUN = '1'
+		powershell -NoProfile -ExecutionPolicy Bypass -File "$PSScriptRoot\update.ps1"
+	}
 }
 catch { Log "Ошибка обновления: $_" }
 finally { Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue }

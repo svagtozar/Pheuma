@@ -7,7 +7,8 @@
 ## Запуск
 
 1. Установите [Godot 4.7.2](https://godotengine.org/download).
-2. Откройте `project.godot` и нажмите F5.
+2. Один раз скачайте библиотеки Voxel Tools (рельеф 3D): `tools/get_voxel.sh` (в Windows — из Git Bash). Без них игра тоже идёт, но рельеф 3D строится по-старому, медленнее.
+3. Откройте `project.godot` и нажмите F5.
 
 Из командной строки:
 
@@ -27,6 +28,10 @@ xvfb-run -a godot --path . --rendering-driver opengl3 --resolution 1280x800 -s t
 ## 3D-прототип: пневмозавод
 
 `godot --path . res://proto/preview.tscn -- --seed=14 --view=factory` показывает живой завод на площадке у пещеры: приёмник с добытыми кристаллами, насос, стеклянные трубы с капсулами груза, дробилка, печь и бак. Давление считает та же сеть газа, что в 2D, прочность деталей — их материал, обработку — правила `data/processes.gd`. С `--play` робот строит сам: B — режим стройки, T — деталь, R — повернуть, Пробел — поставить, X — разобрать, C — выгрузить груз в приёмник (на геймпаде Y, D-pad, RB, A, B, X). Код — `proto/pneumatics.gd`, `proto/pneumatics_view.gd`, `proto/builder.gd`.
+
+## 3D: рельеф на Voxel Tools
+
+Рельеф участка строит [Voxel Tools](https://github.com/Zylann/godot_voxel) (Zylann, MIT, GDExtension 1.7): `VoxelLodTerrain` с Transvoxel, воксель 0,5 м у робота и камеры, дальше 1, 2 и 4 м; сетки и коллизия считаются в C++ в потоках модуля. Форма рельефа по-прежнему задаётся `ProtoTerrain` (поле плотности): генератор `proto/voxel_gen.gd` копирует его в блоки, бур и кисть правят поле и вставляют правку в воксели через `VoxelTool.paste`. Цвет породы запекается в 3D-текстуру по узлам поля (`proto/voxel_ground.gd`). Шар планеты вокруг участка пока строится своими кусками (`proto/planet_stream.gd`).
 
 ## 3D: терраформирование
 

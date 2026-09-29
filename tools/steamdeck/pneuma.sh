@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Запуск Pneuma на Steam Deck с автообновлением.
 # Перед стартом сверяет файлы с последней сборкой на GitHub и докачивает только
-# изменившиеся: обычно это Pneuma.pck (~12 МБ вместо ~37 МБ архива), движок Pneuma.x86_64 меняется
-# лишь при смене версии Godot. Нет сети или что-то пошло не так — запускает то, что есть.
+# изменившиеся: обычно это Pneuma.pck (~12 МБ вместо ~37 МБ архива), движок Pneuma.x86_64 и
+# библиотека Voxel Tools меняются лишь при смене версии Godot или модуля. Нет сети или что-то пошло не так — запускает то, что есть.
 #
 # Канал берётся из channel.txt рядом со скриптом:
 #   nightly (по умолчанию) — каждая сборка main
@@ -12,7 +12,7 @@ set -u
 DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
 cd "$DIR" || exit 1
 REPO="svagtozar/Pheuma"
-FILES="Pneuma.pck Pneuma.x86_64 pneuma.sh version.txt README.md"
+FILES="Pneuma.pck Pneuma.x86_64 libvoxel.linux.template_release.x86_64.so pneuma.sh version.txt README.md"
 
 channel="$({ tr -d "[:space:]" < channel.txt; } 2>/dev/null)"
 case "${channel:-nightly}" in
@@ -66,7 +66,12 @@ update() {
 		mv -f "$tmp/$name" "$name"
 	done
 	log "готово: $(cat version.txt 2>/dev/null)"
+	# Пришёл новый pneuma.sh — он может знать о новых файлах (библиотеках):
+	# сверяемся ещё раз уже им.
+	case " $need " in
+		*" pneuma.sh "*) [ -z "${PNEUMA_RERUN:-}" ] && { rm -rf "$tmp"; PNEUMA_RERUN=1 exec "$DIR/pneuma.sh" "$@"; } ;;
+	esac
 }
 
-[ -n "$base" ] && update
+[ -n "$base" ] && update "$@"
 exec ./Pneuma.x86_64 "$@"

@@ -251,25 +251,40 @@ func _ready() -> void:
 	_lap("planet")
 	terrain.build_field()
 	_lap("terrain_field")
-	# Основная сетка (1 м) без пещерной коробки и детальная сетка пещеры (0,5 м) —
-	# кусками (ProtoTerrainChunks): правка рельефа перестраивает только задетые.
 	var tm := terrain.material()
-	var ground := ProtoTerrainChunks.new()
-	ground.name = "ground"
-	add_child(ground)
-	ground.build(terrain, AABB(Vector3.ZERO, Vector3(terrain.sx, terrain.sy, terrain.sz)), 1.0, CHUNK, tm,
-		terrain.coarse_skip())
-	_lap("terrain_mesh")
-	var cave := ProtoTerrainChunks.new()
-	cave.name = "ground_cave"
-	add_child(cave)
-	var cb := terrain.cave_box
-	cave.build(terrain, cb, 0.5, CHUNK, tm, AABB(), 0.0, 1.0)
-	_lap("cave_mesh")
-	print("Рельеф %d×%d×%d: %d мс, кусков %d + пещера %d" % [terrain.sx, terrain.sy, terrain.sz, Time.get_ticks_msec() - t0,
-		ground.chunks.size(), cave.chunks.size()])
-	_map_meshes = ground.meshes() + cave.meshes()
-	_map_caves = cave.meshes()
+	if ProtoVoxelGround.available():
+		# Voxel Tools: VoxelLodTerrain (0,5 м у наблюдателя, дальше грубее) строит
+		# сетки и коллизию в своих потоках; правка рельефа вставляется VoxelTool'ом.
+		var vg := ProtoVoxelGround.new()
+		vg.name = "ground"
+		add_child(vg)
+		vg.build(terrain, tm)
+		_lap("terrain_mesh")
+		var mm := vg.map_meshes()
+		_map_meshes = mm
+		_map_caves = [mm[1]]
+		_lap("cave_mesh")
+		print("Рельеф %d×%d×%d: %d мс, Voxel Tools (VoxelLodTerrain)" % [terrain.sx, terrain.sy, terrain.sz,
+			Time.get_ticks_msec() - t0])
+	else:
+		# Основная сетка (1 м) без пещерной коробки и детальная сетка пещеры (0,5 м) —
+		# кусками (ProtoTerrainChunks): правка рельефа перестраивает только задетые.
+		var ground := ProtoTerrainChunks.new()
+		ground.name = "ground"
+		add_child(ground)
+		ground.build(terrain, AABB(Vector3.ZERO, Vector3(terrain.sx, terrain.sy, terrain.sz)), 1.0, CHUNK, tm,
+			terrain.coarse_skip())
+		_lap("terrain_mesh")
+		var cave := ProtoTerrainChunks.new()
+		cave.name = "ground_cave"
+		add_child(cave)
+		var cb := terrain.cave_box
+		cave.build(terrain, cb, 0.5, CHUNK, tm, AABB(), 0.0, 1.0)
+		_lap("cave_mesh")
+		print("Рельеф %d×%d×%d: %d мс, кусков %d + пещера %d" % [terrain.sx, terrain.sy, terrain.sz, Time.get_ticks_msec() - t0,
+			ground.chunks.size(), cave.chunks.size()])
+		_map_meshes = ground.meshes() + cave.meshes()
+		_map_caves = cave.meshes()
 	_environment()
 	_lap("environment")
 	_liquids()
@@ -283,6 +298,7 @@ func _ready() -> void:
 	_factory()
 	_lap("factory")
 	_robot_and_camera()
+	_voxel_viewers()
 	if view == "flora" and flora.best != Vector3.INF:
 		_flora_shot()
 	if planet_on:
@@ -357,7 +373,7 @@ func _ready() -> void:
 		digger = ProtoDigger.new()
 		digger.name = "digger"
 		add_child(digger)
-		digger.setup(terrain, [get_node("ground"), get_node("ground_cave")], robot)
+		digger.setup(terrain, ground_nodes(), robot)
 		digger.on_edit = func(c: Vector3, r: float, _add: bool):
 			liquids_edited(AABB(c - Vector3.ONE * r, Vector3.ONE * r * 2.0))
 			if climate != null and climate.flora != null:
@@ -418,7 +434,7 @@ func _ready() -> void:
 	print("Загрузка: ", load_ms)
 	if ProtoDeck.active:
 		# Рельеф и робота не трогаем: сетка пещеры видна снаружи через вход.
-		deck = ProtoDeck.apply(self, terrain, cam, sun, [get_node("ground"), get_node("ground_cave"), robot])
+		deck = ProtoDeck.apply(self, terrain, cam, sun, ground_nodes() + [robot])
 		print("Графика Steam Deck: слой пещеры — %d сеток" % deck.hidden)
 
 ## Уход со сцены (новая планета, выход): дождаться потоков глобуса.
@@ -712,7 +728,7 @@ func _dig_demo() -> void:
 	if d == null:
 		d = ProtoDigger.new()
 		add_child(d)
-		d.setup(terrain, [get_node("ground"), get_node("ground_cave")], robot)
+		d.setup(terrain, ground_nodes(), robot)
 	var f := robot.global_transform.basis.z
 	var base := robot.global_position
 	for i in 6:
@@ -728,8 +744,8 @@ func _dig_demo() -> void:
 		d.step(0.05, false, false)
 	robot.global_position = base
 	d.flush()
-	for n in ["ground", "ground_cave"]:
-		(get_node(n) as ProtoTerrainChunks).flush()
+	for g in ground_nodes():
+		g.flush()
 	print("Копка для кадра: лунок %d, насыпей %d, в бункере %.1f %s" % [d.dug, d.filled, d.soil, d.status])
 
 ## Климат поменял, что жидкое (ProtoClimateView): жидкости — заново.
@@ -767,12 +783,40 @@ func flora_occupied(p: Vector3) -> bool:
 				return true
 	return false
 
+## Voxel Tools строит рельеф вокруг наблюдателей: у робота — с коллизией
+## (по ней ноги и корпус), у камеры — только сетку (кадр издали).
+func _voxel_viewers() -> void:
+	if get_node_or_null("ground") is ProtoVoxelGround:
+		ProtoVoxelGround.add_viewer(robot)
+		ProtoVoxelGround.add_viewer(cam).set("requires_collisions", false)
+
+## Сетка рельефа у робота и камеры готова (Voxel Tools строит её в потоках
+## в первые кадры); без Voxel Tools — всегда.
+func ground_ready() -> bool:
+	var vg := get_node_or_null("ground") as ProtoVoxelGround
+	if vg == null:
+		return true
+	var ok := true
+	for n: Node3D in [robot, cam]:
+		if n != null and n.is_inside_tree():
+			var p := vg.to_local(n.global_position)
+			ok = ok and vg.is_meshed(AABB(p - Vector3(4, 4, 4), Vector3(8, 8, 8)))
+	return ok
+
+## Узлы сетки рельефа участка: ProtoVoxelGround или (без Voxel Tools) два
+## ProtoTerrainChunks — основной и пещерный.
+func ground_nodes() -> Array:
+	var out: Array = []
+	for n in ["ground", "ground_cave"]:
+		var g := get_node_or_null(n)
+		if g != null:
+			out.append(g)
+	return out
+
 ## Рельеф поправлен (бур, насыпь, сохранение): сетки и флора в области box.
 func terrain_changed(box: AABB) -> void:
-	for n in ["ground", "ground_cave"]:
-		var ch := get_node_or_null(n) as ProtoTerrainChunks
-		if ch != null:
-			ch.rebuild(box)
+	for g in ground_nodes():
+		g.rebuild(box)
 	liquids_edited(box)
 	if climate != null and climate.flora != null:
 		climate.flora.terrain_changed(box.get_center(), box.size.x * 0.5)
@@ -1151,6 +1195,9 @@ func _surface(tm: ShaderMaterial) -> void:
 		v2 = Color.from_hsv(flora.hue2, flora.sat, flora.val)
 	surface.bind(tm, v1, v2)
 	surface.bind(planet_stream.coarse_mat, v1, v2)
+	var vg := get_node_or_null("ground") as ProtoVoxelGround
+	if vg != null:
+		surface.bind(vg.material, v1, v2)
 	if surface_demo != "":
 		_surface_demo()
 	surface.upload()
@@ -1958,7 +2005,7 @@ func _process(dt: float) -> void:
 		var cap := get_node_or_null("caption") as CanvasLayer
 		if cap:
 			cap.visible = not lab_panel.open and run == null   # в ране слева сверху — цель
-	if shot_path != "" and _t > 1.5 and not _shot_wait:
+	if shot_path != "" and _t > 1.5 and not _shot_wait and (ground_ready() or _t > 10.0):
 		var img := get_viewport().get_texture().get_image()
 		img.save_png(shot_path)
 		print("Кадров в секунду: ", Engine.get_frames_per_second(), " — скриншот: ", shot_path)
