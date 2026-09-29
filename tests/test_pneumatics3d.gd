@@ -68,14 +68,30 @@ func test_pump_stops_below_own_limit():
 	assert_true(n.parts.has(Vector2i.ZERO), "насос цел")
 	assert_almost_eq(n.pressure(Vector2i.ZERO), pump.stats.max_p * ProtoPneumatics.PUMP_SAFE, 0.2)
 
-func test_weak_pipe_bursts():
+## Насос держит запас от самой слабой детали сети: хрупкая труба у прочного
+## насоса цела, давление — у её предела с запасом.
+func test_pump_respects_weak_pipe():
 	var weak := TestHelpers.sub(planet, ["brittle", "porous"], "Хрупкое")
 	var n := ProtoPneumatics.new(planet)
 	n.place("pump", Vector2i.ZERO, 0, steel)
 	n.place("pipe", Vector2i(1, 0), 0, weak)
 	assert_lt(n.max_p(Vector2i(1, 0)), n.max_p(Vector2i.ZERO) * ProtoPneumatics.PUMP_SAFE, "условие теста")
 	_run(n, 30.0)
-	assert_false(n.parts.has(Vector2i(1, 0)), "труба из хрупкого лопнула")
+	assert_true(n.parts.has(Vector2i(1, 0)), "хрупкая труба цела")
+	assert_almost_eq(n.pressure(Vector2i(1, 0)), n.max_p(Vector2i(1, 0)) * ProtoPneumatics.PUMP_SAFE, 0.2)
+
+## Газ, уже накачанный в сеть, никуда не девается: хрупкая труба к сети под
+## давлением выше её предела лопает.
+func test_weak_pipe_bursts():
+	var weak := TestHelpers.sub(planet, ["brittle", "porous"], "Хрупкое")
+	var n := ProtoPneumatics.new(planet)
+	n.place("pump", Vector2i.ZERO, 0, steel)
+	n.place("pipe", Vector2i(1, 0), 0, steel)
+	_run(n, 30.0)
+	assert_gt(n.pressure(Vector2i(1, 0)), ComponentStats.compute("pipe", weak).max_p, "условие теста")
+	n.place("pipe", Vector2i(2, 0), 0, weak)
+	_run(n, 5.0)
+	assert_false(n.parts.has(Vector2i(2, 0)), "труба из хрупкого лопнула")
 	assert_true(n.events.any(func(e): return e.kind == "burst"))
 
 func test_thin_atmosphere_pumps_slower():
@@ -220,3 +236,123 @@ func test_in_game_only_nearest_machine_is_labeled():
 	robot.position += Vector3(0, 0, 20)
 	view.sync()
 	assert_eq(shown.call(), 0, "далеко от завода подписей нет")
+
+## За площадкой деталь стоит на своём грунте: at() учитывает подъём, лопнувшая
+## деталь оставляет его в событии (клуб газа — там, где она стояла).
+func test_part_lift_off_pad():
+	var n := ProtoPneumatics.new(planet)
+	var o := Vector3(10, 5, 10)
+	var part := n.place("pipe", Vector2i(2, 1), 0, steel)
+	assert_eq(n.at(o, Vector2i(2, 1)), ProtoPneumatics.cell_pos(o, Vector2i(2, 1)), "на площадке подъёма нет")
+	part.lift = -1.5
+	assert_almost_eq(n.at(o, Vector2i(2, 1)).y, 3.5, 0.001)
+	n._burst(Vector2i(2, 1))
+	assert_false(n.parts.has(Vector2i(2, 1)))
+	var e: Dictionary = n.events.filter(func(x): return x.kind == "burst")[0]
+	assert_almost_eq(float(e.lift), -1.5, 0.001)
+
+## Приёмник → труба → X → … : линия с насосом, X ставит тест.
+func _line_with(kind: String) -> ProtoPneumatics:
+	var n := ProtoPneumatics.new(planet)
+	n.place("intake", Vector2i(0, 0), 0, steel)
+	n.place("pipe", Vector2i(1, 0), 0, steel)
+	n.place("pump", Vector2i(1, 1), 3, steel)
+	n.place(kind, Vector2i(2, 0), 0, steel)
+	return n
+
+## Разветвитель по очереди шлёт капсулы вперёд и в стороны, где стоят баки.
+func test_splitter_shares_between_outputs():
+	var n := _line_with("splitter")
+	n.place("tank", Vector2i(3, 0), 0, steel)
+	n.place("tank", Vector2i(2, 1), 1, steel)
+	n.place("tank", Vector2i(2, -1), 3, steel)
+	n.feed(Vector2i.ZERO, Portion.new(crystal, 12.0))
+	_run(n, 60.0)
+	for c in [Vector2i(3, 0), Vector2i(2, 1), Vector2i(2, -1)]:
+		assert_gt(n.mass_in(c), 1.5, "бак %s получил свою долю" % str(c))
+	assert_almost_eq(n.mass_in(Vector2i(3, 0)) + n.mass_in(Vector2i(2, 1)) + n.mass_in(Vector2i(2, -1)), 12.0, 0.05)
+
+## Сортировщик: первое вещество — прямо, остальное — вбок.
+func test_sorter_sends_other_substances_aside():
+	var n := _line_with("sorter")
+	n.place("tank", Vector2i(3, 0), 0, steel)
+	n.place("tank", Vector2i(2, 1), 1, steel)
+	n.feed(Vector2i.ZERO, Portion.new(crystal, 4.0))
+	n.feed(Vector2i.ZERO, Portion.new(steel, 4.0))
+	_run(n, 60.0)
+	assert_eq(n.parts[Vector2i(2, 0)].filter, crystal)
+	assert_almost_eq(n.mass_in(Vector2i(3, 0)), 4.0, 0.05, "кварц прямо")
+	assert_almost_eq(n.mass_in(Vector2i(2, 1)), 4.0, 0.05, "сталь вбок")
+	assert_eq(n.parts[Vector2i(3, 0)].items[0].substance, crystal)
+
+## Скачок давления (гейзер, жара) сверх того, что держат насосы: клапан
+## стравливает лишнее, без него слабая линия лопается.
+func test_relief_valve_takes_pressure_surge():
+	var weak := TestHelpers.sub(planet, ["brittle"], "Стекло")
+	for with_relief in [false, true]:
+		var n := ProtoPneumatics.new(planet)
+		n.place("pump", Vector2i(0, 0), 0, weak)
+		n.place("relief" if with_relief else "pipe", Vector2i(1, 0), 0, weak)
+		n.place("pipe", Vector2i(2, 0), 0, weak)
+		_run(n, 20.0)
+		var t := 0.0
+		while t < 20.0:
+			if n.parts.has(Vector2i(2, 0)):
+				n.gas.add_gas(n.parts[Vector2i(2, 0)].id, 0.8 * 0.05)   # «гейзер» без удержу
+			n.step(0.05)
+			t += 0.05
+		assert_eq(n.burst_log.is_empty(), with_relief, "с клапаном линия цела, без него лопается")
+
+## Буфер копит капсулы, пока выход занят, и отдаёт их потом.
+func test_buffer_holds_and_releases():
+	var n := _line_with("buffer")
+	n.feed(Vector2i.ZERO, Portion.new(crystal, 8.0))
+	_run(n, 30.0)
+	assert_eq(n.parts[Vector2i(2, 0)].items.size() + (1 if n.parts[Vector2i(2, 0)].cap != null else 0), 4, "без выхода — всё в буфере")
+	n.place("tank", Vector2i(3, 0), 0, steel)
+	_run(n, 30.0)
+	assert_almost_eq(n.mass_in(Vector2i(3, 0)), 8.0, 0.05, "буфер отдал всё в бак")
+
+## Фонарь к газу сети не подключён и капсул не берёт.
+func test_lamp_is_off_the_gas_net():
+	var n := ProtoPneumatics.new(planet)
+	n.place("pump", Vector2i(0, 0), 0, steel)
+	n.place("lamp", Vector2i(1, 0), 0, steel)
+	_run(n, 10.0)
+	assert_almost_eq(n.pressure(Vector2i(1, 0)), planet.atm_pressure, 0.01)
+
+## Слабая труба к работающей линии: насос перестаёт качать к пределу своего
+## материала, и газ, что уже в сети, её не рвёт.
+func test_weak_pipe_caps_pump():
+	var weak := TestHelpers.sub(planet, ["crystalline"], "Стекло")
+	var n := ProtoPneumatics.new(planet)
+	n.build_demo(Vector2i.ZERO, steel)
+	_run(n, 60.0)
+	var c := Vector2i(2, 1)
+	n.place("pipe", c, 0, weak)
+	_run(n, 60.0)
+	assert_eq(n.burst_log.size(), 0, "слабая труба не лопнула")
+	assert_eq(n.parts[Vector2i(1, 1)].status.begins_with("держит"), true, "насос встал у предела сети")
+
+## Две сети: слабая со своим насосом и прочная. Труба между ними: прочный насос
+## больше не догоняет слабую часть до своего давления (было 5,9 → 7,9 атм и разрыв).
+func test_joining_nets_does_not_spike_pressure():
+	var weak := TestHelpers.sub(planet, ["crystalline"], "Стекло")
+	var n := ProtoPneumatics.new(planet)
+	n.place("pump", Vector2i(0, 0), 0, weak)
+	n.place("pipe", Vector2i(1, 0), 0, weak)
+	n.place("pump", Vector2i(3, 0), 0, steel)
+	n.place("pipe", Vector2i(4, 0), 0, steel)
+	_run(n, 60.0)
+	var before := n.pressure(Vector2i(1, 0))
+	n.place("pipe", Vector2i(2, 0), 0, steel)
+	var peak := 0.0
+	var t := 0.0
+	while t < 60.0:
+		n.step(0.05)
+		t += 0.05
+		peak = maxf(peak, n.pressure(Vector2i(1, 0)))
+	assert_eq(n.burst_log.size(), 0, "ничего не лопнуло")
+	# Газ прочной части выравнивается со слабой — небольшой всплеск, но насосы его не держат.
+	assert_lt(peak, before * 1.1, "давление в слабой части не подскочило: %.2f → %.2f" % [before, peak])
+	assert_almost_eq(n.pressure(Vector2i(1, 0)), before, 0.3, "и вернулось к запасу слабой части")

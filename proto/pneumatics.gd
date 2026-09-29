@@ -23,6 +23,11 @@ const KINDS := {
 	"pump": {"n": "Насос", "vol": 0.6, "stat": "pump"},
 	"pipe": {"n": "Труба", "vol": 0.4, "stat": "pipe"},
 	"cannon": {"n": "Пневмопушка", "vol": 1.2, "stat": "cannon", "min_p": 3.0},
+	# Логистика линий: капсулы делятся, сортируются, копятся; клапан бережёт сеть.
+	"splitter": {"n": "Разветвитель", "vol": 0.5, "stat": "pipe"},
+	"sorter": {"n": "Сортировщик", "vol": 0.5, "stat": "pipe"},
+	"buffer": {"n": "Буфер", "vol": 1.2, "stat": "tank"},
+	"relief": {"n": "Предохр. клапан", "vol": 0.4, "stat": "pipe"},
 	"crusher": {"n": "Дробилка", "vol": 1.0, "stat": "crusher", "process": "crusher"},
 	"furnace": {"n": "Печь", "vol": 1.2, "stat": "furnace", "process": "furnace"},
 	"filter": {"n": "Фильтр", "vol": 1.0, "stat": "filter", "process": "filter"},
@@ -47,12 +52,16 @@ const KINDS := {
 	"dome": {"n": "Купол", "vol": 4.0, "stat": "dome"},
 	# Терраформирование: газ сети уходит в небо и поднимает давление планеты (ProtoTerraform).
 	"vent": {"n": "Газоотвод", "vol": 0.5, "stat": "vent"},
+	# Фонарь: свет у линий ночью; к газу сети не подключён.
+	"lamp": {"n": "Фонарь", "vol": 0.2, "stat": "lamp", "nogas": true},
 }
-## Порядок в меню стройки: пневматика, все 16 машин обработки 2D-игры, бак, лаборатория,
-## сооружения целей (шахта, маяк, купол), газоотвод.
-const ORDER := ["pipe", "pump", "intake", "cannon", "crusher", "furnace", "filter", "condenser", "treater",
+## Детали, через которые капсула проходит насквозь, как по трубе.
+const PASS := ["pipe", "splitter", "sorter", "relief"]
+## Порядок в меню стройки: пневматика и логистика, все 16 машин обработки 2D-игры,
+## бак, лаборатория, сооружения целей (шахта, маяк, купол), газоотвод, фонарь.
+const ORDER := ["pipe", "pump", "intake", "splitter", "sorter", "buffer", "relief", "cannon", "crusher", "furnace", "filter", "condenser", "treater",
 	"compressor", "decompressor", "distiller", "centrifuge", "magnet_sep", "electrolyzer", "sinter",
-	"irradiator", "cryochamber", "resonator", "loom", "tank", "lab", "launch_silo", "beacon", "dome", "vent"]
+	"irradiator", "cryochamber", "resonator", "loom", "tank", "lab", "launch_silo", "beacon", "dome", "vent", "lamp"]
 
 const PUMP_RATE := 1.6          # газа в секунду при 1 атм снаружи
 ## Насос не качает выше этой доли своего предела. Запас — на события: при 0,9
@@ -80,6 +89,9 @@ const AROUND := [Vector2i(1, 0), Vector2i(1, -1), Vector2i(1, 1), Vector2i(0, -1
 	Vector2i(-1, -1), Vector2i(-1, 1), Vector2i(-1, 0)]   # соседи купола, вместе с диагональными
 const DOME_COMFORT := 20.0      # к чему тянет изолирующий купол
 const VENT_RATE := 1.2          # газа в секунду, который газоотвод выпускает в небо
+const RELIEF_K := 0.8           # клапан стравливает газ выше этой доли предела своего материала
+const RELIEF_RATE := 3.0        # газа в секунду, который клапан успевает стравить
+const BUFFER_N := 6             # капсул в буфере
 
 var planet: Planet
 var gas := GasNet.new()
@@ -103,6 +115,7 @@ var launched_subs := {}         # id вещества → кг, улетевши
 var vented := 0.0               # газа выпущено в небо газоотводами за всё время
 var launches: Array = []        # [Substance, кг] — старты шахты с прошлого забора (ProtoRun → зеркала)
 var _next_id := 1
+var _net_cap := {}              # id детали → самый слабый предел её сети (сброс при стройке)
 
 func _init(p: Planet) -> void:
 	planet = p
@@ -129,10 +142,11 @@ func place(kind: String, c: Vector2i, dir: int, sub: Substance) -> Dictionary:
 	placed += 1
 	parts[c] = part
 	by_id[part.id] = c
+	_net_cap.clear()
 	gas.add_node(part.id, info.vol, stats.max_p)
 	for d in DIRS:
 		var n: Dictionary = parts.get(c + d, {})
-		if not n.is_empty():
+		if not n.is_empty() and not info.get("nogas", false) and not KINDS[n.kind].get("nogas", false):
 			gas.connect_nodes(part.id, n.id, 1.0)
 	return part
 
@@ -148,6 +162,7 @@ func remove(c: Vector2i) -> Array:
 		back.append(part.cap.p)
 	back.append_array(part.get("out_q", []))
 	gas.remove_node(part.id)
+	_net_cap.clear()
 	by_id.erase(part.id)
 	parts.erase(c)
 	return back
@@ -173,6 +188,28 @@ func pressure(c: Vector2i) -> float:
 
 func max_p(c: Vector2i) -> float:
 	return parts[c].stats.max_p if parts.has(c) else 0.0
+
+## Предел самой слабой детали в сети клетки c. Насосы держат запас от него, а не
+## от своего материала: иначе прочный насос, соединённый трубой со слабой частью
+## завода, догонял её до своего давления и рвал.
+func net_max_p(c: Vector2i) -> float:
+	if not parts.has(c):
+		return 0.0
+	var id: int = parts[c].id
+	if not _net_cap.has(id):
+		var seen := {id: true}
+		var todo := [id]
+		var lo := INF
+		while not todo.is_empty():
+			var cur: int = todo.pop_back()
+			lo = minf(lo, float(gas.nodes[cur].max_p))
+			for nb in gas.neighbors(cur):
+				if not seen.has(nb):
+					seen[nb] = true
+					todo.append(nb)
+		for k in seen:
+			_net_cap[k] = lo
+	return _net_cap[id]
 
 func mass_in(c: Vector2i) -> float:
 	var part: Dictionary = parts.get(c, {})
@@ -204,6 +241,10 @@ func step(dt: float) -> void:
 			"beacon": _beacon(part, dt)
 			"dome": _dome(part, dt)
 			"vent": _vent(part, dt)
+			"relief": _relief(part, dt)
+			"buffer": _buffer(part)
+			"sorter": part.status = "прямо — %s, остальное — вбок" % part.filter.name if part.get("filter") != null else "прямо пойдёт то, что придёт первым"
+			"lamp": part.status = ""
 			"tank": part.status = "%.1f / %.0f кг" % [mass_in(part.cell), KINDS.tank.cap] + ("\n" + part.items[-1].substance.name if not part.items.is_empty() else "")
 			_:
 				if KINDS[part.kind].has("process"):
@@ -214,10 +255,11 @@ func step(dt: float) -> void:
 		_burst(by_id.get(id, Vector2i(-9999, -9999)))
 
 func _pump(part: Dictionary, dt: float) -> void:
-	var limit: float = part.stats.max_p * PUMP_SAFE
+	var cap := net_max_p(part.cell)
+	var limit: float = cap * PUMP_SAFE
 	var p := gas.pressure(part.id)
 	if p >= limit:
-		part.status = "держит %.1f атм (предел материала %.1f)" % [p, part.stats.max_p]
+		part.status = "держит %.1f атм (предел сети %.1f)" % [p, cap]
 		part.hot = false
 		return
 	# Насос забирает воздух снаружи: чем он реже, тем меньше за такт.
@@ -417,6 +459,30 @@ func _vent(part: Dictionary, dt: float) -> void:
 	part.work = true
 	part.status = "выпускает в небо · всего %.0f" % vented
 
+## Предохранительный клапан: стравливает газ выше RELIEF_K предела своего материала.
+## Насосы и так держат запас от слабой детали сети (net_max_p), клапан страхует
+## от скачков сверх него: гейзер, жара, соединение сетей.
+func _relief(part: Dictionary, dt: float) -> void:
+	var lim: float = part.stats.max_p * RELIEF_K
+	var p := gas.pressure(part.id)
+	part.work = false
+	if p <= lim:
+		part.status = "закрыт: %.1f из %.1f атм" % [p, lim]
+		return
+	var over := -gas.gas_for_pressure(part.id, lim)
+	var d := minf(over, RELIEF_RATE * dt)
+	if d > 0.0:
+		gas.take_gas(part.id, d)          # в счёт газоотводов (цель, климат) не идёт
+	part.work = true
+	part.status = "стравливает: %.1f атм" % p
+
+## Буфер: копит до BUFFER_N капсул и выпускает их по одной вперёд — если там
+## что-то стоит (в пустоту не сыплет, в отличие от конца трубы).
+func _buffer(part: Dictionary) -> void:
+	part.status = "%d / %d капсул" % [part.items.size(), BUFFER_N]
+	if part.cap == null and not part.items.is_empty() and parts.has(part.cell + DIRS[part.dir]):
+		part.cap = {"p": part.items.pop_front(), "cell": part.cell, "from": part.cell - DIRS[part.dir], "t": 0.5}
+
 ## К какой температуре тянется купол в клетке c.
 func dome_target(c: Vector2i) -> float:
 	var part: Dictionary = parts.get(c, {})
@@ -450,31 +516,94 @@ func _move_capsules(dt: float) -> void:
 		cap.t = minf(nt, 1.0)
 		if cap.t < 1.0:
 			continue
-		var nc: Vector2i = part.cell + DIRS[part.dir]
+		var od: int = cap.get("out", part.dir)
+		if part.kind == "splitter":
+			od = _split_out(part, cap, od)
+		var nc: Vector2i = part.cell + DIRS[od]
 		var nxt: Dictionary = parts.get(nc, {})
 		if nxt.is_empty():
 			# Конец трубы в пустоту — капсула выпадает наружу.
-			events.append({"kind": "lost", "cell": part.cell, "dir": part.dir, "sub": cap.p.substance})
+			events.append({"kind": "lost", "cell": part.cell, "dir": od, "sub": cap.p.substance})
 			part.cap = null
 			continue
 		if _accept(nxt, cap.p, part.cell):
 			part.cap = null
+			if part.kind == "splitter":
+				part.rr = od
+
+## Выходы разветвителя: вперёд и в стороны, где стоит деталь (не туда, откуда пришла).
+func split_outs(part: Dictionary, from: Vector2i) -> Array:
+	var out: Array = []
+	for k in [0, 1, 3]:
+		var d: int = (part.dir + k) % 4
+		var nc: Vector2i = part.cell + DIRS[d]
+		if nc != from and parts.has(nc):
+			out.append(d)
+	return out
+
+## Разветвитель по очереди: начиная со следующего после прошлого выхода — первый,
+## кто берёт капсулу (занятый выход пропускается, линия не встаёт).
+func _split_out(part: Dictionary, cap: Dictionary, want: int) -> int:
+	var outs := split_outs(part, cap.from)
+	if outs.is_empty():
+		return want
+	var start: int = (outs.find(int(part.get("rr", -1))) + 1) % outs.size()
+	for k in outs.size():
+		var d: int = outs[(start + k) % outs.size()]
+		var nxt: Dictionary = parts[part.cell + DIRS[d]]
+		if _can_take(nxt, part.cell):
+			return d
+	return want
+
+## Возьмёт ли деталь капсулу из клетки from сейчас (без самой передачи).
+func _can_take(part: Dictionary, from: Vector2i) -> bool:
+	var back: Vector2i = part.cell - DIRS[part.dir]
+	var front: Vector2i = part.cell + DIRS[part.dir]
+	if part.kind in PASS:
+		return from != front and part.cap == null
+	match part.kind:
+		"buffer": return from != front and part.items.size() < BUFFER_N
+		"tank", "launch_silo": return true
+		"beacon", "dome", "vent", "lamp", "intake": return false
+	return from == back and part.items.size() < QUEUE
 
 func _accept(part: Dictionary, p: Portion, from: Vector2i) -> bool:
 	var back: Vector2i = part.cell - DIRS[part.dir]
 	var front: Vector2i = part.cell + DIRS[part.dir]
 	match part.kind:
-		"pipe":
+		"pipe", "splitter", "relief":
 			if from == front or part.cap != null:
 				return false
 			part.cap = {"p": p, "cell": part.cell, "from": from, "t": 0.0}
+			if part.kind == "splitter":
+				var outs := split_outs(part, from)
+				if not outs.is_empty():
+					part.cap.out = outs[(outs.find(int(part.get("rr", -1))) + 1) % outs.size()]
+			return true
+		"sorter":
+			if from == front or part.cap != null:
+				return false
+			if part.get("filter") == null:
+				part.filter = p.substance
+			part.cap = {"p": p, "cell": part.cell, "from": from, "t": 0.0}
+			if p.substance != part.filter:
+				# Чужое — вбок: влево или вправо, где стоит деталь (по умолчанию вправо).
+				var side: int = (part.dir + 1) % 4
+				if not parts.has(part.cell + DIRS[side]) and parts.has(part.cell + DIRS[(part.dir + 3) % 4]):
+					side = (part.dir + 3) % 4
+				part.cap.out = side
+			return true
+		"buffer":
+			if from == front or part.items.size() >= BUFFER_N:
+				return false
+			part.items.append(p)
 			return true
 		"launch_silo":
 			if mass_in(part.cell) + p.mass > KINDS.launch_silo.cap + 0.001:
 				return false
 			part.items.append(p)
 			return true
-		"beacon", "dome", "vent":
+		"beacon", "dome", "vent", "lamp":
 			return false
 		"tank":
 			if mass_in(part.cell) + p.mass > KINDS.tank.cap + 0.001:
@@ -557,7 +686,7 @@ func _burst(c: Vector2i) -> void:
 	var part: Dictionary = parts.get(c, {})
 	if part.is_empty():
 		return
-	events.append({"kind": "burst", "cell": c, "part": part.kind, "p": gas.pressure(part.id), "max_p": part.stats.max_p})
+	events.append({"kind": "burst", "cell": c, "part": part.kind, "p": gas.pressure(part.id), "max_p": part.stats.max_p, "lift": lift(c)})
 	burst_log.append([part.kind, c, part.dir, part.sub])
 	remove(c)
 
@@ -569,6 +698,15 @@ static func cell_at(origin: Vector3, p: Vector3) -> Vector2i:
 
 static func cell_pos(origin: Vector3, c: Vector2i) -> Vector3:
 	return origin + Vector3(c.x * CELL, 0, c.y * CELL)
+
+## Подъём детали над площадкой (origin.y): за площадкой деталь стоит на грунте
+## своей клетки (ProtoBuilder кладёт part.lift, а под неё — фундамент part.foot).
+func lift(c: Vector2i) -> float:
+	return float(parts.get(c, {}).get("lift", 0.0))
+
+## Где стоит деталь в клетке c — с её подъёмом.
+func at(origin: Vector3, c: Vector2i) -> Vector3:
+	return cell_pos(origin, c) + Vector3(0, lift(c), 0)
 
 ## Направление сетки, ближайшее к вектору в плоскости XZ.
 static func dir_of(v: Vector3) -> int:

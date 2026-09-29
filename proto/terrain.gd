@@ -410,14 +410,26 @@ func can_edit(c: Vector3) -> bool:
 ## Выемка (add = false) или насыпь шаром радиуса r. Поле в узлах вокруг
 ## пересчитывается; возвращает задетую область (для перестройки сеток).
 func edit(c: Vector3, r: float, add: bool) -> AABB:
-	var i := edits.size()
 	edits.append([c, r, 1.0 if add else -1.0])
+	return _touch(edits.size() - 1)
+
+## Лунка или насыпь растёт (бур и кисть работают плавно): правке i новый
+## радиус. Возвращает задетую область.
+func edit_grow(i: int, r: float) -> AABB:
+	edits[i][1] = r
+	return _touch(i)
+
+## Правку i — в корзины её охвата и пересчитать поле вокруг.
+func _touch(i: int) -> AABB:
+	var c: Vector3 = edits[i][0]
+	var r: float = edits[i][1]
 	for bx in range(floori((c.x - r) / EDIT_BIN), floori((c.x + r) / EDIT_BIN) + 1):
 		for bz in range(floori((c.z - r) / EDIT_BIN), floori((c.z + r) / EDIT_BIN) + 1):
 			var k := Vector2i(bx, bz)
 			if not _edit_bins.has(k):
 				_edit_bins[k] = []
-			_edit_bins[k].append(i)
+			if not _edit_bins[k].has(i):
+				_edit_bins[k].append(i)
 	var box := AABB(c - Vector3.ONE * (r + 1.0), Vector3.ONE * (2.0 * r + 2.0))
 	if not dens.is_empty():
 		var sxn := sx + 1

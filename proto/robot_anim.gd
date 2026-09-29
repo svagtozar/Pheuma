@@ -27,7 +27,7 @@ static var default_mode := "idle"
 const CYCLE := 0.88          # м за полный цикл шага (два шага)
 const WALK_SPEED := 0.84     # м/с — обычный шаг
 const RUN_CYCLE := 1.9       # м за цикл бега
-const RUN_SPEED := 1.93      # м/с — бег (шаг × ProtoPlayer.SPRINT_MULT)
+const RUN_SPEED := 2.69      # м/с — бег (шаг × ProtoPlayer.SPRINT_MULT)
 const JUMP_PERIOD := 1.8     # цикл витрины jump
 
 var mode := ""

@@ -193,9 +193,13 @@ func set_build(on: bool) -> void:
 	for i in 4:
 		await settle()
 		if builder().active == on:
-			return
+			break
 		await tap(&"build_mode")
 		await frames(3)
+	# Стройка открывается с каталогом: закрыть его кнопкой «назад» (стройка остаётся).
+	if on and builder().menu != null and builder().menu.open:
+		await back()
+		check(builder().active and not builder().menu.open, "B / Esc закрыл каталог, стройка осталась")
 
 ## Выбрать деталь кнопкой «следующая» (окно рана может открыться посреди выбора).
 func _select(kind: String) -> void:
@@ -243,6 +247,19 @@ func stand(p: Vector3, face: Vector3) -> void:
 	pl().vel = Vector3.ZERO
 	pl().air = false
 	await frames(4)
+
+## Середина ближайшего к плечу робота кристалла (куда навести прицел).
+func nearest_crystal() -> Vector3:
+	var sh: Vector3 = robot().to_global(Vector3(0.23, 1.4, 0.1))
+	var best := Vector3.INF
+	var bd := INF
+	for c in game.mining.crystals():
+		var d := ProtoMining.reach_dist(c, sh)
+		if d < bd:
+			bd = d
+			var ax := ProtoMining.axis(c)
+			best = (ax[0] + ax[1]) * 0.5
+	return best
 
 # ---------------------------------------------------------------- прогон
 
@@ -293,10 +310,28 @@ func _planet(seed_v: int, full: bool) -> void:
 	await secs(1.6)
 	# Идём прочь от завода: камера (а с ней «вперёд») — от его середины.
 	var off: Vector3 = robot().global_position - game.pneu_view.origin
-	pl().cam_yaw = atan2(off.x, off.z)
-	# До 40 с: под программной отрисовкой CI (2–3 кадра/с) шаг урезан, а
-	# ожидание кончается сразу, как шаг засчитан.
-	await hold(ProtoControls.MOVE_FORWARD, 40.0, func(): return tut.step >= 2)
+	var yaw0 := atan2(off.x, off.z)
+	# До 60 с: под программной отрисовкой CI (2–3 кадра/с) шаг урезан, а
+	# ожидание кончается сразу, как шаг засчитан. Если за 6 с робот не отошёл
+	# от старта шага дальше (упёрся в гребень) — поворачиваем вбок и назад.
+	var turns := [0.0, PI / 2.0, -PI / 2.0, PI]
+	var k := 0
+	var far := 0.0
+	var walk_end := Time.get_ticks_msec() + 60000
+	pl().cam_yaw = yaw0
+	send(ev(ProtoControls.MOVE_FORWARD, true))
+	while tut.step < 2 and Time.get_ticks_msec() < walk_end:
+		var check_at := Time.get_ticks_msec() + 6000
+		while tut.step < 2 and Time.get_ticks_msec() < check_at:
+			await process_frame
+		var d: Vector3 = robot().global_position - tut._base.pos
+		var now := Vector2(d.x, d.z).length()
+		if now < far + 0.5 and k + 1 < turns.size():
+			k += 1
+			pl().cam_yaw = yaw0 + turns[k]
+		far = maxf(far, now)
+	send(ev(ProtoControls.MOVE_FORWARD, false))
+	await frames(3)
 	await secs(1.6)
 	check(tut.step >= 2, "обучение: осмотрелся и прошёлся (шаг %d)" % tut.step)
 	await shot("tutorial_walk")
@@ -306,7 +341,11 @@ func _planet(seed_v: int, full: bool) -> void:
 	pl().drill_auto = false
 	pl().cam_focus = Vector3.INF
 	await stand(pl().drill_stand, pl().drill_face)
+	# Как игрок: навести перекрестье на ближайший кристалл друзы.
+	pl().aim_goal = nearest_crystal()
+	await frames(20)
 	await hold(ProtoControls.WORK, 20.0, func(): return cargo_kg() > 0.0 and game.mining.falling.is_empty())
+	pl().aim_goal = Vector3.INF
 	check(cargo_kg() > 0.0, "бур: в грузе %.1f кг" % cargo_kg())
 	await shot("drilled")
 	await secs(1.6)

@@ -74,7 +74,7 @@ func part_near(r: float = TOUCH_R) -> Dictionary:
 		var part: Dictionary = net.parts[c]
 		if _part_subs(part).is_empty():
 			continue
-		var d := ProtoPneumatics.cell_pos(origin, c).distance_to(robot.global_position)
+		var d: float = net.at(origin, c).distance_to(robot.global_position)
 		if d < bd:
 			bd = d
 			best = part
@@ -291,7 +291,7 @@ func tick(dt: float) -> void:
 		return
 	for c in net.parts:
 		var part: Dictionary = net.parts[c]
-		if ProtoPneumatics.cell_pos(origin, c).distance_to(robot.global_position) > REFILL_R:
+		if net.at(origin, c).distance_to(robot.global_position) > REFILL_R:
 			continue
 		var extra: float = net.gas.pressure(part.id) - net.gas.atm_pressure
 		if extra < 0.3:

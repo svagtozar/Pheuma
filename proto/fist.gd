@@ -137,7 +137,8 @@ func _step(dt: float) -> void:
 				_set_state("pull" if pull_wanted else "back")
 		"pull":
 			fist_pos = target
-			if st_t > 3.0:
+			# Трос отпускает игрок (ProtoPlayer); сама — только если забыли.
+			if st_t > 6.0:
 				_set_state("back")
 		"back":
 			var d2 := fist_pos.distance_to(m)

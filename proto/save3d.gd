@@ -243,7 +243,7 @@ static func apply(r: Node3D, d: Dictionary) -> void:
 			r.terrain_changed(box)
 	var dg = r.get("digger")
 	if dg != null:
-		dg.soil = int(d.get("soil", 0))
+		dg.soil = float(d.get("soil", 0))
 	var dn = r.get("daynight")
 	if dn != null and d.has("day_time") and dn.running:
 		dn.time = float(d.day_time)
@@ -269,6 +269,11 @@ static func _net_to(net) -> Dictionary:
 			"gas": net.gas.amount(part.id)}
 		if part.has("temp"):
 			pd.temp = part.temp
+		if part.get("filter") != null:
+			pd.filter = part.filter.id
+		if part.has("lift"):
+			pd.lift = part.lift
+			pd.foot = part.get("foot", 0.0)
 		var cap = part.get("cap")
 		if cap != null:
 			pd.cap = {"p": SaveGame.p_to(cap.p), "cell": [cap.cell.x, cap.cell.y], "from": [cap.from.x, cap.from.y], "t": cap.t}
@@ -286,6 +291,11 @@ static func _net_from(net, planet: Planet, d: Dictionary) -> void:
 		var part: Dictionary = net.place(str(pd.kind), SaveGame.v2i(pd.cell), int(pd.dir), sub)
 		if part.is_empty():
 			continue
+		if pd.has("filter"):
+			part.filter = planet.db.get_sub(str(pd.filter))
+		if pd.has("lift"):
+			part.lift = float(pd.lift)
+			part.foot = float(pd.get("foot", 0.0))
 		part.items = []
 		for a in pd.items:
 			var p := _p_from(planet, a)
