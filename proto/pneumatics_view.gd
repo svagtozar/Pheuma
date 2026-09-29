@@ -63,7 +63,7 @@ func sync() -> void:
 	var sig := ""
 	for c in net.parts:
 		var p: Dictionary = net.parts[c]
-		sig += "%d:%s:%d;" % [p.id, str(c), p.dir]
+		sig += "%d:%s:%d:%.2f;" % [p.id, str(c), p.dir, float(p.get("lift", 0.0))]
 	if sig != _sig:
 		_sig = sig
 		_rebuild()
@@ -104,12 +104,13 @@ func _rebuild() -> void:
 	_labels.clear()
 	for c in net.parts:
 		var part: Dictionary = net.parts[c]
-		var n := build_part(part.kind, part.sub, part.dir, _links(c))
-		n.position = ProtoPneumatics.cell_pos(origin, c)
+		var n := build_part(part.kind, part.sub, part.dir, _links(c), false, _rises(c))
+		n.position = net.at(origin, c)
 		add_child(n)
 		_nodes[part.id] = n
 		# Робот не проходит сквозь детали: трубы низкие — на них можно наступить.
 		ProtoMachines.add_box_collider(n)
+		_foundation(n, float(part.get("foot", 0.0)))
 		var g := n.find_child("gauge", true, false) as MeshInstance3D
 		if g:
 			_gauges[part.id] = g.material_override
@@ -135,6 +136,48 @@ func _rebuild() -> void:
 	ProtoBatch.merge_static(self, _nodes.values(), ["model"])
 	for i in range(kids, get_child_count()):
 		_batch.append(get_child(i))
+
+## Фундамент под деталью за площадкой: плита до самого низкого места клетки,
+## чтобы деталь на склоне не висела над грунтом. Отдельный коллайдер — плита
+## шире детали, на неё можно встать.
+static var _concrete: StandardMaterial3D
+
+func _foundation(n: Node3D, foot: float) -> void:
+	if foot < 0.12:
+		return
+	var h := foot + 0.3
+	var mi := MeshInstance3D.new()
+	mi.name = "foundation"
+	var bm := BoxMesh.new()
+	bm.size = Vector3(ProtoPneumatics.CELL - 0.1, h, ProtoPneumatics.CELL - 0.1)
+	mi.mesh = bm
+	if _concrete == null:
+		_concrete = StandardMaterial3D.new()
+		_concrete.albedo_color = Color(0.4, 0.4, 0.42)   # как плита площадки
+		_concrete.roughness = 0.9
+	mi.material_override = _concrete
+	mi.position = Vector3(0, -h / 2.0 + 0.02, 0)
+	n.add_child(mi)
+	ProtoMachines.add_box_collider(mi, ProtoMachines.LAYER_GROUND)
+
+## Разница высот к соседям по сторонам (полразницы — трубы встречаются
+## посередине): [dy0, dy1, dy2, dy3].
+func _rises(c: Vector2i) -> Array:
+	var out: Array = [0.0, 0.0, 0.0, 0.0]
+	var own := net.lift(c)
+	for i in 4:
+		var nc: Vector2i = c + ProtoPneumatics.DIRS[i]
+		if net.parts.has(nc):
+			out[i] = (net.lift(nc) - own) / 2.0
+	return out
+
+## Середина стороны d клетки c, где стыкуются трубы (на высоте труб).
+func edge(c: Vector2i, d: Vector2i) -> Vector3:
+	var half := ProtoPneumatics.CELL / 2.0
+	var y := net.lift(c)
+	if net.parts.has(c + d):
+		y = (y + net.lift(c + d)) / 2.0
+	return ProtoPneumatics.cell_pos(origin, c) + Vector3(d.x * half, y + PIPE_Y, d.y * half)
 
 ## Стороны клетки (индексы DIRS), к которым подходят трубы: вперёд — если там
 ## деталь, назад — всегда у трубы и машины, с боков — если соседняя деталь
@@ -170,7 +213,9 @@ static func _shared(sub: Substance) -> Material:
 	return _mats[sub]
 
 ## Корпус детали; links — стороны, куда вести патрубки. Работает и для призрака.
-static func build_part(kind: String, sub: Substance, dir: int, links: Array, holo := false) -> Node3D:
+## rises — подъём к соседу по сторонам (см. _rises): трубы и патрубки
+## наклоняются к стыку.
+static func build_part(kind: String, sub: Substance, dir: int, links: Array, holo := false, rises: Array = [0.0, 0.0, 0.0, 0.0]) -> Node3D:
 	var body := ProtoMachines.hologram() if holo else _shared(sub)
 	var n := Node3D.new()
 	n.name = kind
@@ -178,7 +223,7 @@ static func build_part(kind: String, sub: Substance, dir: int, links: Array, hol
 	if kind == "pipe":
 		core = Node3D.new()
 		for i in links:
-			_half_pipe(core, i, body, holo)
+			_half_pipe(core, i, body, holo, rises[i])
 		var hub := MeshInstance3D.new()
 		var s := SphereMesh.new()
 		s.radius = PIPE_R * 1.25
@@ -205,7 +250,7 @@ static func build_part(kind: String, sub: Substance, dir: int, links: Array, hol
 	if kind != "pipe":
 		core.rotation.y = _yaw(dir)
 		for i in links:
-			_stub(n, i, body, holo)
+			_stub(n, i, body, holo, rises[i])
 	n.add_child(core)
 	if kind == "pipe" and not holo:
 		var g := MeshInstance3D.new()
@@ -226,20 +271,13 @@ static func _yaw(dir: int) -> float:
 	return atan2(float(d.x), float(d.y))
 
 ## Полтрубы от центра клетки к стороне i: стекло с металлическими кольцами.
-static func _half_pipe(parent: Node3D, i: int, body: Material, holo: bool) -> void:
+static func _half_pipe(parent: Node3D, i: int, body: Material, holo: bool, rise := 0.0) -> void:
 	var d: Vector2i = ProtoPneumatics.DIRS[i]
 	var dv := Vector3(d.x, 0, d.y)
 	var half := ProtoPneumatics.CELL / 2.0
-	var tube := MeshInstance3D.new()
-	var cm := CylinderMesh.new()
-	cm.top_radius = PIPE_R
-	cm.bottom_radius = PIPE_R
-	cm.height = half
-	cm.radial_segments = 14
-	tube.mesh = cm
-	tube.material_override = body if holo else _shared(null)
-	tube.position = Vector3(0, PIPE_Y, 0) + dv * half / 2.0
-	tube.rotation = Vector3(PI / 2.0, _yaw(i), 0)
+	var a := Vector3(0, PIPE_Y, 0)
+	var b := a + dv * half + Vector3(0, rise, 0)
+	var tube := _segment(a, b, PIPE_R, body if holo else _shared(null))
 	parent.add_child(tube)
 	for k in [0.35, 0.95]:
 		var ring := MeshInstance3D.new()
@@ -249,8 +287,7 @@ static func _half_pipe(parent: Node3D, i: int, body: Material, holo: bool) -> vo
 		tm.rings = 12
 		ring.mesh = tm
 		ring.material_override = body if holo else MachineKit.m("frame")
-		ring.position = Vector3(0, PIPE_Y, 0) + dv * half * k
-		ring.rotation = Vector3(PI / 2.0, _yaw(i), 0)
+		ring.transform = Transform3D(tube.transform.basis, a.lerp(b, k))
 		parent.add_child(ring)
 	# Опора под трубой у края клетки.
 	var leg := MeshInstance3D.new()
@@ -262,20 +299,29 @@ static func _half_pipe(parent: Node3D, i: int, body: Material, holo: bool) -> vo
 	parent.add_child(leg)
 
 ## Короткий патрубок машины к стороне i (металл, от корпуса до края клетки).
-static func _stub(parent: Node3D, i: int, body: Material, holo: bool) -> void:
+static func _stub(parent: Node3D, i: int, body: Material, holo: bool, rise := 0.0) -> void:
 	var d: Vector2i = ProtoPneumatics.DIRS[i]
 	var dv := Vector3(d.x, 0, d.y)
+	var edge := Vector3(0, PIPE_Y, 0) + dv * (ProtoPneumatics.CELL / 2.0)
+	parent.add_child(_segment(edge - dv * 0.45, edge + Vector3(0, rise, 0), PIPE_R * 1.05, body if holo else MachineKit.m("metal")))
+
+## Цилиндр от a до b (ось Y цилиндра — вдоль отрезка).
+static func _segment(a: Vector3, b: Vector3, r: float, mat: Material) -> MeshInstance3D:
 	var mi := MeshInstance3D.new()
 	var cm := CylinderMesh.new()
-	cm.top_radius = PIPE_R * 1.05
-	cm.bottom_radius = PIPE_R * 1.05
-	cm.height = 0.45
+	cm.top_radius = r
+	cm.bottom_radius = r
+	cm.height = a.distance_to(b)
 	cm.radial_segments = 14
 	mi.mesh = cm
-	mi.material_override = body if holo else MachineKit.m("metal")
-	mi.position = Vector3(0, PIPE_Y, 0) + dv * (ProtoPneumatics.CELL / 2.0 - 0.22)
-	mi.rotation = Vector3(PI / 2.0, _yaw(i), 0)
-	parent.add_child(mi)
+	mi.material_override = mat
+	var up := (b - a).normalized()
+	var side := up.cross(Vector3.UP)
+	if side.length() < 0.01:
+		side = Vector3.RIGHT
+	side = side.normalized()
+	mi.transform = Transform3D(Basis(side, up, side.cross(up)), (a + b) / 2.0)
+	return mi
 
 static func _holo_all(n: Node, mat: Material) -> void:
 	for ch in n.get_children():
@@ -390,18 +436,15 @@ func _update_caps() -> void:
 			continue
 		var cap: Dictionary = caps[i]
 		var part: Dictionary = net.parts[cap.cell]
-		var ctr := ProtoPneumatics.cell_pos(origin, cap.cell) + Vector3(0, PIPE_Y, 0)
-		var half := ProtoPneumatics.CELL / 2.0
-		var fd: Vector2i = cap.from - cap.cell
-		var od: Vector2i = ProtoPneumatics.DIRS[part.dir]
-		var a := ctr + Vector3(fd.x, 0, fd.y) * half
-		var b := ctr + Vector3(od.x, 0, od.y) * half
+		var ctr := net.at(origin, cap.cell) + Vector3(0, PIPE_Y, 0)
+		var a := edge(cap.cell, cap.from - cap.cell)
+		var b := edge(cap.cell, ProtoPneumatics.DIRS[part.dir])
 		var t: float = cap.t
 		var pos: Vector3 = a.lerp(ctr, t * 2.0) if t < 0.5 else ctr.lerp(b, (t - 0.5) * 2.0)
 		mi.position = pos
 		var dirv: Vector3 = (ctr - a) if t < 0.5 else (b - ctr)
 		if dirv.length() > 0.01:
-			mi.rotation = Vector3(PI / 2.0, atan2(dirv.x, dirv.z), 0)
+			mi.rotation = Vector3(PI / 2.0 - atan2(dirv.y, Vector2(dirv.x, dirv.z).length()), atan2(dirv.x, dirv.z), 0)
 		var sid: String = cap.p.substance.id
 		if mi.get_meta("sub", "") != sid:
 			mi.material_override = ProtoMachines.glow(cap.p.substance.color, 1.4)
@@ -423,8 +466,8 @@ func _update_flights() -> void:
 			continue
 		var f: Dictionary = fl[i]
 		var k: float = clampf(f.t / f.dur, 0.0, 1.0)
-		var a := ProtoPneumatics.cell_pos(origin, f.from) + Vector3(0, 1.6, 0)
-		var b := ProtoPneumatics.cell_pos(origin, f.to) + Vector3(0, 1.3, 0)
+		var a := net.at(origin, f.from) + Vector3(0, 1.6, 0)
+		var b := net.at(origin, f.to) + Vector3(0, 1.3, 0)
 		var h := a.distance_to(b) * 0.35
 		mi.position = a.lerp(b, k) + Vector3(0, sin(PI * k) * h, 0)
 		var v := (b - a) + Vector3(0, cos(PI * k) * PI * h, 0)
@@ -438,24 +481,28 @@ func _play_events() -> void:
 	for e in net.events:
 		match e.kind:
 			"burst":
-				_puff(ProtoPneumatics.cell_pos(origin, e.cell) + Vector3(0, PIPE_Y, 0), Color(0.9, 0.95, 1.0), 60)
+				_puff(_ev_at(e) + Vector3(0, PIPE_Y, 0), Color(0.9, 0.95, 1.0), 60)
 			"lost":
 				var d: Vector2i = ProtoPneumatics.DIRS[e.dir]
-				_puff(ProtoPneumatics.cell_pos(origin, e.cell) + Vector3(d.x, PIPE_Y, d.y), e.sub.color, 14)
+				_puff(_ev_at(e) + Vector3(d.x, PIPE_Y, d.y), e.sub.color, 14)
 			"done", "caught":
-				_puff(ProtoPneumatics.cell_pos(origin, e.cell) + Vector3(0, 1.2, 0), e.sub.color, 10)
+				_puff(_ev_at(e) + Vector3(0, 1.2, 0), e.sub.color, 10)
 			"lab":
 				if e.learned:
-					_puff(ProtoPneumatics.cell_pos(origin, e.cell) + Vector3(0, 1.3, 0), Color(0.35, 0.9, 1.0), 24)
+					_puff(_ev_at(e) + Vector3(0, 1.3, 0), Color(0.35, 0.9, 1.0), 24)
 					var ln: Node3D = _nodes.get(net.parts.get(e.cell, {}).get("id", -1))
 					if ln:
 						ln.set_meta("flash", 1.0)
 			"launch":
-				_launch(ProtoPneumatics.cell_pos(origin, e.cell), e.sub.color)
+				_launch(net.at(origin, e.cell), e.sub.color)
 			"shot":
 				var sd: Vector2i = ProtoPneumatics.DIRS[e.dir]
-				_puff(ProtoPneumatics.cell_pos(origin, e.cell) + Vector3(sd.x * 1.1, 1.8, sd.y * 1.1), Color(0.9, 0.95, 1.0), 24)
+				_puff(_ev_at(e) + Vector3(sd.x * 1.1, 1.8, sd.y * 1.1), Color(0.9, 0.95, 1.0), 24)
 	net.events.clear()
+
+## Где случилось событие: лопнувшей детали уже нет — её подъём в событии.
+func _ev_at(e: Dictionary) -> Vector3:
+	return ProtoPneumatics.cell_pos(origin, e.cell) + Vector3(0, float(e.get("lift", net.lift(e.cell))), 0)
 
 ## Старт пусковой шахты: клуб газа и капсула, уходящая в небо.
 func _launch(at: Vector3, col: Color) -> void:
@@ -494,7 +541,8 @@ func _puff(at: Vector3, col: Color, amount: int) -> void:
 # ---------------------------------------------------------------- призрак
 
 ## Показать призрак детали в клетке (kind == "" — спрятать). ok — можно ставить.
-func ghost(kind: String, c: Vector2i, dir: int, sub: Substance, ok: bool) -> void:
+## lift — подъём над площадкой (грунт клетки за ней, см. ProtoBuilder.ground).
+func ghost(kind: String, c: Vector2i, dir: int, sub: Substance, ok: bool, lift := 0.0) -> void:
 	var key := "%s:%d:%s:%s" % [kind, dir, sub.id if sub else "", ok]
 	if key != _ghost_key:
 		_ghost_key = key
@@ -511,4 +559,4 @@ func ghost(kind: String, c: Vector2i, dir: int, sub: Substance, ok: bool) -> voi
 			_holo_all(_ghost, gm)
 			add_child(_ghost)
 	if _ghost:
-		_ghost.position = ProtoPneumatics.cell_pos(origin, c)
+		_ghost.position = ProtoPneumatics.cell_pos(origin, c) + Vector3(0, lift, 0)

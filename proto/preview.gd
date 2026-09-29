@@ -1544,7 +1544,8 @@ func _builder() -> void:
 	var b := ProtoBuilder.new()
 	b.name = "builder"
 	add_child(b)
-	b.setup(pneu_view, robot, _solid_mats())
+	b.setup(pneu_view, robot, _solid_mats(), terrain)
+	b.liquid_at = func(p: Vector3) -> Dictionary: return health.liquid_at(p) if health != null else {}
 	# Сначала — материал, из которого стоит завод: насос из более прочного
 	# поднимает давление всей сети выше предела её деталей, и они лопаются разом.
 	var i := b.mats.find(factory_mat)

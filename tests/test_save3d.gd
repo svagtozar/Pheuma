@@ -105,6 +105,10 @@ func test_factory_roundtrip():
 	a.pneu.feed(intake, Portion.new(metal, 12.0, 15.0))
 	for i in 120:
 		a.pneu.step(0.05)
+	# Деталь за площадкой — на своём грунте, с фундаментом.
+	var off: Dictionary = a.pneu.place("pipe", Vector2i(-3, -4), 0, metal)
+	off.lift = -1.4
+	off.foot = 0.9
 	ProtoSave.write(a)
 
 	var b := _root(21)
@@ -117,6 +121,8 @@ func test_factory_roundtrip():
 		var pb: Dictionary = b.pneu.parts[c]
 		assert_eq(pb.kind, pa.kind)
 		assert_eq(pb.dir, pa.dir)
+		assert_almost_eq(b.pneu.lift(c), a.pneu.lift(c), 0.001, "высота детали в %s" % str(c))
+		assert_almost_eq(float(pb.get("foot", 0.0)), float(pa.get("foot", 0.0)), 0.001)
 		assert_almost_eq(b.pneu.pressure(c), a.pneu.pressure(c), 0.001, "давление в %s" % str(c))
 		assert_almost_eq(b.pneu.mass_in(c), a.pneu.mass_in(c), 0.001, "груз в %s" % str(c))
 	assert_eq(b.pneu.capsules().size(), a.pneu.capsules().size())
