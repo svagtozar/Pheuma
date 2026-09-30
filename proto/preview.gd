@@ -155,6 +155,9 @@ var dig_demo := false        # --dig: у робота выкопана яма и
 var liquid_life: ProtoLiquidLife   # живые озеро и лава (паводок, извержения)
 var rapier_mode := ""         # --rapier=pure|hybrid: опыт с жидкостью Rapier (ProtoRapierFluid)
 var shot_wait := 1.5          # --wait=с: кадр не раньше (частицам Rapier нужно время)
+var shot_frames := 0         # --frames=N:шаг — N кадров подряд через шаг секунд (shot_01.png …)
+var shot_step := 0.2
+var _shot_i := 0
 var flow_time := 0.0         # --flow=с: прокрутить жидкости вперёд (кадры паводка и извержения)
 var hazard: Substance        # лава или кислота планеты (как клетки 2D), иначе null
 var hurt_prefix := ""        # --auto=hurt: кадры прочности
@@ -233,6 +236,11 @@ func _ready() -> void:
 		elif a.begins_with("--flow="): flow_time = float(a.substr(7))
 		elif a.begins_with("--rapier="): rapier_mode = a.substr(9)
 		elif a.begins_with("--wait="): shot_wait = float(a.substr(7))
+		elif a.begins_with("--frames="):
+			var fr := a.substr(9).split(":")
+			shot_frames = int(fr[0])
+			if fr.size() > 1:
+				shot_step = float(fr[1])
 		elif a.begins_with("--cam="): cam_at = Array(a.substr(6).split_floats(","))
 	if auto == "drill":
 		RobotDesigns.tool_r = "drill"
@@ -659,8 +667,11 @@ func _liquid_surface(nm: String, s: Substance, level: float, area: Callable, vpo
 	else:
 		mi.mesh = flow.mesh if flow != null else ProtoLiquids.surface_mesh(terrain, level, area)
 	var sm := ProtoLiquids.material(s, planet.ambient_temp)
-	if flow != null and flow.cool > 0.0:
-		sm.set_shader_parameter("vheat", true)
+	if flow != null:
+		sm.set_shader_parameter("vflow", true)
+		flow.mat = sm
+		if flow.cool > 0.0:
+			sm.set_shader_parameter("vheat", true)
 	mi.material_override = sm
 	_liq_root.add_child(mi)
 	_map_water.append([mi.mesh, s.color])
@@ -2015,6 +2026,16 @@ func _process(dt: float) -> void:
 			cap.visible = not lab_panel.open and run == null   # в ране слева сверху — цель
 	if shot_path != "" and _t > shot_wait and not _shot_wait and (ground_ready() or _t > 10.0):
 		var img := get_viewport().get_texture().get_image()
+		if shot_frames > 0:
+			_shot_i += 1
+			img.save_png(shot_path.get_basename() + "_%02d.png" % _shot_i)
+			shot_wait = _t + shot_step
+			if _shot_i < shot_frames:
+				return
+			print("Кадров: %d по %.2f с — %s" % [shot_frames, shot_step, shot_path])
+			shot_path = ""
+			get_tree().quit(0)
+			return
 		img.save_png(shot_path)
 		print("Кадров в секунду: ", Engine.get_frames_per_second(), " — скриншот: ", shot_path)
 		shot_path = ""
