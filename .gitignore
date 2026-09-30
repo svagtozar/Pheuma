@@ -2,3 +2,5 @@
 build/
 .DS_Store
 addons/zylann.voxel/bin/
+addons/godot-rapier3d/
+override.cfg
