@@ -6,7 +6,8 @@ extends Node
 ## - Извержение (вулкан): кратер переполняется, лава стекает языками по склону,
 ##   заливает низины и застывает коркой — по корке можно ходить.
 ## Шаг симуляции — 10 раз в секунду, сетка поверхности пересобирается не чаще
-## 4 раз в секунду (Deck — 2) и только если уровень сдвинулся.
+## 3 раз в секунду (Deck — 2) и только если уровень сдвинулся; между сборками
+## шейдер ведёт гладь от прошлой к нынешней.
 
 const TICK := 0.1
 const FLOOD_PERIOD := 300.0      # цикл паводка, с
@@ -28,6 +29,7 @@ var erupt_left := 0.0
 var notes: Callable              # (text) — сообщение игроку (тост рана)
 var _acc := 0.0
 var _mesh_t := 0.0
+var _morph0 := {}               # сетки, что ещё едут к нынешней глади
 var _crust_t := 0.0
 var _mouth: Dictionary = {}
 var _vent: Dictionary = {}
@@ -172,11 +174,20 @@ func _process(dt: float) -> void:
 		steps += 1
 	_acc = minf(_acc, TICK)
 	_mesh_t -= dt
+	var every := 0.5 if ProtoDeck.active else 0.3
 	if _mesh_t <= 0.0:
-		_mesh_t = 0.5 if ProtoDeck.active else 0.25
+		_mesh_t = every
 		for f in flows():
 			if f.dirty:
 				f.rebuild()
+				_morph0[f] = true
+	# Между сборками гладь плавно едет от прошлой к нынешней (шейдер, morph).
+	for f in flows():
+		if f.mat != null and _morph0.has(f):
+			var m := clampf(1.0 - _mesh_t / every, 0.0, 1.0)
+			f.mat.set_shader_parameter("morph", m)
+			if m >= 1.0:
+				_morph0.erase(f)
 	if rapier_mode != "":
 		_phys_sum += Performance.get_monitor(Performance.TIME_PHYSICS_PROCESS) * 1000.0
 		_phys_n += 1

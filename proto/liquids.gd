@@ -21,7 +21,10 @@ uniform float rip_speed = 1.6;     // скорость кругов на вод�
 uniform float rip_damp = 1.2;      // затухание кругов, 1/с
 uniform vec4 rip[8];               // круги: x, z, возраст (с), сила; сила 0 — нет
 uniform bool vheat = false;        // живая лава (ProtoFlow): цвет вершины r — жар, остывшее — корка
+uniform bool vflow = false;        // живая жидкость (ProtoFlow): цвет g, b — течение, UV.x — сдвиг к прошлой глади
+uniform float morph = 1.0;         // 0 — гладь прошлой сборки, 1 — нынешняя (ProtoFlow пересобирает 2–4 раза в с)
 varying float vh;
+varying vec2 vvel;
 varying vec2 vfall;                // завеса (ProtoLiquids.sloped): x — 1 на завесе, y — 0 у кромки … 1 внизу
 
 float hash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
@@ -55,6 +58,12 @@ void vertex() {
 	float t = TIME * speed;
 	vh = vheat ? COLOR.r : 1.0;
 	vfall = UV2;
+	vvel = flow;
+	if (vflow) {
+		vvel = (COLOR.gb - 0.5) * 8.0;
+		VERTEX.y += UV.x * (1.0 - morph);
+		vh = vheat ? COLOR.r + UV.y * (1.0 - morph) : 1.0;
+	}
 	// Кромка завесы колышется вместе с гладью, ниже струя падает ровно.
 	VERTEX.y += (waves(w.xz, t) + ripples(w.xz) * 0.06) * (1.0 - vfall.y);
 }
@@ -65,23 +74,49 @@ void fragment() {
 	float t = TIME * speed;
 	vec2 fl = flow * TIME * 0.35 * scale;
 	float r = vnoise(uv * 1.3 + vec2(t * flow_x, t * 0.2) - fl) * 0.6 + vnoise(uv * 3.1 - vec2(t * 0.4, t * flow_x) - fl * 1.6) * 0.4;
+	// Живая жидкость: рябь и корка плывут по течению клетки (две фазы сноса
+	// вперемешку, чтобы узор не растягивался), стоячая — колышется на месте.
+	float cr = 0.0;
+	float cs = 0.0;
+	if (vflow) {
+		float ph = fract(TIME * 0.5);
+		float mixk = abs(ph - 0.5) * 2.0;
+		vec2 va = vvel * scale * 2.0;
+		vec2 u0 = uv - va * ph;
+		vec2 u1 = uv - va * fract(ph + 0.5) + vec2(3.7, 1.3);
+		float r0 = vnoise(u0 * 1.3 + vec2(t * flow_x, t * 0.2)) * 0.6 + vnoise(u0 * 3.1 - vec2(t * 0.4, t * flow_x)) * 0.4;
+		float r1 = vnoise(u1 * 1.3 + vec2(t * flow_x, t * 0.2)) * 0.6 + vnoise(u1 * 3.1 - vec2(t * 0.4, t * flow_x)) * 0.4;
+		r = mix(r0, r1, mixk);
+		// Корка — крупные пятна: цикл дольше (6 с), иначе при смене фаз они «кипят».
+		float pc = fract(TIME / 6.0);
+		float mc = abs(pc - 0.5) * 2.0;
+		vec2 c0 = uv - vvel * scale * 6.0 * pc;
+		vec2 c1 = uv - vvel * scale * 6.0 * fract(pc + 0.5) + vec2(5.1, 2.9);
+		cr = mix(vnoise(c0 * 1.7), vnoise(c1 * 1.7), mc);
+		cs = mix(vnoise(c0 * 0.7), vnoise(c1 * 0.7), mc);
+	}
 	// Рябь от робота — в нормаль (сетка крупная, одной вершиной круг не нарисовать).
 	float e = 0.08;
 	float h0 = ripples(w.xz);
 	vec2 grad = clamp(vec2(ripples(w.xz + vec2(e, 0.0)) - h0, ripples(w.xz + vec2(0.0, e)) - h0) / e, vec2(-2.0), vec2(2.0));
 	vec3 col = base_color.rgb * (0.92 + 0.16 * r);
 	// Течение: вытянутые вдоль потока светлые полосы пены.
-	float fs = length(flow);
-	if (fs > 0.01) {
+	float fs = length(vflow ? vvel : flow);
+	if (fs > 0.01 && !vflow) {
 		vec2 fd = flow / fs;
 		vec2 q = vec2(dot(w.xz, fd), dot(w.xz, vec2(-fd.y, fd.x)));
 		float streak = vnoise(vec2(q.x * 0.35 - TIME * fs * 0.8, q.y * 2.2)) * vnoise(vec2(q.x * 0.9 - TIME * fs, q.y * 4.0));
 		col = mix(col, mix(base_color.rgb, vec3(1.0), 0.55), smoothstep(0.35, 0.6, streak) * 0.45 * (1.0 - crust));
 	}
 	col += vec3(clamp(h0, 0.0, 1.0)) * 0.5 * (1.0 - crust);
-	float c = smoothstep(0.55, 0.7, vnoise(uv * 0.7 + vec2(t * 0.05, 0.0) - fl * 0.2)) * crust;
+	float c = smoothstep(0.55, 0.7, vflow ? cs : vnoise(uv * 0.7 + vec2(t * 0.05, 0.0) - fl * 0.2)) * crust;
 	// Остывая, лава затягивается коркой с краёв пятен, пока не застынет целиком.
-	c = max(c, 1.0 - smoothstep(0.15, 0.65, vh + (vnoise(uv * 1.7) - 0.5) * 0.3));
+	c = max(c, 1.0 - smoothstep(0.15, 0.65, vh + ((vflow ? cr : vnoise(uv * 1.7)) - 0.5) * 0.3));
+	// Быстрое течение светлее (пена воды, жар раскрытой лавы).
+	if (vflow) {
+		col = mix(col, mix(base_color.rgb, vec3(1.0), 0.5), smoothstep(0.6, 2.5, fs) * (0.35 + r * 0.3) * (1.0 - crust));
+		col += base_color.rgb * glow * smoothstep(0.4, 2.0, fs) * 0.35 * crust * (1.0 - c);
+	}
 	col = mix(col, vec3(0.045, 0.04, 0.042) * (0.7 + 0.6 * vnoise(uv * 4.0)), c);
 	float b = step(0.93, vnoise(uv * 6.0 + vec2(0.0, t * 1.5))) * bubbles;
 	col += vec3(b) * 0.6;
