@@ -956,6 +956,20 @@ func field_at(p: Vector3) -> float:
 	var c11 := lerpf(dens[i + syz + sxn], dens[i + syz + sxn + 1], fx)
 	return lerpf(lerpf(c00, c10, fy), lerpf(c01, c11, fy), fz)
 
+## Поле, по которому построена видимая сетка рельефа: узлы 1 м (трилинейно);
+## в коробке пещеры сетка мельче (0,5 м по точной density) — там сама density.
+## Точная density() снаружи отличается от видимого до ~1 м (мелкие неровности,
+## иглы, края лунок) — столкновения робота, штанга камеры и прицел считаются по
+## видимому: иначе робот упирается в невидимую породу (ни шагнуть, ни прыгнуть),
+## камера заходит в видимую, а прицел висит в воздухе.
+func seen(p: Vector3) -> float:
+	if dens.is_empty() or cave_box.has_point(p):
+		return density(p.x, p.y, p.z)
+	return field_at(p)
+
+func seen_solid(x: float, y: float, z: float) -> bool:
+	return seen(Vector3(x, y, z)) > 0.0
+
 ## Пол под точкой: вниз по полю плотности до породы (снаружи и в пещере).
 func floor_at(p: Vector3) -> float:
 	var y := minf(p.y, surface_h(p.x, p.z) + 0.5 + (edit_raise(p.x, p.z) if not edits.is_empty() else 0.0))
@@ -1026,6 +1040,11 @@ uniform vec3 vein_glow : source_color = vec3(0.5, 0.8, 1.0);
 uniform float sink = 0.0;      // грубая сетка шара: опустить у робота под подробные куски
 uniform vec3 eye;
 uniform vec3 sink_center;
+// Грубый шар планеты: под участком не рисовать — там свой объёмный рельеф, а шар
+// лежит лишь на sink ниже его поверхности и вылезал плоскостями в каждой яме.
+uniform bool site_cut = false;
+uniform vec2 site_size;
+uniform float site_cut_y;
 // Состояние поверхности (ProtoSurfaceState): R поросль, G влага, B лёд, A грунт —
 // шесть граней кубосферы; в системе планеты (она же система сетки рельефа).
 uniform bool surf_on = false;
@@ -1078,6 +1097,10 @@ vec3 face_uv(vec3 d) {
 	return vec3(atan(ab) / (PI * 0.5) + 0.5, f);
 }
 void fragment() {
+	if (site_cut && pl_pos.y > site_cut_y && pl_pos.x > 1.0 && pl_pos.z > 1.0
+			&& pl_pos.x < site_size.x - 1.0 && pl_pos.z < site_size.y - 1.0) {
+		discard;
+	}
 	vec3 col = COLOR.rgb;
 	float rough = 0.92;
 	gloss = 0.0;

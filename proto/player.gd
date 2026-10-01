@@ -69,8 +69,10 @@ const HOOK_TIME := 4.0       # дольше не тянет: застрял — 
 const G := 14.0              # м/с² при 1 g (чуть «игровее» настоящих 9.8)
 const JUMP_V := 5.5          # м/с при отрыве: ≈1.1 м на 1 g (выше трубы), на лёгкой планете выше
 const JUMP_MAX_H := 2.4      # потолок высоты прыжка на совсем лёгкой планете
-const PITCH_MIN := -0.6
-const PITCH_MAX := 1.2
+const PITCH_MIN := -1.3       # взгляд вверх почти в зенит: свод пещеры, скала над головой
+const PITCH_MAX := 1.4        # и почти отвесно вниз — под ноги
+const SHOULDER := 0.7         # камера правее робота на столько м (взгляд мимо плеча)
+const CAM_LOW := -0.25        # ниже этого наклона штанга не опускается — дальше только взгляд вверх
 
 # Скриптовый маршрут.
 var route: Array = []
@@ -318,11 +320,10 @@ func _process(dt: float) -> void:
 			vel = mf.normalized() * 3.5     # над кромкой — шагнуть на уступ
 		else:
 			vel = Vector3.ZERO              # ещё под кромкой — вверх вдоль стены
-	var was := robot.position
 	_move((vel + _drift()) * dt)
 	_vertical(dt)
 	if route.is_empty() and not busy and not drill_auto and not jump_auto and bump_view == null:
-		_unstick(dt, want, was)
+		_unstick(dt, want)
 	if vel.length() > 0.05:
 		robot.rotation.y = lerp_angle(robot.rotation.y, atan2(vel.x, vel.z), minf(1.0, dt * 6.0))
 		if not route.is_empty():
@@ -667,7 +668,7 @@ func _move(d: Vector3) -> void:
 		# Скриптовый маршрут упёрся в уступ (не в породу и не в машину) — перескочить,
 		# как сделал бы игрок: иначе проверка (--auto=cave, bench) стоит вечно.
 		if not route.is_empty() and not air and g - robot.position.y < JUMP_MAX_H \
-				and not terrain.solid(np.x, body + 1.2, np.z) and not _hits_machine(Vector3(np.x, body, np.z)):
+				and not terrain.seen_solid(np.x, body + 1.2, np.z) and not _hits_machine(Vector3(np.x, body, np.z)):
 			jump()
 		vel *= 0.3
 		return
@@ -678,27 +679,43 @@ func _move(d: Vector3) -> void:
 		return
 	_settle()
 
-## Застрял: игрок держит ход больше UNSTICK_T с, робот не сдвинулся и не может
-## шагнуть ни в одну сторону (яма глубже прыжка после бура, насыпь вокруг, щель
-## под сводом, зажат машиной) — выбраться на ближайшее место, где можно стоять,
-## лучше в сторону хода. Просто упёрся в стену — не помогает: отойти можно.
+## Застрял: игрок держит ход больше UNSTICK_T с, робот не сдвинулся, а уйти
+## дальше ESCAPE_R ни шагом, ни прыжком нельзя (яма после бура глубже прыжка,
+## насыпь вокруг, щель под сводом, зажат машиной) — выбраться на ближайшее место
+## за пределами этой ловушки, лучше в сторону хода. Просто упёрся в стену — не
+## помогает: отойти можно.
 const UNSTICK_T := 1.2
+const ESCAPE_R := 2.4          # м: дальше отсюда можно уйти — не заперт
+const TRAP_CELL := 0.4         # шаг клеток обхода
+const NEAR8 := [Vector2i(1, 0), Vector2i(-1, 0), Vector2i(0, 1), Vector2i(0, -1),
+	Vector2i(1, 1), Vector2i(1, -1), Vector2i(-1, 1), Vector2i(-1, -1)]
 
-func _unstick(dt: float, want: Vector3, was: Vector3) -> void:
-	var moved := Vector2(robot.position.x - was.x, robot.position.z - was.z).length()
-	if want.length() < 0.1 or air or swim or moved > 0.25 * dt:
+var _trap_cells := {}          # клетки (от места проверки) — куда можно дойти
+var _stuck_at := Vector3.INF   # где робот топчется, пока держат ход
+
+func _unstick(dt: float, want: Vector3) -> void:
+	var p := robot.position
+	if want.length() < 0.1 or swim:
+		stuck_t = 0.0
+		_stuck_at = Vector3.INF
+		return
+	# Топчется на месте (шаги в стену, прыжки в яме — не в счёт): ход держат,
+	# а робот не ушёл от точки дальше 0.6 м.
+	if _stuck_at == Vector3.INF or Vector2(p.x - _stuck_at.x, p.z - _stuck_at.z).length() > 0.6:
+		_stuck_at = p
 		stuck_t = 0.0
 		return
 	stuck_t += dt
-	if stuck_t < UNSTICK_T:
+	if stuck_t < UNSTICK_T or air:
 		return
 	stuck_t = 0.0
 	if not trapped():
 		return
-	var spot := free_spot(robot.position, want)
+	var spot := free_spot(p, want)
 	if spot == Vector3.INF:
 		return
 	robot.position = spot
+	_stuck_at = Vector3.INF
 	vel = Vector3.ZERO
 	# Небольшой подскок — видно, что выбрался, а не телепортировался молча.
 	air = true
@@ -706,36 +723,65 @@ func _unstick(dt: float, want: Vector3, was: Vector3) -> void:
 	if ground:
 		ground.snap(spot.y)
 
-## Ни в одну из 8 сторон не шагнуть (и прыжком — яма глубже прыжка).
+## Высота прыжка, м.
+func jump_height() -> float:
+	var gg := G * terrain.style.gravity
+	var v := minf(JUMP_V, sqrt(2.0 * gg * JUMP_MAX_H))
+	return v * v / (2.0 * gg)
+
+## Заперт: обход клеток TRAP_CELL от робота (шаг, уступ по прыжку, спуск любой;
+## корпус не в породе и не в машине) не выводит дальше ESCAPE_R. Раньше
+## смотрели только соседние 0.3 м — в яме шире робота он «мог шагнуть» и сидел
+## в ней навсегда.
 func trapped() -> bool:
 	var p := robot.position
-	var gg := G * terrain.style.gravity
-	var jump_h := minf(JUMP_V, sqrt(2.0 * gg * JUMP_MAX_H))
-	jump_h = jump_h * jump_h / (2.0 * gg)
-	var step := terrain.style.step_height()
-	for k in 8:
-		var a := TAU * k / 8.0
-		var np := p + Vector3(sin(a), 0, cos(a)) * 0.3
-		var g := ground_at(np + Vector3(0, 0.7, 0))
-		var body := maxf(g, p.y)
-		if not _blocked(np, g, body, maxf(step, jump_h * 0.9)):
-			return false
+	var climb := maxf(terrain.style.step_height(), jump_height() * 0.9)
+	var head := jump_height() > terrain.style.step_height() and not terrain.seen_solid(p.x, p.y + 2.2, p.z)
+	_trap_cells = {Vector2i.ZERO: p.y}
+	var todo: Array[Vector2i] = [Vector2i.ZERO]
+	var lim := int(ceil(ESCAPE_R / TRAP_CELL)) + 1
+	while not todo.is_empty():
+		var c: Vector2i = todo.pop_back()
+		var y: float = _trap_cells[c]
+		for o: Vector2i in NEAR8:
+			var n := c + o
+			if _trap_cells.has(n) or absi(n.x) > lim or absi(n.y) > lim:
+				continue
+			var q := p + Vector3(n.x, 0, n.y) * TRAP_CELL
+			var g := ground_at(Vector3(q.x, y + climb + 0.3, q.z))
+			var rise := g - y
+			if rise > (climb if head else terrain.style.step_height()) or rise < -6.0:
+				continue
+			var body := maxf(g, y)
+			if terrain.seen_solid(q.x, body + 1.2, q.z) or terrain.seen_solid(q.x, body + 0.6, q.z) \
+					or _hits_machine(Vector3(q.x, body, q.z)):
+				continue
+			if Vector2(n).length() * TRAP_CELL >= ESCAPE_R:
+				_trap_cells.clear()
+				return false
+			_trap_cells[n] = g
+			todo.append(n)
 	return true
 
-## Ближайшее к p место, где робот может стоять: пол не выше 2.6 м, корпус не в
-## породе и не в машине. Сначала — в сторону dir. INF — ничего в 3.5 м.
+## Ближайшее к p место, где робот может стоять, — не в той ловушке, из которой
+## выбирается (клетки последнего trapped()): пол не выше 6 м (яма после бура
+## бывает глубокой), корпус не в породе и не в машине. Сначала — в сторону dir.
+## INF — ничего в 4.5 м.
 func free_spot(p: Vector3, dir: Vector3) -> Vector3:
 	var f := Vector3(dir.x, 0, dir.z)
 	f = f.normalized() if f.length() > 0.01 else Vector3(0, 0, 1)
-	for r: float in [0.6, 1.0, 1.5, 2.0, 2.6, 3.5]:
+	for r: float in [0.6, 1.0, 1.5, 2.0, 2.6, 3.5, 4.5]:
 		for a: float in [0.0, 0.5, -0.5, 1.0, -1.0, 1.6, -1.6, 2.3, -2.3, PI]:
 			var q := p + f.rotated(Vector3.UP, a) * r
-			var g := ground_at(Vector3(q.x, p.y + 3.0, q.z))
-			if g - p.y > 2.6 or g < p.y - 4.0:
+			var cell := Vector2i(roundi((q.x - p.x) / TRAP_CELL), roundi((q.z - p.z) / TRAP_CELL))
+			if _trap_cells.has(cell):
+				continue
+			var g := ground_at(Vector3(q.x, p.y + 6.5, q.z))
+			if g - p.y > 6.0 or g < p.y - 4.0:
 				continue
 			var ok := true
 			for h: float in [0.3, 0.9, 1.5]:
-				if terrain.solid(q.x, g + h, q.z):
+				if terrain.seen_solid(q.x, g + h, q.z):
 					ok = false
 					break
 			if ok and not _hits_machine(Vector3(q.x, g, q.z)):
@@ -745,8 +791,8 @@ func free_spot(p: Vector3, dir: Vector3) -> Vector3:
 ## Шаг в np не пройти: уступ выше step, порода на уровне груди (в прыжке — и ног)
 ## или машина.
 func _blocked(np: Vector3, g: float, body: float, step: float) -> bool:
-	return (g - robot.position.y) > step or terrain.solid(np.x, body + 1.2, np.z) \
-			or (air and (terrain.solid(np.x, robot.position.y + 0.3, np.z) or terrain.solid(np.x, robot.position.y + 0.9, np.z))) \
+	return (g - robot.position.y) > step or terrain.seen_solid(np.x, body + 1.2, np.z) \
+			or (air and (terrain.seen_solid(np.x, robot.position.y + 0.3, np.z) or terrain.seen_solid(np.x, robot.position.y + 0.9, np.z))) \
 			or (_hits_machine(Vector3(np.x, body, np.z)) and not _hits_machine(robot.position))
 
 ## Высота и наклон — по видимой сетке рельефа (RobotGround); поле плотности —
@@ -948,7 +994,7 @@ func _vertical(dt: float) -> void:
 	else:
 		vy -= g0 * dt
 	var p := robot.position
-	if vy > 0.0 and terrain.solid(p.x, p.y + 2.0 + vy * dt, p.z):
+	if vy > 0.0 and terrain.seen_solid(p.x, p.y + 2.0 + vy * dt, p.z):
 		vy = 0.0
 	robot.position.y += vy * dt
 	var g := ground_at(robot.position + Vector3(0, 0.6, 0))
@@ -1035,13 +1081,13 @@ func aim_point() -> Vector3:
 	var last := from + dir * t
 	while t < far:
 		var q := from + dir * t
-		if terrain.solid(q.x, q.y, q.z):
+		if terrain.seen_solid(q.x, q.y, q.z):
 			# Уточнить поверхность делением отрезка.
 			var a := last
 			var b := q
 			for k in 5:
 				var m := (a + b) * 0.5
-				if terrain.solid(m.x, m.y, m.z): b = m
+				if terrain.seen_solid(m.x, m.y, m.z): b = m
 				else: a = m
 			return a - dir * 0.1 if a.distance_to(eye) <= HOOK_RANGE else Vector3.INF
 		last = q
@@ -1056,13 +1102,13 @@ func _aim_point() -> Vector3:
 	var t := 1.0
 	while t < 14.0:
 		var q := from + dir * t
-		if terrain.solid(q.x, q.y, q.z):
+		if terrain.seen_solid(q.x, q.y, q.z):
 			var a := t - 0.2
 			var b := t
 			for i in 5:
 				var m := (a + b) * 0.5
 				var qm := from + dir * m
-				if terrain.solid(qm.x, qm.y, qm.z):
+				if terrain.seen_solid(qm.x, qm.y, qm.z):
 					b = m
 				else:
 					a = m
@@ -1144,11 +1190,20 @@ func _camera(dt := 1.0 / 60.0, running := false) -> void:
 		var ky := 1.0 - exp(-dt * 9.0)
 		cam_pivot = Vector3(lerpf(cam_pivot.x, raw.x, kx), lerpf(cam_pivot.y, raw.y, ky), lerpf(cam_pivot.z, raw.z, kx))
 	var pivot := cam_pivot
-	var dir := Basis(Vector3.UP, cam_yaw) * Basis(Vector3.RIGHT, cam_pitch) * Vector3(0, 0, -1)
+	var yb := Basis(Vector3.UP, cam_yaw)
+	# Взгляд вверх круче CAM_LOW камеру не опускает (она не уходит в землю за
+	# спиной и не прижимается к роботу) — только наклоняет взгляд.
+	var dir := yb * Basis(Vector3.RIGHT, maxf(cam_pitch, CAM_LOW)) * Vector3(0, 0, -1)
 	var dist := cam_dist * lerpf(1.0, 0.8, under)
-	var d := dir * dist + Basis(Vector3.UP, cam_yaw) * Vector3(-0.7, 0, 0)
-	var hard := boom_hard(pivot, d)
-	var free := minf(boom_free(pivot, d), hard)
+	# Плечо: штанга растёт не из головы, а правее её (в тесноте — ближе к голове),
+	# так что и укороченная у стены или пола камера не сидит в голове робота.
+	var base := pivot
+	if cam_focus == Vector3.INF:
+		var sh := yb * Vector3(-SHOULDER, 0, 0)
+		base = pivot + sh * clampf((boom_hard(pivot, sh) - 0.15) / SHOULDER, 0.0, 1.0)
+	var d := dir * dist
+	var hard := boom_hard(base, d)
+	var free := minf(boom_free(base, d), hard)
 	if boom < 0.0:
 		boom = free
 		boom_v = 0.0
@@ -1160,10 +1215,17 @@ func _camera(dt := 1.0 / 60.0, running := false) -> void:
 	# Жёсткий упор: видимая сетка рельефа и машины прямо на штанге — камера не
 	# уходит за них (изнутри порода чёрная), тут без сглаживания.
 	boom = minf(boom, hard)
-	cam.position = pivot + d.normalized() * boom
-	# Взгляд — мимо правого плеча (как в Astroneer): робот левее центра и не
-	# заслоняет перекрестье, прицел смотрит туда, куда робот повернётся.
-	cam.look_at(pivot + Basis(Vector3.UP, cam_yaw) * Vector3(-0.6, -0.1, 1.5) if cam_focus == Vector3.INF else pivot)
+	cam.position = base + dir * boom
+	if cam_focus != Vector3.INF:
+		cam.look_at(pivot)
+	else:
+		# Взгляд — мимо правого плеча (как в Astroneer): робот левее центра и не
+		# заслоняет перекрестье. Направление — как с полной штанги (на точку в
+		# 1.5 м перед роботом) и от её длины не зависит: камера, прижатая к полу
+		# или стене, смотрит туда же, куда смотрела бы издали, — вверх тоже.
+		var view := yb * Basis(Vector3.RIGHT, cam_pitch) * Vector3(0, 0, -1)
+		var look := -view * dist + yb * Vector3(SHOULDER - 0.6, -0.1, 1.5)
+		cam.look_at(cam.position + look, Vector3.UP if absf(look.normalized().y) < 0.99 else yb * Vector3.BACK)
 	# Бег — угол чуть шире.
 	if fov_base < 0.0:
 		fov_base = cam.fov
@@ -1200,7 +1262,7 @@ func boom_hard(pivot: Vector3, d: Vector3) -> float:
 	var t := 0.2
 	while t < hard:
 		var p := pivot + n * t
-		if terrain.solid(p.x, p.y, p.z):
+		if terrain.seen_solid(p.x, p.y, p.z):
 			hard = t - 0.1
 			break
 		t += 0.1
@@ -1222,7 +1284,7 @@ func boom_free(pivot: Vector3, d: Vector3) -> float:
 		var q := pivot + n * t
 		for o: Vector3 in offs:
 			var p: Vector3 = q + o * clampf(t / 1.2, 0.0, 1.0)
-			if terrain.solid(p.x, p.y, p.z):
+			if terrain.seen_solid(p.x, p.y, p.z):
 				return maxf(0.4, t - 0.35)
 		t += 0.12
 	return len
@@ -1294,7 +1356,7 @@ func _hook_end(hop: bool) -> void:
 	var q := at + fwd * 0.6 + Vector3(0, 2.5, 0)
 	var top := maxf(ground_at(q), terrain.floor_at(q))
 	var rise := top - robot.position.y
-	if rise > 0.2 and rise < 3.2 and not terrain.solid(q.x, top + 1.2, q.z):
+	if rise > 0.2 and rise < 3.2 and not terrain.seen_solid(q.x, top + 1.2, q.z):
 		air = true
 		vy = sqrt(2.0 * gg * (rise + 0.4))
 		vel = Vector3.ZERO

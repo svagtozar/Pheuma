@@ -16,6 +16,7 @@ const GEN := "res://proto/voxel_gen.gd"
 const LOD_COUNT := 4
 const LOD_DIST := 16.0          # м: LOD 0 (0,5 м) — ближе стольких метров от наблюдателя
 const VIEW := 160.0             # м: видно весь участок с любого его края
+const SITE_XF := &"pv_site_from_world"   # глобальный параметр шейдера: мир → участок
 
 var terrain: ProtoTerrain
 var vt: Node3D                  # VoxelLodTerrain
@@ -35,6 +36,7 @@ var _fcol_tex: ImageTexture3D
 var _fvein_tex: ImageTexture3D
 var _n := Vector3i.ZERO         # узлов поля
 var _last_xf := Transform3D()
+static var _site_xf_added := false
 
 static func available() -> bool:
 	return ClassDB.class_exists("VoxelLodTerrain")
@@ -95,7 +97,7 @@ func is_meshed(box: AABB) -> bool:
 func _process(_dt: float) -> void:
 	if global_transform != _last_xf:
 		_last_xf = global_transform
-		material.set_shader_parameter("site_from_world", Projection(global_transform.affine_inverse()))
+		RenderingServer.global_shader_parameter_set(SITE_XF, Projection(global_transform.affine_inverse()))
 	if not _queue.is_empty():
 		_apply(_queue.pop_front())
 
@@ -332,13 +334,23 @@ func _mesh_from(mesher: Object, b: Object, origin: Vector3, cell: float, shallow
 ## поля, позиция — в системе участка; плюс сшивка LOD Transvoxel (обязательна:
 ## переходные треугольники модуль прячет только в шейдере).
 static func voxel_material(t: ProtoTerrain, base: ShaderMaterial = null) -> ShaderMaterial:
+	# Система участка — глобальным параметром шейдера: VoxelLodTerrain рисует
+	# каждый кусок своей копией материала, и параметр, поменянный у главного,
+	# до старых кусков не доходит. Робот ушёл от завода (шар повернулся) — у старых
+	# кусков цвет брался не оттуда, а перестроенный бурами кусок — уже верно:
+	# вокруг лунки — заплатки другого цвета.
+	if not _site_xf_added:
+		_site_xf_added = true
+		RenderingServer.global_shader_parameter_add(SITE_XF, RenderingServer.GLOBAL_VAR_TYPE_MAT4, Projection(Transform3D.IDENTITY))
+	else:
+		RenderingServer.global_shader_parameter_set(SITE_XF, Projection(Transform3D.IDENTITY))
 	var code := ProtoTerrain.SHADER
 	code = code.replace("varying float sky;", """varying float sky;
 uniform int u_transition_mask;
 uniform sampler3D col3d : filter_linear, repeat_disable;
 uniform sampler3D vein3d : filter_linear, repeat_disable;
 uniform vec3 field_n = vec3(81.0, 37.0, 81.0);
-uniform mat4 site_from_world;
+global uniform mat4 pv_site_from_world;
 uniform sampler3D fcol3d : filter_linear, repeat_disable;
 uniform sampler3D fvein3d : filter_linear, repeat_disable;
 uniform vec3 fine_o;
@@ -366,8 +378,8 @@ vec3 get_transvoxel_position(vec3 vertex_pos, vec4 fdata) {
 	pl_pos = VERTEX;
 	pl_n = NORMAL;""", """	VERTEX = get_transvoxel_position(VERTEX, CUSTOM0);
 	vec3 wp = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
-	pl_pos = (site_from_world * vec4(wp, 1.0)).xyz;
-	pl_n = normalize(mat3(site_from_world) * (mat3(MODEL_MATRIX) * NORMAL));
+	pl_pos = (pv_site_from_world * vec4(wp, 1.0)).xyz;
+	pl_n = normalize(mat3(pv_site_from_world) * (mat3(MODEL_MATRIX) * NORMAL));
 	// В коробке пещеры — узлы 0,5 м (жилы и натёки чётче), иначе — 1 м.
 	vec3 fq = (pl_pos - fine_o) / 0.5;
 	vec4 c;
@@ -389,7 +401,6 @@ vec3 get_transvoxel_position(vec3 vertex_pos, vec4 fdata) {
 	sh.code = code
 	m.shader = sh
 	m.set_shader_parameter("vein_glow", t.vein)
-	m.set_shader_parameter("site_from_world", Projection(Transform3D.IDENTITY))
 	if base != null:
 		for p in ["sink", "surf_on", "surf", "surf_center", "veg_col", "veg_col2", "ice_col", "soil_col"]:
 			var v: Variant = base.get_shader_parameter(p)
