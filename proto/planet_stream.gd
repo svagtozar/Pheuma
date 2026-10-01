@@ -46,6 +46,9 @@ static func create(t: ProtoTerrain, m: ShaderMaterial, who: Node3D, camera: Came
 	s.coarse_mat = t.material()
 	s.coarse_mat.set_shader_parameter("sink", 6.0)
 	s.coarse_mat.set_shader_parameter("sink_center", t.center)
+	s.coarse_mat.set_shader_parameter("site_cut", true)
+	s.coarse_mat.set_shader_parameter("site_size", Vector2(t.sx, t.sz))
+	s.coarse_mat.set_shader_parameter("site_cut_y", t.center.y + t.radius * 0.9)
 	s.target = who
 	s.cam = camera
 	s.n_face = maxi(4, int(round(r * PI * 0.5 / CH)))
@@ -154,6 +157,8 @@ func _turn() -> void:
 	var far := _arc(q) > SITE_HIDE
 	if far and _site_hidden:
 		return
+	# Шар под участком прорезан (там свой рельеф); участок спрятан — шар цел.
+	coarse_mat.set_shader_parameter("site_cut", not far)
 	for n: Node3D in site_nodes:
 		if is_instance_valid(n) and _site_base.has(n):
 			n.visible = not far
